@@ -5,14 +5,14 @@ use crate::def::{FuncId, OpId, ResourceId};
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Val {
     Instr(InstrId),
     Arg(usize),
     Const(ValConst),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValConst {
     I32(i32),
     Bool(bool),
@@ -30,6 +30,7 @@ impl Display for Val {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instr {
     Ret(Val),
     Br(Val, LabelId, LabelId),
@@ -87,6 +88,12 @@ impl Display for Func {
             }
         }
         Ok(())
+    }
+}
+
+impl Func {
+    pub fn get_instr(&self, id: &InstrId) -> &Instr {
+        &self.block_list[id.0][id.1]
     }
 }
 

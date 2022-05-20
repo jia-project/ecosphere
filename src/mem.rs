@@ -1,6 +1,6 @@
 use std::{
     iter,
-    mem::{size_of, size_of_val, transmute},
+    mem::{size_of, size_of_val},
     ptr::{null_mut, NonNull},
     sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering::SeqCst},
 };
@@ -32,8 +32,8 @@ enum ObjMark {
     // Gray,
 }
 
-// seems wrong...
-static PREV_ALLOC: AtomicU64 = AtomicU64::new(unsafe { transmute(null_mut() as *mut Obj) });
+// want to use `null_mut`, but compiler don't like cast, while linter don't like transmute
+static PREV_ALLOC: AtomicU64 = AtomicU64::new(0);
 impl Obj {
     pub fn alloc(core: ObjCore) -> *mut Self {
         let mut obj = Box::new(Self {
@@ -129,11 +129,11 @@ impl Mem {
     }
 
     unsafe fn mutator_read(&self, obj: *mut Obj) -> &ObjCore {
-        &(&*obj).core
+        &(*obj).core
     }
 
-    unsafe fn mutator_write(&self, obj: *mut Obj) -> &mut ObjCore {
-        &mut (&mut *obj).core
+    unsafe fn mutator_write<'a>(&self, obj: *mut Obj) -> &'a mut ObjCore {
+        &mut (*obj).core
     }
 
     // collector read/write if necessary
@@ -163,7 +163,7 @@ impl Mem {
             let obj = &mut *obj;
             obj.mark = ObjMark::Black;
             obj.trace(|traced| {
-                if (&mut *traced).mark == ObjMark::White {
+                if (*traced).mark == ObjMark::White {
                     mark_list.push(traced);
                 }
             });
@@ -185,16 +185,10 @@ impl Mem {
             }
             scan_obj = next_obj;
         }
+        PREV_ALLOC.store(prev_obj as _, SeqCst);
 
         self.alloc_size.store(alloc_size, SeqCst);
         self.update_cap();
-    }
-}
-
-impl Drop for Mem {
-    fn drop(&mut self) {
-        assert_eq!(self.mutator_status.load(SeqCst), 0);
-        unsafe { self.collect(iter::empty()) };
     }
 }
 
@@ -219,14 +213,14 @@ impl Mutator<'_> {
     }
 
     /// # Safety
-    /// `obj` must be acquired by calling `alloc`.
+    /// `obj` must be acquired by calling `alloc`. Concurrent access is not checked.
     pub unsafe fn read(&self, obj: *mut Obj) -> &ObjCore {
         self.0.mutator_read(obj)
     }
 
     /// # Safety
-    /// `obj` must be acquired by calling `alloc`.
-    pub unsafe fn write(&self, obj: *mut Obj) -> &mut ObjCore {
+    /// `obj` must be acquired by calling `alloc`. Concurrent access is not checked.
+    pub unsafe fn write<'a>(&self, obj: *mut Obj) -> &'a mut ObjCore {
         self.0.mutator_write(obj)
     }
 }

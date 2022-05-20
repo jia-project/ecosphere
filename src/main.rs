@@ -1,8 +1,8 @@
 use ecosphere::instr::{FuncBuilder, Instr, Val, ValConst};
 
 fn main() {
-    let eq = || "eq".to_string();
-    let add = || "add".to_string();
+    let eq = || "i32eq".to_string();
+    let add = || "i32add".to_string();
 
     let mut func = FuncBuilder::default();
     let i1 = func.push_instr(Instr::Alloc(Val::Const(ValConst::I32(1))));
