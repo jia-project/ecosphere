@@ -1,5 +1,4 @@
 use std::{
-    iter,
     mem::{size_of, size_of_val},
     ptr::{null_mut, NonNull},
     sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering::SeqCst},

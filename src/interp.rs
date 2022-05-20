@@ -29,6 +29,8 @@ impl Default for Interp {
 }
 
 impl Interp {
+    /// # Safety
+    /// The underlying `Instr::Op` must be safe.
     pub unsafe fn step(&mut self, mem: &Mem, loader: &Loader) {
         let frame = self.frame_list.last_mut().unwrap();
         match &frame.func.get_instr(&frame.instr_id).clone() {
@@ -150,7 +152,7 @@ impl OpContext<'_> {
 
     /// # Safety
     /// `val` on frame must be a valid allocation
-    pub unsafe fn write_frame<'a>(&self, val: Val) -> &mut ObjCore {
+    pub unsafe fn write_frame<'a>(&self, val: Val) -> &'a mut ObjCore {
         let obj = self.frame.val_table[&val];
         self.mem.write(obj)
     }
@@ -165,7 +167,7 @@ impl OpContext<'_> {
                 ValConst::I32(content) => ObjCore::I32(content),
                 ValConst::Unit => ObjCore::Prod(0, Vec::new()),
                 ValConst::Bool(content) => ObjCore::Sum(
-                    0,
+                    2,
                     if content { 0 } else { 1 },
                     self.get_addr(Val::Const(ValConst::Unit)),
                 ),

@@ -1,10 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     def::{FuncId, OpId, ResourceId},
     instr::{Func, Val, ValConst},
     interp::OpContext,
-    mem::{Mem, Obj, ObjCore},
+    mem::{Obj, ObjCore},
 };
 
 pub trait Perform: Fn(&[&Val], &OpContext) {}
@@ -33,6 +33,8 @@ impl Loader {
         //
     }
 
+    /// # Safety
+    /// All `val` must be valid allocation.
     // later may support dynamical register op
     pub unsafe fn perform_op(&self, id: &OpId, val: &[Val], context: &OpContext) -> *mut Obj {
         match &**id {
