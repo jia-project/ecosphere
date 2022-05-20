@@ -1,22 +1,23 @@
 use std::{collections::HashMap, fmt::Display};
 
+use crate::def::{FuncId, OpId, ResourceId};
+
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
-pub type OpId = String;
-pub type FuncId = String;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Val {
     Instr(InstrId),
     Arg(usize),
     Const(ValConst),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValConst {
     I32(i32),
-    Str(String),
     Bool(bool),
     Unit,
+    Resource(ResourceId),
 }
 
 impl Display for Val {
@@ -24,7 +25,6 @@ impl Display for Val {
         match self {
             Self::Instr((label, id)) => write!(f, "i{label}:{id}"),
             Self::Arg(index) => write!(f, "arg{index}"),
-            // TODO str
             Self::Const(content) => write!(f, "const {content:?}"),
         }
     }
@@ -100,17 +100,17 @@ impl Default for FuncBuilder {
     fn default() -> Self {
         Self {
             param_list: Default::default(),
-            block_list: Vec::new(),
+            block_list: vec![Vec::new()],
             block_index: 0,
         }
     }
 }
 
 impl FuncBuilder {
-    pub fn push_instr(&mut self, instr: Instr) -> InstrId {
+    pub fn push_instr(&mut self, instr: Instr) -> Val {
         let id = (self.block_index, self.block_list[self.block_index].len());
         self.block_list[self.block_index].push(instr);
-        id
+        Val::Instr(id)
     }
 
     pub fn push_block(&mut self) -> LabelId {
