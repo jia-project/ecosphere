@@ -1,7 +1,5 @@
 use std::{collections::HashMap, fmt::Display};
 
-use crate::obj::Obj;
-
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
 pub type OpId = String;
@@ -10,7 +8,15 @@ pub type FuncId = String;
 pub enum Val {
     Instr(InstrId),
     Arg(usize),
-    Const(Obj),
+    Const(ValConst),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValConst {
+    I32(i32),
+    Str(String),
+    Bool(bool),
+    Unit,
 }
 
 impl Display for Val {
@@ -18,7 +24,8 @@ impl Display for Val {
         match self {
             Self::Instr((label, id)) => write!(f, "i{label}:{id}"),
             Self::Arg(index) => write!(f, "arg{index}"),
-            Self::Const(obj) => write!(f, "const {obj}"),
+            // TODO str
+            Self::Const(content) => write!(f, "const {content:?}"),
         }
     }
 }
@@ -39,7 +46,7 @@ impl Display for Instr {
         match self {
             Self::Ret(val) => write!(f, "ret {val}"),
             Self::Br(val, if_true, if_false) => write!(f, "br {val}, l{if_true}, l{if_false}"),
-            Self::Phi(val_table) => write!(f, "phi"), // TODO
+            Self::Phi(..) => write!(f, "phi"), // TODO
             Self::Op(id, val_list) => write!(
                 f,
                 "op {id}<{}>",
