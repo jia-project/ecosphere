@@ -1,6 +1,7 @@
 use std::{
     any::Any,
     mem::{size_of, size_of_val},
+    ops::{Deref, DerefMut},
     ptr::{null_mut, NonNull},
     sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering::SeqCst},
 };
@@ -19,8 +20,20 @@ impl<T: Any> AsAny for T {
         self
     }
 }
+impl Deref for dyn ObjCore {
+    type Target = dyn Any;
+    fn deref(&self) -> &Self::Target {
+        self.any_ref()
+    }
+}
+impl DerefMut for dyn ObjCore {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.any_mut()
+    }
+}
 
-pub trait ObjCore: AsAny {
+pub trait ObjCore: AsAny + 'static {
+    #[allow(unused_variables)]
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
 }
 
@@ -43,7 +56,7 @@ static PREV_ALLOC: AtomicU64 = AtomicU64::new(0);
 static ALLOC_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 impl Obj {
-    fn alloc(core: impl ObjCore + 'static) -> *mut Self {
+    fn alloc(core: impl ObjCore) -> *mut Self {
         let obj_size = size_of_val(&core) + size_of::<Self>();
         let mut obj = Box::new(Self {
             core: Box::new(core),
@@ -127,7 +140,7 @@ impl Mem {
 
     // collector read/write if necessary
 
-    fn alloc(&self, core: impl ObjCore + 'static) -> *mut Obj {
+    fn alloc(&self, core: impl ObjCore) -> *mut Obj {
         Obj::alloc(core)
     }
 
@@ -193,7 +206,7 @@ impl Mem {
 }
 
 impl Mutator<'_> {
-    pub fn alloc(&self, core: impl ObjCore + 'static) -> *mut Obj {
+    pub fn alloc(&self, core: impl ObjCore) -> *mut Obj {
         self.0.alloc(core)
     }
 

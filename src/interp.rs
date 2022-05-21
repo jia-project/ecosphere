@@ -130,7 +130,7 @@ impl OpContext<'_> {
         match val {
             Val::Const(ValConst::I32(content)) => content,
             val @ (Val::Arg(..) | Val::Instr(..)) => {
-                let obj: &Native<i32> = self.read_frame(val).any_ref().downcast_ref().unwrap();
+                let obj: &Native<i32> = self.read_frame(val).downcast_ref().unwrap();
                 obj.0
             }
             _ => panic!(),
@@ -143,7 +143,7 @@ impl OpContext<'_> {
         match val {
             Val::Const(ValConst::Bool(content)) => content,
             val @ (Val::Arg(..) | Val::Instr(..)) => {
-                let obj: &Sum = self.read_frame(val).any_ref().downcast_ref().unwrap();
+                let obj: &Sum = self.read_frame(val).downcast_ref().unwrap();
                 obj.variant == 0
             }
             _ => panic!(),
@@ -164,7 +164,7 @@ impl OpContext<'_> {
         self.mem.write(obj)
     }
 
-    pub fn alloc(&self, core: impl ObjCore + 'static) -> *mut Obj {
+    pub fn alloc(&self, core: impl ObjCore) -> *mut Obj {
         self.mem.alloc(core)
     }
 

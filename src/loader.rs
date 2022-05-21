@@ -55,16 +55,12 @@ impl Loader {
                 })
             }
             "intrinsic.load" => {
-                let obj: &Prod = context.read_frame(val[0]).any_ref().downcast_ref().unwrap();
+                let obj: &Prod = context.read_frame(val[0]).downcast_ref().unwrap();
                 assert_eq!(obj.header, 1);
                 obj.data[0]
             }
             "instrinsic.store" => {
-                let obj: &mut Prod = context
-                    .write_frame(val[0])
-                    .any_mut()
-                    .downcast_mut()
-                    .unwrap();
+                let obj: &mut Prod = context.write_frame(val[0]).downcast_mut().unwrap();
                 assert_eq!(obj.header, 1);
                 obj.data[0] = context.get_addr(val[1]);
                 context.get_addr(Val::Const(ValConst::Unit))
