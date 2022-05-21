@@ -30,8 +30,21 @@ impl Default for Interp {
 }
 
 impl Interp {
+    pub fn push_call(&mut self, func: Arc<Func>, arg_list: &[*mut Obj]) {
+        let frame = Frame {
+            func,
+            instr_id: InstrId::default(),
+            val_table: arg_list
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| (Val::Arg(i), *arg))
+                .collect(),
+        };
+        self.frame_list.push(frame);
+    }
+
     /// # Safety
-    /// The underlying `Instr::Op` must be safe.
+    /// If the stepping instr is `Instr::Op`, it must be safe to perform.
     pub unsafe fn step(&mut self, mem: &Mem, loader: &Loader) {
         let frame = self.frame_list.last_mut().unwrap();
         match &frame.func.get_instr(&frame.instr_id).clone() {
@@ -50,17 +63,12 @@ impl Interp {
                     mem: mem.mutator(),
                     frame,
                 };
-                let frame = Frame {
-                    func: loader.dispatch_call(func_id, arg_list),
-                    instr_id: InstrId::default(),
-                    val_table: arg_list
-                        .iter()
-                        .enumerate()
-                        .map(|(i, arg)| (Val::Arg(i), context.get_addr(*arg)))
-                        .collect(),
-                };
+                let arg_list: Vec<_> = arg_list.iter().map(|arg| context.get_addr(*arg)).collect();
+                let dispatch_list: Vec<_> =
+                    arg_list.iter().map(|arg| context.mem.read(*arg)).collect();
+                let func = loader.dispatch_call(func_id, &dispatch_list);
                 drop(context);
-                self.frame_list.push(frame);
+                self.push_call(func, &arg_list);
             }
             Instr::Op(id, val) => {
                 Self::step_op(id, val, mem, frame, loader);

@@ -5,6 +5,7 @@ use crate::{
     mem::{Obj, ObjCore},
 };
 
+#[derive(Debug)]
 pub struct Native<T>(pub T);
 // do not provide blacket impl for all T because some T like String may own
 // extra heap allocation

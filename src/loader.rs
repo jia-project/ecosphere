@@ -26,7 +26,7 @@ impl Loader {
         //
     }
 
-    pub fn dispatch_call(&self, id: &FuncId, arg_list: &[Val]) -> Arc<Func> {
+    pub fn dispatch_call(&self, id: &FuncId, arg_list: &[&dyn ObjCore]) -> Arc<Func> {
         todo!()
     }
 
@@ -35,7 +35,8 @@ impl Loader {
     }
 
     /// # Safety
-    /// All `val` must be valid allocation.
+    /// All `val` must be valid allocation. Thread safety must be explicitly
+    /// granted repect to concurrent performing.
     // later may support dynamical register op
     pub unsafe fn perform_op(&self, id: &OpId, val: &[Val], context: &OpContext) -> *mut Obj {
         match &**id {
@@ -59,7 +60,7 @@ impl Loader {
                 assert_eq!(obj.header, 1);
                 obj.data[0]
             }
-            "instrinsic.store" => {
+            "intrinsic.store" => {
                 let obj: &mut Prod = context.write_frame(val[0]).downcast_mut().unwrap();
                 assert_eq!(obj.header, 1);
                 obj.data[0] = context.get_addr(val[1]);
