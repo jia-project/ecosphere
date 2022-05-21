@@ -40,14 +40,6 @@ impl Loader {
     // later may support dynamical register op
     pub unsafe fn perform_op(&self, id: &OpId, val: &[Val], context: &OpContext) -> *mut Obj {
         match &**id {
-            "intrinsic.i32add" => {
-                let (i1, i2) = (context.get_i32(val[0]), context.get_i32(val[1]));
-                context.alloc(Native(i1 + i2))
-            }
-            "intrinsic.i32eq" => {
-                let (i1, i2) = (context.get_i32(val[0]), context.get_i32(val[1]));
-                context.get_addr(Val::Const(ValConst::Bool(i1 == i2)))
-            }
             "intrinsic.alloc" => {
                 let val = context.get_addr(val[0]);
                 context.alloc(Prod {
@@ -66,6 +58,15 @@ impl Loader {
                 obj.data[0] = context.get_addr(val[1]);
                 context.get_addr(Val::Const(ValConst::Unit))
             }
+            "intrinsic.i32add" => {
+                let (i1, i2) = (context.get_i32(val[0]), context.get_i32(val[1]));
+                context.alloc(Native(i1 + i2))
+            }
+            "intrinsic.i32eq" => {
+                let (i1, i2) = (context.get_i32(val[0]), context.get_i32(val[1]));
+                context.get_addr(Val::Const(ValConst::Bool(i1 == i2)))
+            }
+
             _ => unimplemented!(),
         }
     }

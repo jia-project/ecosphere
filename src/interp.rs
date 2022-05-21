@@ -123,6 +123,16 @@ impl Interp {
     pub fn get_result(&self) -> Option<*mut Obj> {
         self.result
     }
+
+    pub fn trace(&self, mut mark: impl FnMut(*mut Obj)) {
+        if let Some(res) = self.result {
+            mark(res);
+            return;
+        }
+        for frame in &self.frame_list {
+            frame.val_table.values().copied().for_each(&mut mark);
+        }
+    }
 }
 
 pub struct OpContext<'a> {

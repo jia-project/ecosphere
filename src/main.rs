@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{iter, sync::Arc};
 
 use ecosphere::{
     instr::{FuncBuilder, Instr, Val, ValConst},
@@ -48,8 +48,10 @@ fn main() {
     while interp.get_result().is_none() {
         unsafe { interp.step(&mem, &loader) };
     }
-    let mem = mem.mutator();
-    let res = unsafe { mem.read(interp.get_result().unwrap()) };
+    let mutator = mem.mutator();
+    let res = unsafe { mutator.read(interp.get_result().unwrap()) };
     let res: &Native<i32> = res.downcast_ref().unwrap();
     println!("{res:?}");
+    drop(mutator);
+    unsafe { mem.collector().collect(iter::empty()) };
 }
