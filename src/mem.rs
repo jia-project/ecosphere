@@ -35,6 +35,9 @@ impl DerefMut for dyn ObjCore {
 pub trait ObjCore: AsAny + 'static {
     #[allow(unused_variables)]
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
+    fn alloc_size(&self) -> usize {
+        size_of_val(self)
+    }
 }
 
 pub struct Obj {
@@ -53,23 +56,21 @@ enum ObjMark {
 // want to use `null_mut`, but compiler don't like cast, while linter don't like transmute
 static PREV_ALLOC: AtomicU64 = AtomicU64::new(0);
 // const_assert!((0 as *mut Obj).is_null()); // and const `is_null` is not stable yet, shit
-static ALLOC_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 impl Obj {
     fn alloc(core: impl ObjCore) -> *mut Self {
-        let obj_size = size_of_val(&core) + size_of::<Self>();
         let mut obj = Box::new(Self {
             core: Box::new(core),
             mark: ObjMark::White,
             prev: NonNull::dangling().as_ptr(),
         });
         obj.prev = PREV_ALLOC.swap(&*obj as *const _ as _, SeqCst) as _;
-        ALLOC_SIZE.fetch_add(obj_size, SeqCst);
         Box::leak(obj)
     }
 }
 
 pub struct Mem {
+    alloc_size: AtomicUsize,
     cap: AtomicUsize,
     mutator_status: AtomicI32,
 }
@@ -81,6 +82,7 @@ impl Mem {
 impl Default for Mem {
     fn default() -> Self {
         Self {
+            alloc_size: AtomicUsize::new(0),
             cap: AtomicUsize::new(Self::INITIAL_CAP),
             mutator_status: AtomicI32::new(0),
         }
@@ -141,11 +143,13 @@ impl Mem {
     // collector read/write if necessary
 
     fn alloc(&self, core: impl ObjCore) -> *mut Obj {
+        self.alloc_size
+            .fetch_add(core.alloc_size() + size_of::<Obj>(), SeqCst);
         Obj::alloc(core)
     }
 
     pub fn load_factor(&self) -> f32 {
-        ALLOC_SIZE.load(SeqCst) as f32 / self.cap.load(SeqCst) as f32
+        self.alloc_size.load(SeqCst) as f32 / self.cap.load(SeqCst) as f32
     }
 
     fn update_cap(&self) {
@@ -171,7 +175,7 @@ impl Mem {
 
         let mut scan_obj = PREV_ALLOC.load(SeqCst) as *mut Obj;
         let mut prev_obj = null_mut();
-        ALLOC_SIZE.store(0, SeqCst);
+        let mut alloc_size = 0;
         while !scan_obj.is_null() {
             let obj = &mut *scan_obj;
             let next_obj = obj.prev;
@@ -179,6 +183,7 @@ impl Mem {
                 obj.mark = ObjMark::White;
                 obj.prev = prev_obj;
                 prev_obj = obj;
+                alloc_size += obj.core.alloc_size() + size_of::<Obj>();
             } else {
                 drop(Box::from_raw(obj));
             }
@@ -186,6 +191,7 @@ impl Mem {
         }
         PREV_ALLOC.store(prev_obj as _, SeqCst);
 
+        self.alloc_size.store(alloc_size, SeqCst);
         self.update_cap();
     }
 }

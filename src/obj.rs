@@ -1,10 +1,14 @@
+use std::mem::size_of;
+
 use crate::{
     def::HeaderId,
     mem::{Obj, ObjCore},
 };
 
 pub struct Native<T>(pub T);
-impl<T: 'static> ObjCore for Native<T> {}
+// do not provide blacket impl for all T because some T like String may own
+// extra heap allocation
+impl ObjCore for Native<i32> {}
 
 pub struct Prod {
     pub header: HeaderId,
@@ -14,6 +18,10 @@ pub struct Prod {
 impl ObjCore for Prod {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         self.data.iter().copied().for_each(mark);
+    }
+
+    fn alloc_size(&self) -> usize {
+        size_of::<Self>() + self.data.capacity() * size_of::<*mut Obj>()
     }
 }
 
