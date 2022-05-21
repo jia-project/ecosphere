@@ -3,3 +3,4 @@ pub mod instr;
 pub mod interp;
 pub mod loader;
 pub mod mem;
+pub mod obj;

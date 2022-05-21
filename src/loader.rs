@@ -5,6 +5,7 @@ use crate::{
     instr::{Func, Val, ValConst},
     interp::OpContext,
     mem::{Obj, ObjCore},
+    obj::{Native, Prod},
 };
 
 pub trait Perform: Fn(&[&Val], &OpContext) {}
@@ -40,7 +41,7 @@ impl Loader {
         match &**id {
             "intrinsic.i32add" => {
                 let (i1, i2) = (context.get_i32(val[0]), context.get_i32(val[1]));
-                context.alloc(ObjCore::I32(i1 + i2))
+                context.alloc(Native(i1 + i2))
             }
             "intrinsic.i32eq" => {
                 let (i1, i2) = (context.get_i32(val[0]), context.get_i32(val[1]));
@@ -48,22 +49,25 @@ impl Loader {
             }
             "intrinsic.alloc" => {
                 let val = context.get_addr(val[0]);
-                context.alloc(ObjCore::Prod(1, vec![val]))
+                context.alloc(Prod {
+                    header: 1,
+                    data: vec![val],
+                })
             }
             "intrinsic.load" => {
-                if let ObjCore::Prod(1, slot) = context.read_frame(val[0]) {
-                    slot[0]
-                } else {
-                    panic!()
-                }
+                let obj: &Prod = context.read_frame(val[0]).any_ref().downcast_ref().unwrap();
+                assert_eq!(obj.header, 1);
+                obj.data[0]
             }
             "instrinsic.store" => {
-                if let ObjCore::Prod(1, slot) = context.write_frame(val[0]) {
-                    slot[0] = context.get_addr(val[1]);
-                    context.get_addr(Val::Const(ValConst::Unit))
-                } else {
-                    panic!()
-                }
+                let obj: &mut Prod = context
+                    .write_frame(val[0])
+                    .any_mut()
+                    .downcast_mut()
+                    .unwrap();
+                assert_eq!(obj.header, 1);
+                obj.data[0] = context.get_addr(val[1]);
+                context.get_addr(Val::Const(ValConst::Unit))
             }
             _ => unimplemented!(),
         }

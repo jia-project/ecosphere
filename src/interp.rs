@@ -5,6 +5,7 @@ use crate::{
     instr::{Func, Instr, InstrId, Val, ValConst},
     loader::Loader,
     mem::{Mem, Mutator, Obj, ObjCore},
+    obj::{Native, Prod, Sum},
 };
 
 pub struct Interp {
@@ -128,13 +129,9 @@ impl OpContext<'_> {
     pub unsafe fn get_i32(&self, val: Val) -> i32 {
         match val {
             Val::Const(ValConst::I32(content)) => content,
-            // waiting for #51114 if let guard
             val @ (Val::Arg(..) | Val::Instr(..)) => {
-                if let ObjCore::I32(content) = self.read_frame(val) {
-                    *content
-                } else {
-                    panic!()
-                }
+                let obj: &Native<i32> = self.read_frame(val).any_ref().downcast_ref().unwrap();
+                obj.0
             }
             _ => panic!(),
         }
@@ -146,11 +143,8 @@ impl OpContext<'_> {
         match val {
             Val::Const(ValConst::Bool(content)) => content,
             val @ (Val::Arg(..) | Val::Instr(..)) => {
-                if let ObjCore::Sum(_, variant, _) = self.read_frame(val) {
-                    *variant == 0
-                } else {
-                    panic!()
-                }
+                let obj: &Sum = self.read_frame(val).any_ref().downcast_ref().unwrap();
+                obj.variant == 0
             }
             _ => panic!(),
         }
@@ -158,35 +152,37 @@ impl OpContext<'_> {
 
     /// # Safety
     /// Same as `get_i32`.
-    pub unsafe fn read_frame(&self, val: Val) -> &ObjCore {
+    pub unsafe fn read_frame(&self, val: Val) -> &dyn ObjCore {
         let obj = self.frame.val_table[&val];
         self.mem.read(obj)
     }
 
     /// # Safety
     /// Same as `get_i32`.
-    pub unsafe fn write_frame<'a>(&self, val: Val) -> &'a mut ObjCore {
+    pub unsafe fn write_frame<'a>(&self, val: Val) -> &'a mut dyn ObjCore {
         let obj = self.frame.val_table[&val];
         self.mem.write(obj)
     }
 
-    pub fn alloc(&self, core: ObjCore) -> *mut Obj {
+    pub fn alloc(&self, core: impl ObjCore + 'static) -> *mut Obj {
         self.mem.alloc(core)
     }
 
     pub fn get_addr(&self, val: Val) -> *mut Obj {
         if let Val::Const(val_const) = val {
-            let core = match val_const {
-                ValConst::I32(content) => ObjCore::I32(content),
-                ValConst::Unit => ObjCore::Prod(0, Vec::new()),
-                ValConst::Bool(content) => ObjCore::Sum(
-                    2,
-                    if content { 0 } else { 1 },
-                    self.get_addr(Val::Const(ValConst::Unit)),
-                ),
+            match val_const {
+                ValConst::I32(content) => self.alloc(Native(content)),
+                ValConst::Unit => self.alloc(Prod {
+                    header: 0,
+                    data: Vec::new(),
+                }),
+                ValConst::Bool(content) => self.alloc(Sum {
+                    header: 2,
+                    variant: if content { 0 } else { 1 },
+                    inner: self.get_addr(Val::Const(ValConst::Unit)),
+                }),
                 ValConst::Resource(..) => todo!(),
-            };
-            self.alloc(core)
+            }
         } else {
             self.frame.val_table[&val]
         }

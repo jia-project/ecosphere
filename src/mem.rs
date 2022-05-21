@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     mem::{size_of, size_of_val},
     ptr::{null_mut, NonNull},
     sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering::SeqCst},
@@ -6,22 +7,27 @@ use std::{
 
 use crossbeam::utils::Backoff;
 
-use crate::def::HeaderId;
-
-#[derive(Debug)]
-pub struct Obj {
-    core: ObjCore,
-    mark: ObjMark,
-    prev: *mut Obj,
+pub trait AsAny {
+    fn any_ref(&self) -> &dyn Any;
+    fn any_mut(&mut self) -> &mut dyn Any;
+}
+impl<T: Any> AsAny for T {
+    fn any_ref(&self) -> &dyn Any {
+        self
+    }
+    fn any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
-#[derive(Debug)]
-pub enum ObjCore {
-    I32(i32),
-    Str(String),
-    // list, byte array
-    Prod(HeaderId, Vec<*mut Obj>),
-    Sum(HeaderId, usize, *mut Obj),
+pub trait ObjCore: AsAny {
+    fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
+}
+
+pub struct Obj {
+    core: Box<dyn ObjCore>,
+    mark: ObjMark,
+    prev: *mut Obj,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,40 +40,23 @@ enum ObjMark {
 // want to use `null_mut`, but compiler don't like cast, while linter don't like transmute
 static PREV_ALLOC: AtomicU64 = AtomicU64::new(0);
 // const_assert!((0 as *mut Obj).is_null()); // and const `is_null` is not stable yet, shit
+static ALLOC_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 impl Obj {
-    pub fn alloc(core: ObjCore) -> *mut Self {
+    fn alloc(core: impl ObjCore + 'static) -> *mut Self {
+        let obj_size = size_of_val(&core) + size_of::<Self>();
         let mut obj = Box::new(Self {
-            core,
+            core: Box::new(core),
             mark: ObjMark::White,
             prev: NonNull::dangling().as_ptr(),
         });
         obj.prev = PREV_ALLOC.swap(&*obj as *const _ as _, SeqCst) as _;
+        ALLOC_SIZE.fetch_add(obj_size, SeqCst);
         Box::leak(obj)
-    }
-
-    fn trace(&self, mut mark: impl FnMut(*mut Self)) {
-        match &self.core {
-            ObjCore::Prod(_, slot_list) => slot_list.iter().copied().for_each(mark),
-            ObjCore::Sum(_, _, inner) => mark(*inner),
-            _ => {}
-        }
-    }
-}
-
-impl ObjCore {
-    fn extra_size(&self) -> usize {
-        match self {
-            Self::Prod(_, slot_list) => {
-                size_of_val(slot_list) + slot_list.capacity() * size_of::<*mut Obj>()
-            }
-            _ => 0,
-        }
     }
 }
 
 pub struct Mem {
-    alloc_size: AtomicUsize,
     cap: AtomicUsize,
     mutator_status: AtomicI32,
 }
@@ -79,7 +68,6 @@ impl Mem {
 impl Default for Mem {
     fn default() -> Self {
         Self {
-            alloc_size: AtomicUsize::new(0),
             cap: AtomicUsize::new(Self::INITIAL_CAP),
             mutator_status: AtomicI32::new(0),
         }
@@ -129,24 +117,22 @@ impl Mem {
         assert_eq!(old, -1);
     }
 
-    unsafe fn mutator_read(&self, obj: *mut Obj) -> &ObjCore {
-        &(*obj).core
+    unsafe fn mutator_read(&self, obj: *mut Obj) -> &dyn ObjCore {
+        &*(*obj).core
     }
 
-    unsafe fn mutator_write<'a>(&self, obj: *mut Obj) -> &'a mut ObjCore {
-        &mut (*obj).core
+    unsafe fn mutator_write<'a>(&self, obj: *mut Obj) -> &'a mut dyn ObjCore {
+        &mut *(*obj).core
     }
 
     // collector read/write if necessary
 
-    fn alloc(&self, core: ObjCore) -> *mut Obj {
-        let obj_size = size_of::<Obj>() + core.extra_size();
-        self.alloc_size.fetch_add(obj_size, SeqCst);
+    fn alloc(&self, core: impl ObjCore + 'static) -> *mut Obj {
         Obj::alloc(core)
     }
 
     pub fn load_factor(&self) -> f32 {
-        self.alloc_size.load(SeqCst) as f32 / self.cap.load(SeqCst) as f32
+        ALLOC_SIZE.load(SeqCst) as f32 / self.cap.load(SeqCst) as f32
     }
 
     fn update_cap(&self) {
@@ -163,7 +149,7 @@ impl Mem {
         while let Some(obj) = mark_list.pop() {
             let obj = &mut *obj;
             obj.mark = ObjMark::Black;
-            obj.trace(|traced| {
+            obj.core.trace(&mut |traced| {
                 if (*traced).mark == ObjMark::White {
                     mark_list.push(traced);
                 }
@@ -172,7 +158,7 @@ impl Mem {
 
         let mut scan_obj = PREV_ALLOC.load(SeqCst) as *mut Obj;
         let mut prev_obj = null_mut();
-        let mut alloc_size = 0;
+        ALLOC_SIZE.store(0, SeqCst);
         while !scan_obj.is_null() {
             let obj = &mut *scan_obj;
             let next_obj = obj.prev;
@@ -180,7 +166,6 @@ impl Mem {
                 obj.mark = ObjMark::White;
                 obj.prev = prev_obj;
                 prev_obj = obj;
-                alloc_size += size_of::<Obj>() + obj.core.extra_size();
             } else {
                 drop(Box::from_raw(obj));
             }
@@ -188,7 +173,6 @@ impl Mem {
         }
         PREV_ALLOC.store(prev_obj as _, SeqCst);
 
-        self.alloc_size.store(alloc_size, SeqCst);
         self.update_cap();
     }
 }
@@ -209,19 +193,19 @@ impl Mem {
 }
 
 impl Mutator<'_> {
-    pub fn alloc(&self, core: ObjCore) -> *mut Obj {
+    pub fn alloc(&self, core: impl ObjCore + 'static) -> *mut Obj {
         self.0.alloc(core)
     }
 
     /// # Safety
-    /// `obj` must be acquired by calling `alloc`. Concurrent access is not checked.
-    pub unsafe fn read(&self, obj: *mut Obj) -> &ObjCore {
+    /// `obj` must be acquired by calling `alloc`. Thread safety is totally unchecked.
+    pub unsafe fn read(&self, obj: *mut Obj) -> &dyn ObjCore {
         self.0.mutator_read(obj)
     }
 
     /// # Safety
-    /// `obj` must be acquired by calling `alloc`. Concurrent access is not checked.
-    pub unsafe fn write<'a>(&self, obj: *mut Obj) -> &'a mut ObjCore {
+    /// Same as `read`.
+    pub unsafe fn write<'a>(&self, obj: *mut Obj) -> &'a mut dyn ObjCore {
         self.0.mutator_write(obj)
     }
 }
