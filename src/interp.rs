@@ -39,6 +39,7 @@ impl Interp {
                 self.frame_list.pop().unwrap();
                 if let Some(frame) = self.frame_list.last_mut() {
                     frame.val_table.insert(Val::Instr(frame.instr_id), ret);
+                    frame.instr_id.1 += 1;
                 } else {
                     self.result = Some(ret);
                 }
@@ -47,7 +48,6 @@ impl Interp {
                 let context = OpContext {
                     mem: mem.mutator(),
                     frame,
-                    loader,
                 };
                 let frame = Frame {
                     func: loader.dispatch_call(func_id, arg_list),
@@ -65,16 +65,12 @@ impl Interp {
                 Self::step_op(id, val, mem, frame, loader);
             }
             Instr::Br(val, if_true, if_false) => {
-                let val = if let Val::Const(ValConst::Bool(content)) = val {
-                    *content
-                } else {
-                    let obj = frame.val_table[val];
-                    if let ObjCore::Sum(_, variant, _) = mem.mutator().read(obj) {
-                        *variant == 0
-                    } else {
-                        panic!()
-                    }
+                let context = OpContext {
+                    mem: mem.mutator(),
+                    frame,
                 };
+                let val = context.get_bool(*val);
+                drop(context);
                 frame.instr_id = (*if val { if_true } else { if_false }, 0);
             }
             Instr::Phi(..) => todo!(),
@@ -108,11 +104,11 @@ impl Interp {
         let context = OpContext {
             mem: mem.mutator(),
             frame,
-            loader,
         };
         let res = loader.perform_op(id, val, &context);
         drop(context);
         frame.val_table.insert(Val::Instr(frame.instr_id), res);
+        frame.instr_id.1 += 1;
     }
 
     pub fn get_result(&self) -> Option<*mut Obj> {
@@ -123,15 +119,16 @@ impl Interp {
 pub struct OpContext<'a> {
     mem: Mutator<'a>,
     frame: &'a Frame,
-    loader: &'a Loader,
 }
 
 impl OpContext<'_> {
     /// # Safety
     /// If `val` is not constant, it's frame record must be a valid allocation.
+    /// Thread safety is totally unchecked.
     pub unsafe fn get_i32(&self, val: Val) -> i32 {
         match val {
             Val::Const(ValConst::I32(content)) => content,
+            // waiting for #51114 if let guard
             val @ (Val::Arg(..) | Val::Instr(..)) => {
                 if let ObjCore::I32(content) = self.read_frame(val) {
                     *content
@@ -144,14 +141,30 @@ impl OpContext<'_> {
     }
 
     /// # Safety
-    /// `val` on frame must be a valid allocation
+    /// Same as `get_i32`.
+    pub unsafe fn get_bool(&self, val: Val) -> bool {
+        match val {
+            Val::Const(ValConst::Bool(content)) => content,
+            val @ (Val::Arg(..) | Val::Instr(..)) => {
+                if let ObjCore::Sum(_, variant, _) = self.read_frame(val) {
+                    *variant == 0
+                } else {
+                    panic!()
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    /// # Safety
+    /// Same as `get_i32`.
     pub unsafe fn read_frame(&self, val: Val) -> &ObjCore {
         let obj = self.frame.val_table[&val];
         self.mem.read(obj)
     }
 
     /// # Safety
-    /// `val` on frame must be a valid allocation
+    /// Same as `get_i32`.
     pub unsafe fn write_frame<'a>(&self, val: Val) -> &'a mut ObjCore {
         let obj = self.frame.val_table[&val];
         self.mem.write(obj)

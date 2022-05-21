@@ -19,7 +19,7 @@ pub struct Obj {
 pub enum ObjCore {
     I32(i32),
     Str(String),
-    // list
+    // list, byte array
     Prod(HeaderId, Vec<*mut Obj>),
     Sum(HeaderId, usize, *mut Obj),
 }
@@ -33,6 +33,8 @@ enum ObjMark {
 
 // want to use `null_mut`, but compiler don't like cast, while linter don't like transmute
 static PREV_ALLOC: AtomicU64 = AtomicU64::new(0);
+// const_assert!((0 as *mut Obj).is_null()); // and const `is_null` is not stable yet, shit
+
 impl Obj {
     pub fn alloc(core: ObjCore) -> *mut Self {
         let mut obj = Box::new(Self {

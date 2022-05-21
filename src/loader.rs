@@ -29,8 +29,8 @@ impl Loader {
         todo!()
     }
 
-    pub fn register_resource(&mut self, id: ResourceId, resource: ()) {
-        //
+    pub fn register_resource(&mut self, resource: ()) -> ResourceId {
+        todo!()
     }
 
     /// # Safety
