@@ -1,10 +1,11 @@
 use std::{
     mem::size_of,
     ptr::{null_mut, NonNull},
-    sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering::SeqCst},
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
+        RwLock, RwLockReadGuard, RwLockWriteGuard,
+    },
 };
-
-use crossbeam::utils::Backoff;
 
 use crate::ObjCore;
 
@@ -38,10 +39,10 @@ impl Obj {
     }
 }
 
-pub struct Mem {
+pub struct Mem(RwLock<MemInner>);
+struct MemInner {
     alloc_size: AtomicUsize,
-    cap: AtomicUsize,
-    mutator_status: AtomicI32,
+    cap: usize,
 }
 
 impl Mem {
@@ -50,57 +51,14 @@ impl Mem {
 
 impl Default for Mem {
     fn default() -> Self {
-        Self {
+        Self(RwLock::new(MemInner {
             alloc_size: AtomicUsize::new(0),
-            cap: AtomicUsize::new(Self::INITIAL_CAP),
-            mutator_status: AtomicI32::new(0),
-        }
+            cap: Self::INITIAL_CAP,
+        }))
     }
 }
 
-impl Mem {
-    fn mutator_enter(&self) {
-        let backoff = Backoff::new();
-        while self
-            .mutator_status
-            .fetch_update(SeqCst, SeqCst, |status| {
-                if status != -1 {
-                    Some(status + 1)
-                } else {
-                    None
-                }
-            })
-            .is_err()
-        {
-            backoff.spin();
-        }
-    }
-
-    fn mutator_exit(&self) {
-        let old = self.mutator_status.fetch_sub(1, SeqCst);
-        assert!(old > 0);
-    }
-
-    fn collector_enter(&self) {
-        let backoff = Backoff::new();
-        while self
-            .mutator_status
-            .fetch_update(
-                SeqCst,
-                SeqCst,
-                |status| if status == 0 { Some(-1) } else { None },
-            )
-            .is_err()
-        {
-            backoff.spin();
-        }
-    }
-
-    fn collector_exit(&self) {
-        let old = self.mutator_status.swap(0, SeqCst);
-        assert_eq!(old, -1);
-    }
-
+impl MemInner {
     unsafe fn mutator_read(&self, obj: *mut Obj) -> &dyn ObjCore {
         &*(*obj).core
     }
@@ -118,18 +76,16 @@ impl Mem {
     }
 
     pub fn load_factor(&self) -> f32 {
-        self.alloc_size.load(SeqCst) as f32 / self.cap.load(SeqCst) as f32
+        self.alloc_size.load(SeqCst) as f32 / self.cap as f32
     }
 
-    fn update_cap(&self) {
+    fn update_cap(&mut self) {
         while self.load_factor() > 0.75 {
-            self.cap
-                .fetch_update(SeqCst, SeqCst, |cap| Some(cap * 2))
-                .unwrap();
+            self.cap *= 2;
         }
     }
 
-    unsafe fn collect(&self, root_iter: impl Iterator<Item = *mut Obj>) {
+    unsafe fn collect(&mut self, root_iter: impl Iterator<Item = *mut Obj>) {
         let mut mark_list = Vec::new();
         mark_list.extend(root_iter);
         while let Some(obj) = mark_list.pop() {
@@ -165,18 +121,16 @@ impl Mem {
     }
 }
 
-pub struct Mutator<'a>(&'a Mem);
-pub struct Collector<'a>(&'a Mem);
+pub struct Mutator<'a>(RwLockReadGuard<'a, MemInner>);
+pub struct Collector<'a>(RwLockWriteGuard<'a, MemInner>);
 
 impl Mem {
     pub fn mutator(&self) -> Mutator<'_> {
-        self.mutator_enter();
-        Mutator(self)
+        Mutator(self.0.read().unwrap())
     }
 
     pub fn collector(&self) -> Collector<'_> {
-        self.collector_enter();
-        Collector(self)
+        Collector(self.0.write().unwrap())
     }
 }
 
@@ -199,22 +153,10 @@ impl Mutator<'_> {
     }
 }
 
-impl Drop for Mutator<'_> {
-    fn drop(&mut self) {
-        self.0.mutator_exit();
-    }
-}
-
 impl Collector<'_> {
     /// # Safety
     /// All allocated objects must only reference to other allocated objects.
-    pub unsafe fn collect(&self, root_iter: impl Iterator<Item = *mut Obj>) {
+    pub unsafe fn collect(&mut self, root_iter: impl Iterator<Item = *mut Obj>) {
         self.0.collect(root_iter);
-    }
-}
-
-impl Drop for Collector<'_> {
-    fn drop(&mut self) {
-        self.0.collector_exit();
     }
 }

@@ -49,13 +49,6 @@ fn main() {
     let mut interp = Interp::default();
     interp.push_call(Arc::new(func), &[arg1]);
     let loader = Loader::default();
-    while interp.get_result().is_none() {
-        unsafe { interp.step::<basic::Op>(mem.mutator(), &loader, &mut ()) };
-    }
-    let mutator = mem.mutator();
-    let res = unsafe { mutator.read(interp.get_result().unwrap()) };
-    let res: &Native<i32> = res.downcast_ref().unwrap();
-    println!("{res:?}");
-    drop(mutator);
+    // TODO
     unsafe { mem.collector().collect(iter::empty()) };
 }

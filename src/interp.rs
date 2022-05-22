@@ -5,12 +5,20 @@ use crate::{
     loader::Loader,
     mem::{Mutator, Obj},
     obj::{Native, Prod, Sum},
+    worker::{WakeToken, WorkerInterface},
     Op,
 };
 
 pub struct Interp {
     frame_list: Vec<Frame>,
-    result: Option<*mut Obj>,
+    status: InterpStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterpStatus {
+    Running,
+    Paused,
+    Finished(*mut Obj),
 }
 
 struct Frame {
@@ -24,7 +32,7 @@ impl Default for Interp {
     fn default() -> Self {
         Self {
             frame_list: Vec::new(),
-            result: None,
+            status: InterpStatus::Running,
         }
     }
 }
@@ -49,15 +57,19 @@ impl Interp {
         &mut self,
         mem: Mutator<'_>,
         loader: &Loader,
-        worker: &mut O::Worker,
+        external: &mut O::Worker,
+        worker: &WorkerInterface,
     ) {
+        assert_eq!(self.status, InterpStatus::Running);
+
         let frame = self.frame_list.last_mut().unwrap();
         let func = frame.func.clone();
         let mut context = OpContext {
-            worker,
+            external,
             frame,
             mem,
             loader,
+            worker,
         };
 
         let instr = match func.get_instr(&frame.instr_id).clone() {
@@ -74,8 +86,12 @@ impl Interp {
                 if let Some(frame) = self.frame_list.last_mut() {
                     Self::finish_step(frame, Some(ret));
                 } else {
-                    self.result = Some(ret);
+                    self.status = InterpStatus::Finished(ret);
                 }
+            }
+            Instr::Pause => {
+                drop(context);
+                self.status = InterpStatus::Paused;
             }
             Instr::Call(func_id, arg_list) => {
                 let arg_list: Vec<_> = arg_list.iter().map(|arg| context.make_addr(*arg)).collect();
@@ -165,19 +181,25 @@ impl Interp {
         }
     }
 
-    unsafe fn finish_step(frame: &mut Frame, res: Option<*mut Obj>) {
+    fn finish_step(frame: &mut Frame, res: Option<*mut Obj>) {
         if let Some(res) = res {
             frame.val_table.insert(Val::Instr(frame.instr_id), res);
         }
         frame.instr_id.1 += 1;
     }
 
-    pub fn get_result(&self) -> Option<*mut Obj> {
-        self.result
+    pub fn resume(&mut self, result: *mut Obj) {
+        assert_eq!(self.status, InterpStatus::Paused);
+        Self::finish_step(self.frame_list.last_mut().unwrap(), Some(result));
+        self.status = InterpStatus::Running;
+    }
+
+    pub fn get_status(&self) -> InterpStatus {
+        self.status
     }
 
     pub fn trace(&self, mut mark: impl FnMut(*mut Obj)) {
-        if let Some(res) = self.result {
+        if let InterpStatus::Finished(res) = self.status {
             mark(res);
             return;
         }
@@ -188,9 +210,10 @@ impl Interp {
 }
 
 pub struct OpContext<'a, W> {
-    pub worker: &'a mut W,
+    pub external: &'a mut W,
     pub mem: Mutator<'a>,
     pub loader: &'a Loader,
+    pub worker: &'a WorkerInterface,
     frame: &'a Frame,
 }
 

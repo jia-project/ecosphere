@@ -39,6 +39,7 @@ pub enum Instr {
     // control flow
     Call(Name, Vec<Val>),
     Ret(Val),
+    Pause,
     Br(Val, LabelId, LabelId),
     Phi(HashMap<LabelId, Val>),
 
@@ -73,6 +74,7 @@ impl Display for Instr {
             Self::Phi(..) => write!(f, "phi"), // TODO
             Self::Op(id, val_list) => write!(f, "op {id}<{}>", join(val_list)),
             Self::Call(id, val_list) => write!(f, "call {id}({})", join(val_list)),
+            Self::Pause => write!(f, "pause"),
             Self::Alloc => write!(f, "alloc"),
             Self::Load(val) => write!(f, "load {val}"),
             Self::Store(place_val, val) => write!(f, "store {place_val} <- {val}"),

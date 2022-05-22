@@ -3,6 +3,7 @@ pub mod interp;
 pub mod loader;
 pub mod mem;
 pub mod obj;
+pub mod worker;
 
 pub mod basic {
     pub mod op;
