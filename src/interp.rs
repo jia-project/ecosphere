@@ -1,11 +1,11 @@
 use std::{collections::HashMap, slice, sync::Arc};
 
 use crate::{
-    def::OpId,
     instr::{Func, Instr, InstrId, Val, ValConst},
     loader::Loader,
-    mem::{Mem, Mutator, Obj, ObjCore},
+    mem::{Mem, Mutator, Obj},
     obj::{Native, Prod, Sum},
+    ObjCore, OpId,
 };
 
 pub struct Interp {
@@ -199,7 +199,7 @@ impl OpContext<'_> {
                     variant: if content { 0 } else { 1 },
                     inner: self.get_addr(Val::Const(ValConst::Unit)),
                 }),
-                ValConst::Resource(..) => todo!(),
+                ValConst::Asset(..) => todo!(),
             }
         } else {
             self.frame.val_table[&val]

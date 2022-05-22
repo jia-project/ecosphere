@@ -1,44 +1,12 @@
 use std::{
-    any::Any,
-    mem::{size_of, size_of_val},
-    ops::{Deref, DerefMut},
+    mem::size_of,
     ptr::{null_mut, NonNull},
     sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering::SeqCst},
 };
 
 use crossbeam::utils::Backoff;
 
-pub trait AsAny {
-    fn any_ref(&self) -> &dyn Any;
-    fn any_mut(&mut self) -> &mut dyn Any;
-}
-impl<T: Any> AsAny for T {
-    fn any_ref(&self) -> &dyn Any {
-        self
-    }
-    fn any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-impl Deref for dyn ObjCore {
-    type Target = dyn Any;
-    fn deref(&self) -> &Self::Target {
-        self.any_ref()
-    }
-}
-impl DerefMut for dyn ObjCore {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.any_mut()
-    }
-}
-
-pub trait ObjCore: AsAny + 'static {
-    #[allow(unused_variables)]
-    fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
-    fn alloc_size(&self) -> usize {
-        size_of_val(self)
-    }
-}
+use crate::ObjCore;
 
 pub struct Obj {
     core: Box<dyn ObjCore>,

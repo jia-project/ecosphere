@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use crate::def::{FuncId, OpId, ResourceId};
+use crate::{FuncId, OpId, AssetId};
 
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
@@ -17,7 +17,7 @@ pub enum ValConst {
     I32(i32),
     Bool(bool),
     Unit,
-    Resource(ResourceId),
+    Asset(AssetId),
 }
 
 impl Display for Val {
@@ -76,6 +76,7 @@ impl Display for Instr {
 pub struct Func {
     param_list: Vec<()>,
     block_list: Vec<Vec<Instr>>,
+    // debug symbol
 }
 
 impl Display for Func {

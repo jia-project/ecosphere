@@ -1,24 +1,31 @@
 use std::sync::Arc;
 
 use crate::{
-    def::{FuncId, OpId, ResourceId},
     instr::{Func, Val, ValConst},
     interp::OpContext,
-    mem::{Obj, ObjCore},
+    mem::Obj,
     obj::{Native, Prod},
+    FuncId, ObjCore, OpId, AssetId,
 };
 
 pub trait Perform: Fn(&[&Val], &OpContext) {}
 impl<T: Fn(&[&Val], &OpContext)> Perform for T {}
 
 pub struct Loader {
-    //
+    resource_list: Vec<Resource>,
 }
 
 impl Default for Loader {
     fn default() -> Self {
-        Self {}
+        Self {
+            resource_list: Vec::new(),
+        }
     }
+}
+
+pub enum Resource {
+    Str(String),
+    ByteArray(Vec<u8>),
 }
 
 impl Loader {
@@ -30,8 +37,10 @@ impl Loader {
         todo!()
     }
 
-    pub fn register_resource(&mut self, resource: ()) -> ResourceId {
-        todo!()
+    pub fn register_resource(&mut self, resource: Resource) -> AssetId {
+        let id = self.resource_list.len();
+        self.resource_list.push(resource);
+        id as _
     }
 
     /// # Safety

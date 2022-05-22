@@ -1,15 +1,17 @@
 use std::mem::size_of;
 
-use crate::{
-    def::HeaderId,
-    mem::{Obj, ObjCore},
-};
+use crate::{mem::Obj, HeaderId, ObjCore};
 
 #[derive(Debug)]
 pub struct Native<T>(pub T);
 // do not provide blacket impl for all T because some T like String may own
 // extra heap allocation
-impl ObjCore for Native<i32> {}
+impl ObjCore for Native<i32> {
+    fn trace(&self, _: &mut dyn FnMut(*mut Obj)) {}
+    fn alloc_size(&self) -> usize {
+        size_of::<Self>()
+    }
+}
 
 pub struct Prod {
     pub header: HeaderId,
@@ -35,5 +37,9 @@ pub struct Sum {
 impl ObjCore for Sum {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         mark(self.inner);
+    }
+
+    fn alloc_size(&self) -> usize {
+        size_of::<Self>()
     }
 }
