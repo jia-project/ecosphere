@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use crate::{FuncId, OpId, AssetId};
+use crate::{AssetId, Name, OpCode};
 
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
@@ -12,6 +12,10 @@ pub enum Val {
     Const(ValConst),
 }
 
+// design choice: since now we have generic asset support, conceptually ValConst
+// may be reduced into single AssetId
+// we want to keep explicit const bool for control flow analyze
+// i32 and unit are just temporarily kept, no special meaning
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValConst {
     I32(i32),
@@ -32,43 +36,52 @@ impl Display for Val {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instr {
+    // control flow
+    Call(Name, Vec<Val>),
     Ret(Val),
     Br(Val, LabelId, LabelId),
     Phi(HashMap<LabelId, Val>),
-    Op(OpId, Vec<Val>),
-    Call(FuncId, Vec<Val>),
-    Alloc(Val),
+
+    Op(OpCode, Vec<Val>),
+
+    // writable memory simulation
+    Alloc,
     Load(Val),
     Store(Val, Val),
+
+    // compound type operation
+    NewProd(Name),
+    Get(Val, String),
+    Set(Val, String, Val),
+    NewSum(Name, String, Val),
+    Is(Val, String),
+    As(Val, String),
 }
 
 impl Display for Instr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let join = |val_list: &[Val]| {
+            val_list
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         match self {
             Self::Ret(val) => write!(f, "ret {val}"),
             Self::Br(val, if_true, if_false) => write!(f, "br {val}, l{if_true}, l{if_false}"),
             Self::Phi(..) => write!(f, "phi"), // TODO
-            Self::Op(id, val_list) => write!(
-                f,
-                "op {id}<{}>",
-                val_list
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            Self::Call(id, val_list) => write!(
-                f,
-                "call {id}({})",
-                val_list
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            Self::Alloc(val) => write!(f, "alloc <- {val}"),
+            Self::Op(id, val_list) => write!(f, "op {id}<{}>", join(val_list)),
+            Self::Call(id, val_list) => write!(f, "call {id}({})", join(val_list)),
+            Self::Alloc => write!(f, "alloc"),
             Self::Load(val) => write!(f, "load {val}"),
             Self::Store(place_val, val) => write!(f, "store {place_val} <- {val}"),
+            Self::NewProd(name) => write!(f, "newprod {name}"),
+            Self::NewSum(name, variant, inner) => write!(f, "newsum {name}.{variant} {inner}"),
+            Self::Get(prod, key) => write!(f, "get {prod} .{key}"),
+            Self::Set(prod, key, val) => write!(f, "set {prod} .{key} <- {val}"),
+            Self::Is(sum, variant) => write!(f, "is {sum} .{variant}"),
+            Self::As(sum, variant) => write!(f, "as {sum} .{variant}"),
         }
     }
 }

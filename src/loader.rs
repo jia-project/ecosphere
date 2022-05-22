@@ -1,82 +1,86 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    instr::{Func, Val, ValConst},
-    interp::OpContext,
-    mem::Obj,
-    obj::{Native, Prod},
-    FuncId, ObjCore, OpId, AssetId,
+    instr::Func,
+    mem::{Mem, Obj},
+    obj::Native,
+    AssetId, HeaderId, Name, ObjCore,
 };
 
-pub trait Perform: Fn(&[&Val], &OpContext) {}
-impl<T: Fn(&[&Val], &OpContext)> Perform for T {}
-
 pub struct Loader {
-    resource_list: Vec<Resource>,
+    asset_list: Vec<*mut Obj>,
+    header_table: HashMap<Name, HeaderId>,
+    key_table: Vec<HashMap<String, u32>>,
 }
 
 impl Default for Loader {
     fn default() -> Self {
-        Self {
-            resource_list: Vec::new(),
-        }
+        let mut loader = Self {
+            asset_list: Vec::new(),
+            header_table: HashMap::new(),
+            key_table: Vec::new(),
+        };
+        loader.register_header("intrinsic.Unit".to_string(), &[]);
+        loader.register_header("intrinsic.Ref".to_string(), &["content".to_string()]);
+        loader.register_header(
+            "intrinsic.Bool".to_string(),
+            &["True".to_string(), "False".to_string()],
+        );
+        loader
     }
-}
-
-pub enum Resource {
-    Str(String),
-    ByteArray(Vec<u8>),
 }
 
 impl Loader {
-    pub fn register_func(&mut self, id: FuncId, func: Func) {
+    pub fn register_func(&mut self, id: Name, func: Func) {
         //
     }
 
-    pub fn dispatch_call(&self, id: &FuncId, arg_list: &[&dyn ObjCore]) -> Arc<Func> {
+    pub fn dispatch_call(&self, id: &Name, arg_list: &[&dyn ObjCore]) -> Arc<Func> {
         todo!()
     }
 
-    pub fn register_resource(&mut self, resource: Resource) -> AssetId {
-        let id = self.resource_list.len();
-        self.resource_list.push(resource);
+    pub fn register_header(&mut self, name: Name, key_list: &[String]) -> HeaderId {
+        let id = self.key_table.len() as _;
+        self.header_table.insert(name, id);
+        self.key_table.push(
+            key_list
+                .iter()
+                .enumerate()
+                .map(|(i, key)| (key.clone(), i as _))
+                .collect(),
+        );
+        id
+    }
+
+    pub fn query_type(&self, name: &Name) -> HeaderId {
+        self.header_table[name]
+    }
+
+    pub fn query_header_size(&self, header: HeaderId) -> usize {
+        self.key_table[header as usize].len()
+    }
+
+    pub fn query_header_index(&self, header: HeaderId, key: &str) -> u32 {
+        self.key_table[header as usize][key]
+    }
+
+    // query tag
+
+    pub fn install_asset<T>(&mut self, asset: T, mem: &Mem) -> AssetId
+    where
+        Native<T>: ObjCore,
+    {
+        let asset = mem.mutator().alloc(Native(asset));
+        let id = self.asset_list.len();
+        self.asset_list.push(asset);
         id as _
     }
 
-    /// # Safety
-    /// All `val` must be valid allocation. Thread safety must be explicitly
-    /// granted repect to concurrent performing.
-    // later may support dynamical register op
-    pub unsafe fn perform_op(&self, id: &OpId, val: &[Val], context: &OpContext) -> *mut Obj {
-        match &**id {
-            "intrinsic.alloc" => {
-                let val = context.get_addr(val[0]);
-                context.alloc(Prod {
-                    header: 1,
-                    data: vec![val],
-                })
-            }
-            "intrinsic.load" => {
-                let obj: &Prod = context.read_frame(val[0]).downcast_ref().unwrap();
-                assert_eq!(obj.header, 1);
-                obj.data[0]
-            }
-            "intrinsic.store" => {
-                let obj: &mut Prod = context.write_frame(val[0]).downcast_mut().unwrap();
-                assert_eq!(obj.header, 1);
-                obj.data[0] = context.get_addr(val[1]);
-                context.get_addr(Val::Const(ValConst::Unit))
-            }
-            "intrinsic.i32add" => {
-                let (i1, i2) = (context.get_i32(val[0]), context.get_i32(val[1]));
-                context.alloc(Native(i1 + i2))
-            }
-            "intrinsic.i32eq" => {
-                let (i1, i2) = (context.get_i32(val[0]), context.get_i32(val[1]));
-                context.get_addr(Val::Const(ValConst::Bool(i1 == i2)))
-            }
+    pub fn query_asset(&self, id: AssetId) -> *mut Obj {
+        self.asset_list[id as usize]
+    }
 
-            _ => unimplemented!(),
-        }
+    pub fn trace(&self, mark: impl FnMut(*mut Obj)) {
+        self.asset_list.iter().copied().for_each(mark);
     }
 }

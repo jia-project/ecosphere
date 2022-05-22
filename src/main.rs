@@ -1,6 +1,7 @@
 use std::{iter, sync::Arc};
 
 use ecosphere::{
+    basic,
     instr::{FuncBuilder, Instr, Val, ValConst},
     interp::Interp,
     loader::Loader,
@@ -13,9 +14,12 @@ fn main() {
     let add = || "intrinsic.i32add".to_string();
 
     let mut func = FuncBuilder::default();
-    let i1 = func.push_instr(Instr::Alloc(Val::Const(ValConst::I32(1))));
-    let i2 = func.push_instr(Instr::Alloc(Val::Const(ValConst::I32(1))));
-    let i3 = func.push_instr(Instr::Alloc(Val::Const(ValConst::I32(0))));
+    let i1 = func.push_instr(Instr::Alloc);
+    func.push_instr(Instr::Store(i1, Val::Const(ValConst::I32(1))));
+    let i2 = func.push_instr(Instr::Alloc);
+    func.push_instr(Instr::Store(i2, Val::Const(ValConst::I32(1))));
+    let i3 = func.push_instr(Instr::Alloc);
+    func.push_instr(Instr::Store(i3, Val::Const(ValConst::I32(0))));
     let b1 = func.push_block();
     func.push_instr(Instr::Br(Val::Const(ValConst::Bool(true)), b1, b1));
     func.with_block(b1);
@@ -46,7 +50,7 @@ fn main() {
     interp.push_call(Arc::new(func), &[arg1]);
     let loader = Loader::default();
     while interp.get_result().is_none() {
-        unsafe { interp.step(&mem, &loader) };
+        unsafe { interp.step::<basic::Op>(mem.mutator(), &loader, &mut ()) };
     }
     let mutator = mem.mutator();
     let res = unsafe { mutator.read(interp.get_result().unwrap()) };

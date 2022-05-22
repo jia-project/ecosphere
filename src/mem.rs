@@ -21,7 +21,8 @@ enum ObjMark {
     // Gray,
 }
 
-// want to use `null_mut`, but compiler don't like cast, while linter don't like transmute
+// want to use `null_mut`, but compiler don't like cast, while linter don't like
+// transmute
 static PREV_ALLOC: AtomicU64 = AtomicU64::new(0);
 // const_assert!((0 as *mut Obj).is_null()); // and const `is_null` is not stable yet, shit
 
@@ -185,7 +186,8 @@ impl Mutator<'_> {
     }
 
     /// # Safety
-    /// `obj` must be acquired by calling `alloc`. Thread safety is totally unchecked.
+    /// `obj` must be acquired by calling `alloc`. Thread safety is totally
+    /// unchecked.
     pub unsafe fn read(&self, obj: *mut Obj) -> &dyn ObjCore {
         self.0.mutator_read(obj)
     }

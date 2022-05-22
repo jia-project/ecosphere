@@ -6,6 +6,7 @@ pub mod obj;
 
 pub mod basic {
     pub mod op;
+    pub use op::Op;
 }
 
 use std::{
@@ -15,14 +16,14 @@ use std::{
 
 use crate::{instr::Val, interp::OpContext, mem::Obj};
 
-pub type OpId = String;
-pub type FuncId = String;
+pub type OpCode = String;
 pub type AssetId = u32;
+pub type Name = String;
 pub type HeaderId = u32;
 
 pub trait Op {
     type Worker;
-    fn perform(id: &OpId, val: &[Val], context: &OpContext, worker: &mut Self::Worker) -> *mut Obj;
+    unsafe fn perform(id: &OpCode, val: &[Val], context: &mut OpContext<Self::Worker>) -> *mut Obj;
 }
 
 pub trait AsAny {
