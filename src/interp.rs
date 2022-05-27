@@ -5,20 +5,13 @@ use crate::{
     loader::Loader,
     mem::{Mutator, Obj},
     obj::{Native, Prod, Sum},
-    worker::{WakeToken, WorkerInterface},
+    worker::WorkerInterface,
     Op,
 };
 
 pub struct Interp {
     frame_list: Vec<Frame>,
-    status: InterpStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InterpStatus {
-    Running,
-    Paused,
-    Finished(*mut Obj),
+    result: Option<*mut Obj>,
 }
 
 struct Frame {
@@ -32,7 +25,7 @@ impl Default for Interp {
     fn default() -> Self {
         Self {
             frame_list: Vec::new(),
-            status: InterpStatus::Running,
+            result: None,
         }
     }
 }
@@ -60,7 +53,7 @@ impl Interp {
         external: &mut O::Worker,
         worker: &WorkerInterface,
     ) {
-        assert_eq!(self.status, InterpStatus::Running);
+        assert!(self.result.is_none());
 
         let frame = self.frame_list.last_mut().unwrap();
         let func = frame.func.clone();
@@ -86,12 +79,8 @@ impl Interp {
                 if let Some(frame) = self.frame_list.last_mut() {
                     Self::finish_step(frame, Some(ret));
                 } else {
-                    self.status = InterpStatus::Finished(ret);
+                    self.result = Some(ret);
                 }
-            }
-            Instr::Pause => {
-                drop(context);
-                self.status = InterpStatus::Paused;
             }
             Instr::Call(func_id, arg_list) => {
                 let arg_list: Vec<_> = arg_list.iter().map(|arg| context.make_addr(*arg)).collect();
@@ -189,17 +178,16 @@ impl Interp {
     }
 
     pub fn resume(&mut self, result: *mut Obj) {
-        assert_eq!(self.status, InterpStatus::Paused);
+        assert!(self.result.is_none());
         Self::finish_step(self.frame_list.last_mut().unwrap(), Some(result));
-        self.status = InterpStatus::Running;
     }
 
-    pub fn get_status(&self) -> InterpStatus {
-        self.status
+    pub fn get_result(&self) -> Option<*mut Obj> {
+        self.result
     }
 
     pub fn trace(&self, mut mark: impl FnMut(*mut Obj)) {
-        if let InterpStatus::Finished(res) = self.status {
+        if let Some(res) = self.result {
             mark(res);
             return;
         }

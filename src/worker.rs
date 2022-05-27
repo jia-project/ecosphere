@@ -8,33 +8,27 @@ use std::{
 };
 
 use crate::{
-    interp::{Interp, InterpStatus},
+    interp::Interp,
     loader::Loader,
     mem::{Mem, Obj},
     Op,
 };
 
 type TaskId = u32;
-type WakeId = u32;
-type PauseTable = Arc<Mutex<HashMap<(TaskId, WakeId), Task>>>;
-type ReadyQueue = Arc<Mutex<Vec<Ready>>>;
+type PauseTable = Arc<Mutex<HashMap<TaskId, Task>>>;
+type ReadyList = Arc<Mutex<Vec<Task>>>;
 
 pub struct Worker<O: Op> {
     mem: Arc<Mem>,
     loader: Arc<Loader>,
     context: O::Worker,
-    ready_queue: ReadyQueue,
+    ready_list: ReadyList,
     pause_table: PauseTable,
     task_id: Arc<AtomicU32>,
 }
 
-struct Ready {
-    id: TaskId,
-    wake: WakeId,
-    task: Task,
-}
-
 struct Task {
+    id: TaskId,
     interp: Interp,
     handle: *mut Obj,
 }
@@ -54,28 +48,23 @@ impl<O: Op> Worker<O> {
             mem: mem.clone(),
             loader: loader.clone(),
             context: make_context(),
-            ready_queue: ready_queue.clone(),
+            ready_list: ready_queue.clone(),
             pause_table: pause_table.clone(),
             task_id: task_id.clone(),
         })
     }
 
-    unsafe fn drive_task(&mut self, ready: Ready) {
-        let Ready { mut task, id, wake } = ready;
-        assert_eq!(task.interp.get_status(), InterpStatus::Running);
-        let wake_token = WakeToken {
-            id: wake,
-            task: id,
-            pause_table: self.pause_table.clone(),
-            ready_queue: self.ready_queue.clone(),
-        };
+    unsafe fn drive_task(&mut self, mut task: Task) {
+        assert!(task.interp.get_result().is_none());
         let interface = WorkerInterface {
-            wake_token,
-            ready_queue: self.ready_queue.clone(),
-            task_id: self.task_id.clone(),
+            task_id: task.id,
+            ready_list: self.ready_list.clone(),
+            pause_table: self.pause_table.clone(),
+            global_id: self.task_id.clone(),
         };
-        while task.interp.get_status() == InterpStatus::Running {
-            // TODO check handle status whether canceled
+
+        // TODO not canceled
+        while task.interp.get_result().is_none() {
             task.interp.step::<O>(
                 self.mem.mutator(),
                 &self.loader,
@@ -83,17 +72,13 @@ impl<O: Op> Worker<O> {
                 &interface,
             );
         }
-        if task.interp.get_status() == InterpStatus::Paused {
-            self.pause_table.lock().unwrap().insert((id, wake), task);
-        } else {
-            // TODO record result into handle
-        }
+        // TODO if result available wake subscriber
     }
 
     pub unsafe fn run_loop(&mut self) {
         loop {
             if let Some(ready) = {
-                let mut ready_queue = self.ready_queue.lock().unwrap();
+                let mut ready_queue = self.ready_list.lock().unwrap();
                 ready_queue.pop()
             } {
                 self.drive_task(ready);
@@ -104,50 +89,50 @@ impl<O: Op> Worker<O> {
     }
 }
 
-#[derive(Clone)]
 pub struct WakeToken {
-    id: WakeId,
     task: TaskId,
     pause_table: PauseTable,
-    ready_queue: ReadyQueue,
+    ready_list: ReadyList,
+    resolved: bool,
 }
 
 impl WakeToken {
-    pub fn resolve(self, res: *mut Obj) -> bool {
-        if let Some(mut task) = self
-            .pause_table
-            .lock()
-            .unwrap()
-            .remove(&(self.task, self.id))
-        {
-            task.interp.resume(res);
-            self.ready_queue.lock().unwrap().push(Ready {
-                id: self.task,
-                wake: self.id + 1,
-                task,
-            });
-            true
-        } else {
-            false
-        }
+    pub fn resolve(mut self, res: *mut Obj) {
+        let mut task = self.pause_table.lock().unwrap().remove(&self.task).unwrap();
+        task.interp.resume(res);
+        self.ready_list.lock().unwrap().push(task);
+        self.resolved = true;
+    }
+}
+
+impl Drop for WakeToken {
+    fn drop(&mut self) {
+        assert!(self.resolved);
     }
 }
 
 pub struct WorkerInterface {
-    pub wake_token: WakeToken,
-    ready_queue: ReadyQueue,
-    task_id: Arc<AtomicU32>,
+    task_id: TaskId,
+    ready_list: ReadyList,
+    pause_table: PauseTable,
+    global_id: Arc<AtomicU32>,
 }
 
 impl WorkerInterface {
     pub fn spawn(&self, interp: Interp, handle: *mut Obj) -> TaskId {
-        let id = self.task_id.fetch_add(1, SeqCst);
-        let ready = Ready {
-            id,
-            wake: 0,
-            task: Task { interp, handle },
-        };
-        self.ready_queue.lock().unwrap().push(ready);
+        let id = self.global_id.fetch_add(1, SeqCst);
+        let task = Task { id, interp, handle };
+        self.ready_list.lock().unwrap().push(task);
         id
+    }
+
+    pub fn pause(&self) -> WakeToken {
+        // TODO change to paused state
+        WakeToken {
+            task: self.task_id,
+            pause_table: self.pause_table.clone(),
+            ready_list: self.ready_list.clone(),
+            resolved: false,
+        }
     }
 }
