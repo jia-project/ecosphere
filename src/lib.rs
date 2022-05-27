@@ -24,7 +24,10 @@ pub type HeaderId = u32;
 
 pub trait Op {
     type Worker;
-    unsafe fn perform(id: &OpCode, val: &[Val], context: &mut OpContext<Self::Worker>) -> *mut Obj;
+    /// # Safety
+    /// As long as all `*mut Obj` that accessible from arguments are valid, the
+    /// returned pointer must be valid as well.
+    fn perform(id: &OpCode, val: &[Val], context: &mut OpContext<Self::Worker>) -> *mut Obj;
 }
 
 pub trait AsAny {

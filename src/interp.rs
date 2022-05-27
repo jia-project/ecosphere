@@ -44,9 +44,7 @@ impl Interp {
         self.frame_list.push(frame);
     }
 
-    /// # Safety
-    /// If the stepping instr is `Instr::Op`, it must be safe to perform.
-    pub unsafe fn step<O: Op>(
+    pub fn step<O: Op>(
         &mut self,
         mem: Mutator<'_>,
         loader: &Loader,
@@ -54,22 +52,21 @@ impl Interp {
         worker: &WorkerInterface,
     ) {
         assert!(self.result.is_none());
-
         let frame = self.frame_list.last_mut().unwrap();
-        let func = frame.func.clone();
+
+        let instr = match frame.func.get_instr(&frame.instr_id).clone() {
+            Instr::Alloc => Instr::NewProd("intrinsic.Ref".to_string()),
+            Instr::Load(val) => Instr::Get(val, "content".to_string()),
+            Instr::Store(place_val, val) => Instr::Set(place_val, "content".to_string(), val),
+            instr @ _ => instr,
+        };
+
         let mut context = OpContext {
             external,
             frame,
             mem,
             loader,
             worker,
-        };
-
-        let instr = match func.get_instr(&frame.instr_id).clone() {
-            Instr::Alloc => Instr::NewProd("intrinsic.Ref".to_string()),
-            Instr::Load(val) => Instr::Get(val, "content".to_string()),
-            Instr::Store(place_val, val) => Instr::Set(place_val, "content".to_string(), val),
-            instr @ _ => instr,
         };
         match instr {
             Instr::Ret(val) => {
@@ -84,11 +81,9 @@ impl Interp {
             }
             Instr::Call(func_id, arg_list) => {
                 let arg_list: Vec<_> = arg_list.iter().map(|arg| context.make_addr(*arg)).collect();
-                let dispatch_list: Vec<_> =
-                    arg_list.iter().map(|arg| context.mem.read(*arg)).collect();
-                let func = loader.dispatch_call(&func_id, &dispatch_list);
-                drop(context);
-                self.push_call(func, &arg_list);
+                // let func = loader.dispatch_call(&func_id, &dispatch_list);
+                // drop(context);
+                // self.push_call(func, &arg_list);
             }
             Instr::Op(id, val) => {
                 let res = O::perform(&id, &val, &mut context);
@@ -96,7 +91,7 @@ impl Interp {
                 Self::finish_step(frame, Some(res));
             }
             Instr::Br(val, if_true, if_false) => {
-                let val = context.get_bool(val);
+                let val = unsafe { context.get_bool(val) };
                 drop(context);
                 frame.instr_id = (if val { if_true } else { if_false }, 0);
             }
@@ -123,43 +118,31 @@ impl Interp {
                 Self::finish_step(frame, Some(sum));
             }
             Instr::Get(prod, key) => {
-                let prod: &Prod = context
-                    .mem
-                    .read(context.make_addr(prod))
-                    .downcast_ref()
-                    .unwrap();
+                let prod = unsafe { context.mem.read(context.make_addr(prod)) };
+                let prod: &Prod = prod.downcast_ref().unwrap();
                 let res = prod.data[loader.query_header_index(prod.header, &key) as usize];
                 drop(context);
                 Self::finish_step(frame, Some(res));
             }
             Instr::Set(prod, key, val) => {
-                let prod: &mut Prod = context
-                    .mem
-                    .write(context.make_addr(prod))
-                    .downcast_mut()
-                    .unwrap();
+                let mut prod = unsafe { context.mem.write(context.make_addr(prod)) };
+                let prod: &mut Prod = prod.downcast_mut().unwrap();
                 prod.data[loader.query_header_index(prod.header, &key) as usize] =
                     context.make_addr(val);
                 drop(context);
                 Self::finish_step(frame, None);
             }
             Instr::Is(sum, key) => {
-                let sum: &Sum = context
-                    .mem
-                    .read(context.make_addr(sum))
-                    .downcast_ref()
-                    .unwrap();
+                let sum = unsafe { context.mem.read(context.make_addr(sum)) };
+                let sum: &Sum = sum.downcast_ref().unwrap();
                 let res = sum.variant == loader.query_header_index(sum.header, &key);
                 let res = context.make_addr(Val::Const(ValConst::Bool(res)));
                 drop(context);
                 Self::finish_step(frame, Some(res));
             }
             Instr::As(sum, key) => {
-                let sum: &Sum = context
-                    .mem
-                    .read(context.make_addr(sum))
-                    .downcast_ref()
-                    .unwrap();
+                let sum = unsafe { context.mem.read(context.make_addr(sum)) };
+                let sum: &Sum = sum.downcast_ref().unwrap();
                 // consider a unchecked version
                 assert_eq!(sum.variant, loader.query_header_index(sum.header, &key));
                 let res = sum.inner;
@@ -213,7 +196,8 @@ impl<W> OpContext<'_, W> {
         match val {
             Val::Const(ValConst::I32(content)) => content,
             val @ (Val::Arg(..) | Val::Instr(..)) => {
-                let obj: &Native<i32> = self.mem.read(self.make_addr(val)).downcast_ref().unwrap();
+                let obj = self.mem.read(self.make_addr(val));
+                let obj: &Native<i32> = obj.downcast_ref().unwrap();
                 obj.0
             }
             _ => unreachable!(),
@@ -226,7 +210,8 @@ impl<W> OpContext<'_, W> {
         match val {
             Val::Const(ValConst::Bool(content)) => content,
             val @ (Val::Arg(..) | Val::Instr(..)) => {
-                let obj: &Sum = self.mem.read(self.make_addr(val)).downcast_ref().unwrap();
+                let obj = self.mem.read(self.make_addr(val));
+                let obj: &Sum = obj.downcast_ref().unwrap();
                 obj.variant == 0
             }
             _ => unreachable!(),

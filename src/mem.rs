@@ -1,10 +1,12 @@
 use std::{
     mem::size_of,
+    ops::{Deref, DerefMut},
     ptr::{null_mut, NonNull},
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst},
         RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
+    thread::yield_now,
 };
 
 use crate::ObjCore;
@@ -12,6 +14,7 @@ use crate::ObjCore;
 pub struct Obj {
     core: Box<dyn ObjCore>,
     mark: ObjMark,
+    rw: AtomicU32,
     prev: *mut Obj,
 }
 
@@ -32,10 +35,107 @@ impl Obj {
         let mut obj = Box::new(Self {
             core: Box::new(core),
             mark: ObjMark::White,
+            rw: AtomicU32::new(0),
             prev: NonNull::dangling().as_ptr(),
         });
         obj.prev = PREV_ALLOC.swap(&*obj as *const _ as _, SeqCst) as _;
         Box::leak(obj)
+    }
+
+    const MUTATOR_WRITE: u32 = u32::MAX;
+    const COLLECTOR_READ_MASK: u32 = !(u32::MAX >> 1);
+}
+
+pub struct ObjRead(*mut Obj);
+impl ObjRead {
+    unsafe fn new(obj: *mut Obj) -> Self {
+        while {
+            let rw = (*obj).rw.load(SeqCst);
+            assert_ne!(rw, Obj::MUTATOR_WRITE);
+            (rw & Obj::COLLECTOR_READ_MASK != 0)
+                || (*obj)
+                    .rw
+                    .compare_exchange_weak(rw, rw + 1, SeqCst, SeqCst)
+                    .is_err()
+        } {
+            yield_now();
+        }
+        Self(obj)
+    }
+}
+impl Drop for ObjRead {
+    fn drop(&mut self) {
+        let rw = unsafe { &*self.0 }.rw.fetch_sub(1, SeqCst);
+        assert_ne!(rw, 0);
+        assert_eq!(rw & Obj::COLLECTOR_READ_MASK, 0);
+    }
+}
+impl Deref for ObjRead {
+    type Target = dyn ObjCore;
+    fn deref(&self) -> &Self::Target {
+        &*unsafe { &*self.0 }.core
+    }
+}
+
+pub struct ObjWrite(*mut Obj);
+impl ObjWrite {
+    unsafe fn new(obj: *mut Obj) -> Self {
+        while {
+            let rw = (*obj).rw.load(SeqCst);
+            assert_eq!(rw & !Obj::COLLECTOR_READ_MASK, 0);
+            (rw & Obj::COLLECTOR_READ_MASK != 0)
+                || (*obj)
+                    .rw
+                    .compare_exchange_weak(rw, Obj::MUTATOR_WRITE, SeqCst, SeqCst)
+                    .is_err()
+        } {
+            yield_now();
+        }
+        Self(obj)
+    }
+}
+impl Drop for ObjWrite {
+    fn drop(&mut self) {
+        let rw = unsafe { &*self.0 }.rw.swap(0, SeqCst);
+        assert_eq!(rw, Obj::MUTATOR_WRITE);
+    }
+}
+impl Deref for ObjWrite {
+    type Target = dyn ObjCore;
+    fn deref(&self) -> &Self::Target {
+        &*unsafe { &*self.0 }.core
+    }
+}
+impl DerefMut for ObjWrite {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *unsafe { &mut *self.0 }.core
+    }
+}
+
+struct CollectorRead(*mut Obj);
+impl CollectorRead {
+    unsafe fn new(obj: *mut Obj) -> Self {
+        while {
+            let rw = (*obj).rw.load(SeqCst);
+            assert_eq!(rw & Obj::COLLECTOR_READ_MASK, 0);
+            rw == Obj::MUTATOR_WRITE
+                || (*obj)
+                    .rw
+                    .compare_exchange_weak(rw, rw ^ Obj::COLLECTOR_READ_MASK, SeqCst, SeqCst)
+                    .is_err()
+        } {
+            yield_now()
+        }
+        Self(obj)
+    }
+}
+impl Drop for CollectorRead {
+    fn drop(&mut self) {
+        let rw = unsafe { &*self.0 }
+            .rw
+            .fetch_xor(Obj::COLLECTOR_READ_MASK, SeqCst);
+        assert_ne!(rw, Obj::MUTATOR_WRITE);
+        assert_ne!(rw & Obj::COLLECTOR_READ_MASK, 0);
     }
 }
 
@@ -59,12 +159,12 @@ impl Default for Mem {
 }
 
 impl MemInner {
-    unsafe fn mutator_read(&self, obj: *mut Obj) -> &dyn ObjCore {
-        &*(*obj).core
+    unsafe fn mutator_read(&self, obj: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
+        ObjRead::new(obj)
     }
 
-    unsafe fn mutator_write<'a>(&self, obj: *mut Obj) -> &'a mut dyn ObjCore {
-        &mut *(*obj).core
+    unsafe fn mutator_write(&self, obj: *mut Obj) -> impl DerefMut<Target = dyn ObjCore> {
+        ObjWrite::new(obj)
     }
 
     // collector read/write if necessary
@@ -89,7 +189,8 @@ impl MemInner {
         let mut mark_list = Vec::new();
         mark_list.extend(root_iter);
         while let Some(obj) = mark_list.pop() {
-            let obj = &mut *obj;
+            let obj = CollectorRead::new(obj);
+            let obj = &mut *obj.0;
             obj.mark = ObjMark::Black;
             obj.core.trace(&mut |traced| {
                 if (*traced).mark == ObjMark::White {
@@ -102,7 +203,8 @@ impl MemInner {
         let mut prev_obj = null_mut();
         let mut alloc_size = 0;
         while !scan_obj.is_null() {
-            let obj = &mut *scan_obj;
+            let obj = CollectorRead::new(scan_obj);
+            let obj = &mut *obj.0;
             let next_obj = obj.prev;
             if obj.mark == ObjMark::Black {
                 obj.mark = ObjMark::White;
@@ -139,16 +241,11 @@ impl Mutator<'_> {
         self.0.alloc(core)
     }
 
-    /// # Safety
-    /// `obj` must be acquired by calling `alloc`. Thread safety is totally
-    /// unchecked.
-    pub unsafe fn read(&self, obj: *mut Obj) -> &dyn ObjCore {
+    pub unsafe fn read(&self, obj: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
         self.0.mutator_read(obj)
     }
 
-    /// # Safety
-    /// Same as `read`.
-    pub unsafe fn write<'a>(&self, obj: *mut Obj) -> &'a mut dyn ObjCore {
+    pub unsafe fn write(&self, obj: *mut Obj) -> impl DerefMut<Target = dyn ObjCore> {
         self.0.mutator_write(obj)
     }
 }
