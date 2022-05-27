@@ -20,7 +20,7 @@ use crate::{instr::Val, interp::OpContext, mem::Obj};
 pub type OpCode = String;
 pub type AssetId = u32;
 pub type Name = String;
-pub type HeaderId = u32;
+pub type TagId = u32;
 
 pub trait Op {
     type Worker;

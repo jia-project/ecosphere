@@ -87,7 +87,6 @@ impl Display for Instr {
 }
 
 pub struct Func {
-    param_list: Vec<()>,
     block_list: Vec<Vec<Instr>>,
     // debug symbol
 }
@@ -112,7 +111,6 @@ impl Func {
 }
 
 pub struct FuncBuilder {
-    param_list: Vec<()>,
     block_list: Vec<Vec<Instr>>,
     block_index: usize,
 }
@@ -120,7 +118,6 @@ pub struct FuncBuilder {
 impl Default for FuncBuilder {
     fn default() -> Self {
         Self {
-            param_list: Default::default(),
             block_list: vec![Vec::new()],
             block_index: 0,
         }
@@ -147,7 +144,6 @@ impl FuncBuilder {
 
     pub fn finish(self) -> Func {
         Func {
-            param_list: self.param_list,
             block_list: self.block_list,
         }
     }

@@ -97,21 +97,21 @@ impl Interp {
             }
             Instr::Phi(..) => todo!(),
             Instr::NewProd(name) => {
-                let header = loader.query_type(&name);
+                let header = loader.query_tag(&name);
                 let prod = context.mem.alloc(Prod {
                     header,
                     data: iter::repeat(context.make_addr(Val::Const(ValConst::Unit)))
-                        .take(loader.query_header_size(header))
+                        .take(loader.prod_size(header))
                         .collect(),
                 });
                 drop(context);
                 Self::finish_step(frame, Some(prod));
             }
             Instr::NewSum(name, variant, inner) => {
-                let header = loader.query_type(&name);
+                let header = loader.query_tag(&name);
                 let sum = context.mem.alloc(Sum {
                     header,
-                    variant: loader.query_header_index(header, &variant),
+                    variant: loader.sum_variant(header, &variant),
                     inner: context.make_addr(inner),
                 });
                 drop(context);
@@ -120,22 +120,21 @@ impl Interp {
             Instr::Get(prod, key) => {
                 let prod = unsafe { context.mem.read(context.make_addr(prod)) };
                 let prod: &Prod = prod.downcast_ref().unwrap();
-                let res = prod.data[loader.query_header_index(prod.header, &key) as usize];
+                let res = prod.data[loader.prod_offset(prod.header, &key)];
                 drop(context);
                 Self::finish_step(frame, Some(res));
             }
             Instr::Set(prod, key, val) => {
                 let mut prod = unsafe { context.mem.write(context.make_addr(prod)) };
                 let prod: &mut Prod = prod.downcast_mut().unwrap();
-                prod.data[loader.query_header_index(prod.header, &key) as usize] =
-                    context.make_addr(val);
+                prod.data[loader.prod_offset(prod.header, &key)] = context.make_addr(val);
                 drop(context);
                 Self::finish_step(frame, None);
             }
             Instr::Is(sum, key) => {
                 let sum = unsafe { context.mem.read(context.make_addr(sum)) };
                 let sum: &Sum = sum.downcast_ref().unwrap();
-                let res = sum.variant == loader.query_header_index(sum.header, &key);
+                let res = sum.variant == loader.sum_variant(sum.header, &key);
                 let res = context.make_addr(Val::Const(ValConst::Bool(res)));
                 drop(context);
                 Self::finish_step(frame, Some(res));
@@ -144,7 +143,7 @@ impl Interp {
                 let sum = unsafe { context.mem.read(context.make_addr(sum)) };
                 let sum: &Sum = sum.downcast_ref().unwrap();
                 // consider a unchecked version
-                assert_eq!(sum.variant, loader.query_header_index(sum.header, &key));
+                assert_eq!(sum.variant, loader.sum_variant(sum.header, &key));
                 let res = sum.inner;
                 drop(context);
                 Self::finish_step(frame, Some(res));

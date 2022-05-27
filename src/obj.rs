@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use crate::{mem::Obj, HeaderId, ObjCore};
+use crate::{mem::Obj, TagId, ObjCore};
 
 #[derive(Debug)]
 pub struct Native<T>(pub T);
@@ -14,7 +14,7 @@ impl ObjCore for Native<i32> {
 }
 
 pub struct Prod {
-    pub header: HeaderId,
+    pub header: TagId,
     pub data: Vec<*mut Obj>,
 }
 
@@ -29,7 +29,7 @@ impl ObjCore for Prod {
 }
 
 pub struct Sum {
-    pub header: HeaderId,
+    pub header: TagId,
     pub variant: u32,
     pub inner: *mut Obj,
 }
