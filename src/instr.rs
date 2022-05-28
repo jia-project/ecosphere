@@ -25,6 +25,7 @@ pub enum ValConst {
     // represented as Sum{tag=2}
     Bool(bool),
     // represented as I32 below
+    // should/can we move I32 op here as well?
     I32(i32),
     Asset(AssetId),
 }

@@ -130,7 +130,7 @@ impl Loader {
     where
         T: ObjCore,
     {
-        let asset = mem.mutator().alloc(asset);
+        let asset = mem.mutator().new(asset);
         let id = self.asset_list.len();
         self.asset_list.push(asset);
         id as _

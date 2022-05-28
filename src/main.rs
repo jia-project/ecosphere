@@ -6,6 +6,7 @@ use ecosphere::{
     interp::Interp,
     loader::Loader,
     mem::Mem,
+    worker::Worker,
 };
 
 fn main() {
@@ -44,10 +45,14 @@ fn main() {
     print!("{func}");
 
     let mem = Mem::default();
-    let arg1 = mem.mutator().alloc(I32(10));
+    let arg1 = mem.mutator().new(I32(10));
     let mut interp = Interp::default();
     interp.push_call(Arc::new(func), &[arg1]);
     let loader = Loader::default();
-    // TODO
-    unsafe { mem.collector().collect(iter::empty()) };
+    let worker = Worker::repeat(mem, loader, || basic::Op {}).next().unwrap();
+    let get_status = worker.spawn(interp);
+    worker.run_loop();
+
+    println!("{:?}", get_status());
+    // unsafe { mem.collector().collect(iter::empty()) };
 }

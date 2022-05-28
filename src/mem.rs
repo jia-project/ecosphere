@@ -31,7 +31,7 @@ static PREV_ALLOC: AtomicU64 = AtomicU64::new(0);
 // const_assert!((0 as *mut Obj).is_null()); // and const `is_null` is not stable yet, shit
 
 impl Obj {
-    fn alloc(core: impl ObjCore) -> *mut Self {
+    fn new(core: impl ObjCore) -> *mut Self {
         let mut obj = Box::new(Self {
             core: Box::new(core),
             mark: ObjMark::White,
@@ -169,10 +169,10 @@ impl MemInner {
 
     // collector read/write if necessary
 
-    fn alloc(&self, core: impl ObjCore) -> *mut Obj {
+    fn new(&self, core: impl ObjCore) -> *mut Obj {
         self.alloc_size
             .fetch_add(core.alloc_size() + size_of::<Obj>(), SeqCst);
-        Obj::alloc(core)
+        Obj::new(core)
     }
 
     pub fn load_factor(&self) -> f32 {
@@ -237,8 +237,8 @@ impl Mem {
 }
 
 impl Mutator<'_> {
-    pub fn alloc(&self, core: impl ObjCore) -> *mut Obj {
-        self.0.alloc(core)
+    pub fn new(&self, core: impl ObjCore) -> *mut Obj {
+        self.0.new(core)
     }
 
     pub unsafe fn read(&self, obj: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
