@@ -2,11 +2,10 @@ use std::{iter, sync::Arc};
 
 use ecosphere::{
     basic,
-    instr::{FuncBuilder, Instr, Val, ValConst},
+    instr::{FuncBuilder, Instr, Val, ValConst, I32},
     interp::Interp,
     loader::Loader,
     mem::Mem,
-    obj::Native,
 };
 
 fn main() {
@@ -45,7 +44,7 @@ fn main() {
     print!("{func}");
 
     let mem = Mem::default();
-    let arg1 = mem.mutator().alloc(Native(10));
+    let arg1 = mem.mutator().alloc(I32(10));
     let mut interp = Interp::default();
     interp.push_call(Arc::new(func), &[arg1]);
     let loader = Loader::default();

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use crate::{AssetId, Name, OpCode};
+use crate::{AssetId, Name, ObjCore, OpCode};
 
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
@@ -15,14 +15,22 @@ pub enum Val {
 // design choice: since now we have generic asset support, conceptually ValConst
 // may be reduced into single AssetId
 // we want to keep explicit const bool for control flow analyze
-// i32 and unit are just temporarily kept, no special meaning
+// i32 and unit are tentatively kept, may be useful for future middle-level
+// optimization
+// anyway they are so universal that every pratical env need them
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValConst {
-    I32(i32),
-    Bool(bool),
+    // represented as Prod{tag=0}
     Unit,
+    // represented as Sum{tag=2}
+    Bool(bool),
+    // represented as I32 below
+    I32(i32),
     Asset(AssetId),
 }
+
+pub struct I32(pub i32);
+impl ObjCore for I32 {}
 
 impl Display for Val {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,7 +52,7 @@ pub enum Instr {
 
     Op(OpCode, Vec<Val>),
 
-    // writable memory simulation
+    // optimizible with phi
     Alloc,
     Load(Val),
     Store(Val, Val),

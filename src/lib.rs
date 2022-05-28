@@ -2,16 +2,17 @@ pub mod instr;
 pub mod interp;
 pub mod loader;
 pub mod mem;
-pub mod obj;
 pub mod worker;
 
 pub mod basic {
     pub mod op;
     pub use op::Op;
+    pub mod obj;
 }
 
 use std::{
     any::Any,
+    mem::size_of_val,
     ops::{Deref, DerefMut},
 };
 
@@ -22,11 +23,11 @@ pub type AssetId = u32;
 pub type Name = String;
 pub type TagId = u32;
 
-pub trait Op {
+/// # Safety
+/// As long as all `*mut Obj` that accessible from arguments are valid, the
+/// returned pointer must be valid as well.
+pub unsafe trait Op {
     type Worker;
-    /// # Safety
-    /// As long as all `*mut Obj` that accessible from arguments are valid, the
-    /// returned pointer must be valid as well.
     fn perform(id: &OpCode, val: &[Val], context: &mut OpContext<Self::Worker>) -> *mut Obj;
 }
 
@@ -56,6 +57,8 @@ impl DerefMut for dyn ObjCore {
 
 pub trait ObjCore: AsAny + 'static {
     #[allow(unused_variables)]
-    fn trace(&self, mark: &mut dyn FnMut(*mut Obj));
-    fn alloc_size(&self) -> usize;
+    fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
+    fn alloc_size(&self) -> usize {
+        size_of_val(self)
+    }
 }

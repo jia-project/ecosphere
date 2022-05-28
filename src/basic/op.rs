@@ -7,7 +7,7 @@ use crate::{
 
 pub struct Op;
 
-impl crate::Op for Op {
+unsafe impl crate::Op for Op {
     type Worker = (); // TODO
 
     fn perform(code: &OpCode, val: &[Val], context: &mut OpContext<Self::Worker>) -> *mut Obj {

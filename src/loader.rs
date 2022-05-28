@@ -6,7 +6,6 @@ use std::{
 use crate::{
     instr::Func,
     mem::{Mem, Obj},
-    obj::Native,
     AssetId, Name, ObjCore, TagId,
 };
 
@@ -129,9 +128,9 @@ impl Loader {
 
     pub fn create_asset<T>(&mut self, asset: T, mem: &Mem) -> AssetId
     where
-        Native<T>: ObjCore,
+        T: ObjCore,
     {
-        let asset = mem.mutator().alloc(Native(asset));
+        let asset = mem.mutator().alloc(asset);
         let id = self.asset_list.len();
         self.asset_list.push(asset);
         id as _
