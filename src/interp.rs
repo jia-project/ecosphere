@@ -82,7 +82,7 @@ impl Interp {
         self.frame_list.push(frame);
     }
 
-    pub fn step(&mut self, worker: WorkerInterface<'_>, operator: &mut dyn Operator) {
+    pub fn step(&mut self, worker: &mut WorkerInterface<'_>, operator: &mut dyn Operator) {
         assert!(self.result.is_none());
         let frame = self.frame_list.last_mut().unwrap();
 
@@ -133,8 +133,10 @@ impl Interp {
             }
             Instr::Op(id, val) => {
                 let res = operator.perform(&id, &val, &mut context);
-                drop(context);
-                Self::finish_step(frame, Some(res));
+                if !context.worker.is_paused() {
+                    drop(context);
+                    Self::finish_step(frame, Some(res));
+                }
             }
             Instr::Br(val, if_true, if_false) => {
                 let val = unsafe { context.get_bool(val) };
@@ -246,7 +248,7 @@ impl Interp {
 }
 
 pub struct OpContext<'a, 'b> {
-    pub worker: WorkerInterface<'a>,
+    pub worker: &'b mut WorkerInterface<'a>,
     frame: &'b Frame,
 }
 
@@ -314,8 +316,8 @@ impl OpContext<'_, '_> {
     }
 }
 
-impl<'a> OpContext<'a, '_> {
-    fn into_worker(self) -> WorkerInterface<'a> {
+impl<'a, 'b> OpContext<'a, 'b> {
+    fn into_worker(self) -> &'b WorkerInterface<'a> {
         self.worker
     }
 }

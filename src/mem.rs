@@ -203,8 +203,8 @@ impl MemInner {
         let mut prev_obj = null_mut();
         let mut alloc_size = 0;
         while !scan_obj.is_null() {
-            let obj = CollectorRead::new(scan_obj);
-            let obj = &mut *obj.0;
+            let obj_guard = CollectorRead::new(scan_obj);
+            let obj = &mut *obj_guard.0;
             let next_obj = obj.prev;
             if obj.mark == ObjMark::Black {
                 obj.mark = ObjMark::White;
@@ -212,6 +212,7 @@ impl MemInner {
                 prev_obj = obj;
                 alloc_size += obj.core.alloc_size() + size_of::<Obj>();
             } else {
+                drop(obj_guard);
                 drop(Box::from_raw(obj));
             }
             scan_obj = next_obj;

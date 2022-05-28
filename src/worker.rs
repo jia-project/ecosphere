@@ -19,6 +19,11 @@ pub struct Worker {
     task_pool: TaskPool,
 }
 
+pub struct CollectWorker {
+    mem: Arc<Mem>,
+    task_pool: TaskPool,
+}
+
 type ReadyQueue = Arc<Mutex<VecDeque<TaskHandle>>>;
 type TaskPool = Arc<Mutex<HashSet<*mut Obj>>>;
 
@@ -62,22 +67,32 @@ impl ObjCore for TaskHandle {
 }
 
 impl Worker {
-    pub fn repeat<O: Operator + 'static>(
+    pub fn new_group<O: Operator + 'static>(
+        count: usize,
         mem: Mem,
         loader: Loader,
         make_operator: impl Fn() -> O,
-    ) -> impl Iterator<Item = Self> {
+    ) -> (Vec<Self>, CollectWorker) {
         let mem = Arc::new(mem);
         let loader = Arc::new(loader);
         let ready_queue = Arc::new(Mutex::new(VecDeque::new()));
         let task_pool = Arc::new(Mutex::new(HashSet::new()));
-        iter::repeat_with(move || Self {
+        let collect_worker = CollectWorker {
             mem: mem.clone(),
-            loader: loader.clone(),
-            operator: Box::new(make_operator()),
-            ready_queue: ready_queue.clone(),
             task_pool: task_pool.clone(),
-        })
+        };
+        (
+            iter::repeat_with(move || Self {
+                mem: mem.clone(),
+                loader: loader.clone(),
+                operator: Box::new(make_operator()),
+                ready_queue: ready_queue.clone(),
+                task_pool: task_pool.clone(),
+            })
+            .take(count)
+            .collect(),
+            collect_worker,
+        )
     }
 
     fn drive_task(&mut self, handle: TaskHandle) {
@@ -99,14 +114,18 @@ impl Worker {
                 break Some(res);
             }
 
-            let interface = WorkerInterface {
+            let mut interface = WorkerInterface {
                 handle: handle.clone(),
                 ready_queue: self.ready_queue.clone(),
                 task_pool: self.task_pool.clone(),
                 mem,
                 loader: &self.loader,
+                is_paused: false,
             };
-            task.interp.step(interface, &mut *self.operator);
+            task.interp.step(&mut interface, &mut *self.operator);
+            if interface.is_paused() {
+                break None;
+            }
         };
         if let Some(res) = res {
             let mut status = handle.status.lock().unwrap();
@@ -187,6 +206,7 @@ pub struct WorkerInterface<'a> {
     handle: TaskHandle,
     ready_queue: ReadyQueue,
     task_pool: TaskPool,
+    is_paused: bool,
     pub mem: Mutator<'a>,
     pub loader: &'a Loader,
 }
@@ -197,7 +217,9 @@ impl WorkerInterface<'_> {
             .new(Worker::spawn_internal(interp, &self.mem, &self.ready_queue))
     }
 
-    pub fn pause(&self) -> WakeToken {
+    pub fn pause(&mut self) -> WakeToken {
+        assert!(!self.is_paused);
+        self.is_paused = true;
         WakeToken {
             handle: self.handle.clone(),
             ready_queue: self.ready_queue.clone(),
@@ -216,5 +238,16 @@ impl WorkerInterface<'_> {
         } else {
             false
         }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.is_paused
+    }
+}
+
+impl CollectWorker {
+    pub fn work(&self) {
+        let mut collector = self.mem.collector();
+        unsafe { collector.collect(self.task_pool.lock().unwrap().iter().copied()) };
     }
 }

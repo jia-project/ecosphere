@@ -1,4 +1,4 @@
-use std::{iter, sync::Arc};
+use std::sync::Arc;
 
 use ecosphere::{
     basic,
@@ -49,10 +49,11 @@ fn main() {
     let mut interp = Interp::default();
     interp.push_call(Arc::new(func), &[arg1]);
     let loader = Loader::default();
-    let worker = Worker::repeat(mem, loader, || basic::Op {}).next().unwrap();
+    let (mut worker_list, collect) = Worker::new_group(1, mem, loader, || basic::Op {});
+    let worker = worker_list.pop().unwrap();
     let get_status = worker.spawn(interp);
     worker.run_loop();
 
     println!("{:?}", get_status());
-    // unsafe { mem.collector().collect(iter::empty()) };
+    collect.work();
 }
