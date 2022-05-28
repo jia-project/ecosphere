@@ -31,9 +31,12 @@ pub enum ValConst {
 }
 
 pub struct I32(pub i32);
+impl I32 {
+    pub const NAME: &'static str = "instrinsic.I32";
+}
 impl ObjCore for I32 {
     fn name(&self) -> &str {
-        "intrinsic.I32"
+        Self::NAME
     }
 }
 
@@ -50,7 +53,7 @@ impl Display for Val {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instr {
     // control flow
-    Call(Name, Vec<(Val, Vec<Name>)>),
+    Call(Name, Vec<(Val, Vec<Name>)>, bool), // true if spawn new task
     Ret(Val),
     Br(Val, LabelId, LabelId),
     Phi(HashMap<LabelId, Val>),
@@ -85,9 +88,10 @@ impl Display for Instr {
             Self::Br(val, if_true, if_false) => write!(f, "br {val}, l{if_true}, l{if_false}"),
             Self::Phi(..) => write!(f, "phi"), // TODO
             Self::Op(id, val_list) => write!(f, "op {id}<{}>", join(val_list)),
-            Self::Call(id, val_list) => write!(
+            Self::Call(id, val_list, spawn) => write!(
                 f,
-                "call {id}({})",
+                "{} {id}({})",
+                if *spawn { "spawn" } else { "call" },
                 val_list
                     .iter()
                     .map(|(val, val_as)| format!(

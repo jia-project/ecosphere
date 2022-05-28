@@ -163,7 +163,9 @@ impl Worker {
         task
     }
 
-    pub fn spawn(&self, interp: Interp) -> impl Fn() -> TaskStatus {
+    pub fn spawn_main(&self, name: &str) -> impl Fn() -> TaskStatus {
+        let mut interp = Interp::default();
+        interp.push_call(name, &[], &self.mem.mutator(), &self.loader);
         let status = Self::spawn_internal(interp, &self.mem.mutator(), &self.ready_queue).status;
         move || *status.lock().unwrap()
     }

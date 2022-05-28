@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    instr::Func,
+    instr::{Func, I32},
     mem::{Mem, Obj},
     AssetId, Name, ObjCore, TagId,
 };
@@ -33,23 +33,24 @@ impl Default for Loader {
             sum_table: HashMap::new(),
             func_table: HashMap::new(),
         };
-        let tag_unit = loader.make_tag("intrinsic.Unit".to_string());
+        let tag_unit = loader.make_tag("intrinsic.Unit");
         loader.register_prod(tag_unit, &[]);
-        let tag_ref = loader.make_tag("intrinsic.Ref".to_string());
-        loader.register_prod(tag_ref, &["content".to_string()]);
-        let tag_bool = loader.make_tag("intrinsic.Bool".to_string());
-        loader.register_sum(tag_bool, &["True".to_string(), "False".to_string()]);
+        let tag_ref = loader.make_tag("intrinsic.Ref");
+        loader.register_prod(tag_ref, &["content"]);
+        let tag_bool = loader.make_tag("intrinsic.Bool");
+        loader.register_sum(tag_bool, &["True", "False"]);
+        loader.make_tag(I32::NAME);
         loader
     }
 }
 
 impl Loader {
-    pub fn make_tag(&mut self, name: Name) -> TagId {
-        if let Some(id) = self.tag_table.get(&name) {
+    pub fn make_tag(&mut self, name: &str) -> TagId {
+        if let Some(id) = self.tag_table.get(name) {
             *id
         } else {
             let id = self.tag_table.len() as _;
-            self.tag_table.insert(name, id);
+            self.tag_table.insert(name.to_owned(), id);
             id
         }
     }
@@ -61,7 +62,7 @@ impl Loader {
             .push((param_list.to_vec(), Arc::new(func)));
     }
 
-    pub fn dispatch_call(&self, id: &Name, arg_list: &[&[TagId]]) -> Arc<Func> {
+    pub fn dispatch_call(&self, id: &str, arg_list: &[&[TagId]]) -> Arc<Func> {
         for (param_list, func) in &self.func_table[id] {
             if param_list.len() != arg_list.len() {
                 continue;
@@ -84,7 +85,7 @@ impl Loader {
         }
     }
 
-    pub fn register_prod(&mut self, tag: TagId, key_list: &[String]) {
+    pub fn register_prod(&mut self, tag: TagId, key_list: &[&str]) {
         assert!(self.tag_table.len() > tag as _);
         assert!(!self.sum_table.contains_key(&tag));
         self.prod_table.insert(
@@ -92,12 +93,12 @@ impl Loader {
             key_list
                 .iter()
                 .enumerate()
-                .map(|(i, key)| (key.clone(), i))
+                .map(|(i, key)| (key.to_string(), i))
                 .collect(),
         );
     }
 
-    pub fn register_sum(&mut self, tag: TagId, key_list: &[String]) {
+    pub fn register_sum(&mut self, tag: TagId, key_list: &[&str]) {
         assert!(self.tag_table.len() > tag as _);
         assert!(!self.prod_table.contains_key(&tag));
         self.sum_table.insert(
@@ -105,7 +106,7 @@ impl Loader {
             key_list
                 .iter()
                 .enumerate()
-                .map(|(i, key)| (key.clone(), i as _))
+                .map(|(i, key)| (key.to_string(), i as _))
                 .collect(),
         );
     }

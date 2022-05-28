@@ -5,7 +5,7 @@ use crate::{
     loader::Loader,
     mem::{Mutator, Obj},
     worker::WorkerInterface,
-    ObjCore, Operator, TagId,
+    Name, ObjCore, Operator, TagId,
 };
 
 pub struct Interp {
@@ -34,6 +34,9 @@ pub struct Prod {
     pub data: Vec<*mut Obj>,
 }
 
+impl Prod {
+    pub const NAME: &'static str = "intrinsic.Prod";
+}
 impl ObjCore for Prod {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         self.data.iter().copied().for_each(mark);
@@ -44,7 +47,7 @@ impl ObjCore for Prod {
     }
 
     fn name(&self) -> &str {
-        "intrinsic.Prod"
+        Self::NAME
     }
 }
 
@@ -54,6 +57,9 @@ pub struct Sum {
     pub inner: *mut Obj,
 }
 
+impl Sum {
+    pub const NAME: &'static str = "intrinsic.Sum";
+}
 impl ObjCore for Sum {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         mark(self.inner);
@@ -64,16 +70,40 @@ impl ObjCore for Sum {
     }
 
     fn name(&self) -> &str {
-        "intrinsic.Sum"
+        Self::NAME
     }
 }
 
 impl Interp {
-    pub fn push_call(&mut self, func: Arc<Func>, arg_list: &[*mut Obj]) {
+    pub fn push_call(
+        &mut self,
+        func_id: &str,
+        arg_list: &[(*mut Obj, Vec<Name>)],
+        mem: &Mutator<'_>,
+        loader: &Loader,
+    ) {
+        let (val_list, as_list): (Vec<_>, Vec<_>) = arg_list
+            .iter()
+            .map(|(val, morph)| {
+                let morph = if morph.is_empty() {
+                    vec![unsafe { Self::get_tag(*val, &mem, loader) }]
+                } else {
+                    morph
+                        .iter()
+                        .map(|tag| loader.query_tag(tag))
+                        .collect::<Vec<_>>()
+                };
+                (val, morph)
+            })
+            .unzip();
+        let func = loader.dispatch_call(
+            func_id,
+            &*as_list.iter().map(|val_as| &**val_as).collect::<Vec<_>>(),
+        );
         let frame = Frame {
             func,
             instr_id: InstrId::default(),
-            val_table: arg_list
+            val_table: val_list
                 .iter()
                 .enumerate()
                 .map(|(i, arg)| (Val::Arg(i), *arg))
@@ -96,8 +126,8 @@ impl Interp {
         let mut context = OpContext { frame, worker };
         match instr {
             Instr::Ret(val) => {
+                let ret = context.make_addr(val);
                 drop(context);
-                let ret = frame.val_table[&val];
                 self.frame_list.pop().unwrap();
                 if let Some(frame) = self.frame_list.last_mut() {
                     Self::finish_step(frame, Some(ret));
@@ -105,31 +135,19 @@ impl Interp {
                     self.result = Some(ret);
                 }
             }
-            Instr::Call(func_id, arg_list) => {
+            Instr::Call(func_id, arg_list, spawn) => {
                 let arg_list: Vec<_> = arg_list
                     .into_iter()
                     .map(|(val, morph)| (context.make_addr(val), morph))
                     .collect();
-                let worker = context.into_worker();
-                let (val_list, as_list): (Vec<_>, Vec<_>) = arg_list
-                    .into_iter()
-                    .map(|(val, morph)| {
-                        let morph = if morph.is_empty() {
-                            vec![unsafe { Self::get_tag(val, &worker.mem, &worker.loader) }]
-                        } else {
-                            morph
-                                .iter()
-                                .map(|tag| worker.loader.query_tag(tag))
-                                .collect::<Vec<_>>()
-                        };
-                        (val, morph)
-                    })
-                    .unzip();
-                let func = worker.loader.dispatch_call(
-                    &func_id,
-                    &*as_list.iter().map(|val_as| &**val_as).collect::<Vec<_>>(),
-                );
-                self.push_call(func, &val_list);
+                drop(context);
+                if !spawn {
+                    self.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
+                } else {
+                    let mut interp = Interp::default();
+                    interp.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
+                    Self::finish_step(frame, Some(worker.spawn(interp)));
+                }
             }
             Instr::Op(id, val) => {
                 let res = operator.perform(&id, &val, &mut context);
@@ -146,7 +164,7 @@ impl Interp {
             Instr::Phi(..) => todo!(),
             Instr::NewProd(name) => {
                 let unit = context.make_addr(Val::Const(ValConst::Unit));
-                let worker = context.into_worker();
+                drop(context);
                 let header = worker.loader.query_tag(&name);
                 let prod = worker.mem.new(Prod {
                     tag: header,
@@ -156,7 +174,7 @@ impl Interp {
             }
             Instr::NewSum(name, variant, inner) => {
                 let inner = context.make_addr(inner);
-                let worker = context.into_worker();
+                drop(context);
                 let header = worker.loader.query_tag(&name);
                 let sum = worker.mem.new(Sum {
                     tag: header,
@@ -167,7 +185,7 @@ impl Interp {
             }
             Instr::Get(prod, key) => {
                 let prod = context.make_addr(prod);
-                let worker = context.into_worker();
+                drop(context);
                 let prod = unsafe { worker.mem.read(prod) };
                 let prod: &Prod = prod.downcast_ref().unwrap();
                 let res = prod.data[worker.loader.prod_offset(prod.tag, &key)];
@@ -176,7 +194,7 @@ impl Interp {
             Instr::Set(prod, key, val) => {
                 let prod = context.make_addr(prod);
                 let val = context.make_addr(val);
-                let worker = context.into_worker();
+                drop(context);
                 let mut prod = unsafe { worker.mem.write(prod) };
                 let prod: &mut Prod = prod.downcast_mut().unwrap();
                 prod.data[worker.loader.prod_offset(prod.tag, &key)] = val;
@@ -193,7 +211,7 @@ impl Interp {
             }
             Instr::As(sum, key) => {
                 let sum = context.make_addr(sum);
-                let worker = context.into_worker();
+                drop(context);
                 let sum = unsafe { worker.mem.read(sum) };
                 let sum: &Sum = sum.downcast_ref().unwrap();
                 // consider a unchecked version
@@ -208,11 +226,11 @@ impl Interp {
     unsafe fn get_tag(addr: *mut Obj, mem: &Mutator<'_>, loader: &Loader) -> TagId {
         let obj = mem.read(addr);
         match obj.name() {
-            "intrinsic.Prod" => {
+            Prod::NAME => {
                 let Prod { tag, .. } = obj.downcast_ref().unwrap();
                 *tag
             }
-            "intrinsic.Sum" => {
+            Sum::NAME => {
                 let Sum { tag, .. } = obj.downcast_ref().unwrap();
                 *tag
             }
@@ -313,11 +331,5 @@ impl OpContext<'_, '_> {
         } else {
             self.frame.val_table[&val]
         }
-    }
-}
-
-impl<'a, 'b> OpContext<'a, 'b> {
-    fn into_worker(self) -> &'b WorkerInterface<'a> {
-        self.worker
     }
 }

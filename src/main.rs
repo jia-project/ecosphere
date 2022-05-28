@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
 use ecosphere::{
     basic,
-    instr::{FuncBuilder, Instr, Val, ValConst, I32},
-    interp::Interp,
-    loader::Loader,
+    instr::{FuncBuilder, Instr, Val, ValConst},
+    loader::{Loader, TagExpr},
     mem::Mem,
     worker::Worker,
 };
@@ -44,14 +41,22 @@ fn main() {
     let func = func.finish();
     print!("{func}");
 
+    let mut loader = Loader::default();
+    loader.register_func("fib".to_string(), &[TagExpr::And(Default::default())], func);
+
+    let mut func = FuncBuilder::default();
+    func.push_instr(Instr::Call(
+        "fib".to_string(),
+        vec![(Val::Const(ValConst::I32(10)), vec![])],
+        false,
+    ));
+    func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
+    loader.register_func("main".to_string(), &[], func.finish());
+
     let mem = Mem::default();
-    let arg1 = mem.mutator().new(I32(10));
-    let mut interp = Interp::default();
-    interp.push_call(Arc::new(func), &[arg1]);
-    let loader = Loader::default();
     let (mut worker_list, collect) = Worker::new_group(1, mem, loader, || basic::Op {});
     let worker = worker_list.pop().unwrap();
-    let get_status = worker.spawn(interp);
+    let get_status = worker.spawn_main("main");
     worker.run_loop();
 
     println!("{:?}", get_status());
