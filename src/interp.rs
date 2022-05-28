@@ -5,7 +5,7 @@ use crate::{
     loader::Loader,
     mem::{Mutator, Obj},
     worker::WorkerInterface,
-    ObjCore, Op, TagId,
+    ObjCore, Operator, TagId,
 };
 
 pub struct Interp {
@@ -82,11 +82,11 @@ impl Interp {
         self.frame_list.push(frame);
     }
 
-    pub fn step<O: Op>(
+    pub fn step(
         &mut self,
         mem: Mutator<'_>,
         loader: &Loader,
-        external: &mut O::Worker,
+        operator: &mut dyn Operator,
         worker: &WorkerInterface,
     ) {
         assert!(self.result.is_none());
@@ -100,7 +100,6 @@ impl Interp {
         };
 
         let mut context = OpContext {
-            external,
             frame,
             mem,
             loader,
@@ -145,7 +144,7 @@ impl Interp {
                 self.push_call(func, &val_list);
             }
             Instr::Op(id, val) => {
-                let res = O::perform(&id, &val, &mut context);
+                let res = operator.perform(&id, &val, &mut context);
                 drop(context);
                 Self::finish_step(frame, Some(res));
             }
@@ -254,15 +253,14 @@ impl Interp {
     }
 }
 
-pub struct OpContext<'a, W> {
-    pub external: &'a mut W,
+pub struct OpContext<'a> {
     pub mem: Mutator<'a>,
     pub loader: &'a Loader,
     pub worker: &'a WorkerInterface,
     frame: &'a Frame,
 }
 
-impl<W> OpContext<'_, W> {
+impl OpContext<'_> {
     /// # Safety
     /// If `val` is not constant, it's frame record must be a valid allocation.
     pub unsafe fn get_i32(&self, val: Val) -> i32 {
@@ -326,7 +324,7 @@ impl<W> OpContext<'_, W> {
     }
 }
 
-impl<'a, W> OpContext<'a, W> {
+impl<'a> OpContext<'a> {
     fn into_mem(self) -> Mutator<'a> {
         self.mem
     }

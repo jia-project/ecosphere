@@ -26,9 +26,8 @@ pub type TagId = u32;
 /// # Safety
 /// As long as all `*mut Obj` that accessible from arguments are valid, the
 /// returned pointer must be valid as well.
-pub unsafe trait Op {
-    type Worker;
-    fn perform(id: &OpCode, val: &[Val], context: &mut OpContext<Self::Worker>) -> *mut Obj;
+pub unsafe trait Operator {
+    fn perform(&mut self, id: &OpCode, val: &[Val], context: &mut OpContext) -> *mut Obj;
 }
 
 pub trait AsAny {

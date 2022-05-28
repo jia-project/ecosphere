@@ -11,17 +11,17 @@ use crate::{
     interp::Interp,
     loader::Loader,
     mem::{Mem, Obj},
-    Op,
+    Operator,
 };
 
 type TaskId = u32;
 type PauseTable = Arc<Mutex<HashMap<TaskId, Task>>>;
 type ReadyList = Arc<Mutex<Vec<Task>>>;
 
-pub struct Worker<O: Op> {
+pub struct Worker {
     mem: Arc<Mem>,
     loader: Arc<Loader>,
-    context: O::Worker,
+    operator: Box<dyn Operator>,
     ready_list: ReadyList,
     pause_table: PauseTable,
     task_id: Arc<AtomicU32>,
@@ -33,11 +33,11 @@ struct Task {
     handle: *mut Obj,
 }
 
-impl<O: Op> Worker<O> {
-    pub fn repeat(
+impl Worker {
+    pub fn repeat<O: Operator + 'static>(
         mem: Mem,
         loader: Loader,
-        make_context: impl Fn() -> O::Worker,
+        make_operator: impl Fn() -> O,
     ) -> impl Iterator<Item = Self> {
         let mem = Arc::new(mem);
         let loader = Arc::new(loader);
@@ -47,7 +47,7 @@ impl<O: Op> Worker<O> {
         iter::repeat_with(move || Self {
             mem: mem.clone(),
             loader: loader.clone(),
-            context: make_context(),
+            operator: Box::new(make_operator()),
             ready_list: ready_queue.clone(),
             pause_table: pause_table.clone(),
             task_id: task_id.clone(),
@@ -65,10 +65,10 @@ impl<O: Op> Worker<O> {
 
         // TODO not canceled
         while task.interp.get_result().is_none() {
-            task.interp.step::<O>(
+            task.interp.step(
                 self.mem.mutator(),
                 &self.loader,
-                &mut self.context,
+                &mut *self.operator,
                 &interface,
             );
         }

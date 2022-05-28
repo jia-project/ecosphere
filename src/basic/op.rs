@@ -2,15 +2,15 @@ use crate::{
     instr::{Val, ValConst},
     interp::OpContext,
     mem::Obj,
-    OpCode,
+    OpCode, Operator,
 };
 
-pub struct Op;
+pub struct Op {
+    //
+}
 
-unsafe impl crate::Op for Op {
-    type Worker = (); // TODO
-
-    fn perform(code: &OpCode, val: &[Val], context: &mut OpContext<Self::Worker>) -> *mut Obj {
+unsafe impl Operator for Op {
+    fn perform(&mut self, code: &OpCode, val: &[Val], context: &mut OpContext) -> *mut Obj {
         match &**code {
             "intrinsic.i32add" => {
                 let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
