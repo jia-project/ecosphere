@@ -30,7 +30,11 @@ pub enum ValConst {
 }
 
 pub struct I32(pub i32);
-impl ObjCore for I32 {}
+impl ObjCore for I32 {
+    fn name(&self) -> &str {
+        "intrinsic.I32"
+    }
+}
 
 impl Display for Val {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,7 +49,7 @@ impl Display for Val {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instr {
     // control flow
-    Call(Name, Vec<Val>),
+    Call(Name, Vec<(Val, Vec<Name>)>),
     Ret(Val),
     Br(Val, LabelId, LabelId),
     Phi(HashMap<LabelId, Val>),
@@ -80,7 +84,22 @@ impl Display for Instr {
             Self::Br(val, if_true, if_false) => write!(f, "br {val}, l{if_true}, l{if_false}"),
             Self::Phi(..) => write!(f, "phi"), // TODO
             Self::Op(id, val_list) => write!(f, "op {id}<{}>", join(val_list)),
-            Self::Call(id, val_list) => write!(f, "call {id}({})", join(val_list)),
+            Self::Call(id, val_list) => write!(
+                f,
+                "call {id}({})",
+                val_list
+                    .iter()
+                    .map(|(val, val_as)| format!(
+                        "{val} as {}",
+                        if val_as.is_empty() {
+                            "Self".to_string()
+                        } else {
+                            "TODO".to_string()
+                        }
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Alloc => write!(f, "alloc"),
             Self::Load(val) => write!(f, "load {val}"),
             Self::Store(place_val, val) => write!(f, "store {place_val} <- {val}"),

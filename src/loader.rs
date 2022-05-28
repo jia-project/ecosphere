@@ -110,7 +110,7 @@ impl Loader {
         );
     }
 
-    pub fn query_tag(&self, name: &Name) -> TagId {
+    pub fn query_tag(&self, name: &str) -> TagId {
         self.tag_table[name]
     }
 

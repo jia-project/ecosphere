@@ -61,4 +61,5 @@ pub trait ObjCore: AsAny + 'static {
     fn alloc_size(&self) -> usize {
         size_of_val(self)
     }
+    fn name(&self) -> &str; // well, &Name will not work
 }

@@ -42,6 +42,10 @@ impl ObjCore for Prod {
     fn alloc_size(&self) -> usize {
         size_of::<Self>() + self.data.capacity() * size_of::<*mut Obj>()
     }
+
+    fn name(&self) -> &str {
+        "intrinsic.Prod"
+    }
 }
 
 pub struct Sum {
@@ -57,6 +61,10 @@ impl ObjCore for Sum {
 
     fn alloc_size(&self) -> usize {
         size_of::<Self>()
+    }
+
+    fn name(&self) -> &str {
+        "intrinsic.Sum"
     }
 }
 
@@ -110,10 +118,31 @@ impl Interp {
                 }
             }
             Instr::Call(func_id, arg_list) => {
-                let arg_list: Vec<_> = arg_list.iter().map(|arg| context.make_addr(*arg)).collect();
-                // let func = loader.dispatch_call(&func_id, &dispatch_list);
-                // drop(context);
-                // self.push_call(func, &arg_list);
+                let arg_list: Vec<_> = arg_list
+                    .into_iter()
+                    .map(|(val, morph)| (context.make_addr(val), morph))
+                    .collect();
+                let mem = context.into_mem();
+                let (val_list, as_list): (Vec<_>, Vec<_>) = arg_list
+                    .into_iter()
+                    .map(|(val, morph)| {
+                        let morph = if morph.is_empty() {
+                            vec![unsafe { Self::get_tag(val, &mem, loader) }]
+                        } else {
+                            morph
+                                .iter()
+                                .map(|tag| loader.query_tag(tag))
+                                .collect::<Vec<_>>()
+                        };
+                        (val, morph)
+                    })
+                    .unzip();
+                drop(mem);
+                let func = loader.dispatch_call(
+                    &func_id,
+                    &*as_list.iter().map(|val_as| &**val_as).collect::<Vec<_>>(),
+                );
+                self.push_call(func, &val_list);
             }
             Instr::Op(id, val) => {
                 let res = O::perform(&id, &val, &mut context);
@@ -183,6 +212,21 @@ impl Interp {
         }
     }
 
+    unsafe fn get_tag(addr: *mut Obj, mem: &Mutator<'_>, loader: &Loader) -> TagId {
+        let obj = mem.read(addr);
+        match obj.name() {
+            "intrinsic.Prod" => {
+                let Prod { tag, .. } = obj.downcast_ref().unwrap();
+                *tag
+            }
+            "intrinsic.Sum" => {
+                let Sum { tag, .. } = obj.downcast_ref().unwrap();
+                *tag
+            }
+            name @ _ => loader.query_tag(name),
+        }
+    }
+
     fn finish_step(frame: &mut Frame, res: Option<*mut Obj>) {
         if let Some(res) = res {
             frame.val_table.insert(Val::Instr(frame.instr_id), res);
@@ -240,8 +284,22 @@ impl<W> OpContext<'_, W> {
             Val::Const(ValConst::Bool(content)) => content,
             val @ (Val::Arg(..) | Val::Instr(..)) => {
                 let obj = self.mem.read(self.make_addr(val));
-                let obj: &Sum = obj.downcast_ref().unwrap();
-                obj.variant == 0
+                let Sum { variant, .. } = obj.downcast_ref().unwrap();
+                *variant == 0
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// # Safety
+    /// Same as `get_i32`.
+    pub unsafe fn assert_unit(&self, val: Val) {
+        match val {
+            Val::Const(ValConst::Unit) => {}
+            val @ (Val::Arg(..) | Val::Instr(..)) => {
+                let obj = self.mem.read(self.make_addr(val));
+                let Prod { tag, .. } = obj.downcast_ref().unwrap();
+                assert_eq!(*tag, 0);
             }
             _ => unreachable!(),
         }
@@ -265,5 +323,11 @@ impl<W> OpContext<'_, W> {
         } else {
             self.frame.val_table[&val]
         }
+    }
+}
+
+impl<'a, W> OpContext<'a, W> {
+    fn into_mem(self) -> Mutator<'a> {
+        self.mem
     }
 }
