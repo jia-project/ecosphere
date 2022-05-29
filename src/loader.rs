@@ -61,8 +61,14 @@ impl Loader {
             .or_default()
             .push((param_list.to_vec(), Arc::new(func)));
     }
+}
 
-    pub fn dispatch_call(&self, id: &str, arg_list: &[&[TagId]]) -> Arc<Func> {
+pub enum CallArg {
+    Genuine(TagId),
+    Morph(Vec<TagId>),
+}
+impl Loader {
+    pub fn dispatch_call(&self, id: &str, arg_list: &[CallArg]) -> Arc<Func> {
         for (param_list, func) in &self.func_table[id] {
             if param_list.len() != arg_list.len() {
                 continue;
@@ -70,7 +76,8 @@ impl Loader {
             if arg_list
                 .iter()
                 .zip(param_list.iter())
-                .all(|(arg, param)| self.is_compatible(arg, param))
+                // TODO
+                .all(|(arg, param)| self.is_compatible(arg, param).is_some())
             {
                 return func.clone();
             }
@@ -78,11 +85,8 @@ impl Loader {
         unreachable!()
     }
 
-    fn is_compatible(&self, arg: &[TagId], param: &TagExpr) -> bool {
-        match param {
-            TagExpr::Has(tag) => arg.iter().any(|arg_tag| arg_tag == tag),
-            TagExpr::And(expr_list) => expr_list.iter().all(|expr| self.is_compatible(arg, expr)),
-        }
+    fn is_compatible(&self, arg: &CallArg, param: &TagExpr) -> Option<u32> {
+        Some(u32::MAX) // TODO
     }
 
     pub fn register_prod(&mut self, tag: TagId, key_list: &[&str]) {

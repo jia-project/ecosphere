@@ -1,11 +1,11 @@
 use std::{collections::HashMap, mem::size_of, sync::Arc};
 
 use crate::{
-    instr::{Func, Instr, InstrId, Val, ValConst, I32},
-    loader::Loader,
+    instr::{ArgMorph, Func, Instr, InstrCall, InstrId, Val, ValConst, I32},
+    loader::{CallArg, Loader},
     mem::{Mutator, Obj},
     worker::WorkerInterface,
-    ObjCore, Operator, OwnedName, TagId,
+    ObjCore, Operator, TagId,
 };
 
 pub struct Interp {
@@ -78,28 +78,28 @@ impl Interp {
     pub fn push_call(
         &mut self,
         func_id: &str,
-        arg_list: &[(*mut Obj, Vec<OwnedName>)],
+        arg_list: &[(*mut Obj, Option<ArgMorph>)],
         mem: &Mutator<'_>,
         loader: &Loader,
     ) {
         let (val_list, as_list): (Vec<_>, Vec<_>) = arg_list
             .iter()
             .map(|(val, morph)| {
-                let morph = if morph.is_empty() {
-                    vec![unsafe { Self::get_tag(*val, mem, loader) }]
+                let tag_list = if let Some(morph) = morph {
+                    // TODO check valid morph
+                    CallArg::Morph(
+                        morph
+                            .iter()
+                            .map(|tag| loader.query_tag(tag))
+                            .collect::<Vec<_>>(),
+                    )
                 } else {
-                    morph
-                        .iter()
-                        .map(|tag| loader.query_tag(tag))
-                        .collect::<Vec<_>>()
+                    CallArg::Genuine(unsafe { Self::get_tag(*val, mem, loader) })
                 };
-                (val, morph)
+                (val, tag_list)
             })
             .unzip();
-        let func = loader.dispatch_call(
-            func_id,
-            &*as_list.iter().map(|val_as| &**val_as).collect::<Vec<_>>(),
-        );
+        let func = loader.dispatch_call(func_id, &as_list);
         let frame = Frame {
             func,
             instr_id: InstrId::default(),
@@ -135,19 +135,29 @@ impl Interp {
                     self.result = Some(ret);
                 }
             }
-            Instr::Call(func_id, arg_list, spawn) => {
+            Instr::Call(InstrCall {
+                name: func_id,
+                arg_list,
+            }) => {
                 let arg_list: Vec<_> = arg_list
                     .into_iter()
                     .map(|(val, morph)| (context.make_addr(val), morph))
                     .collect();
                 drop(context);
-                if !spawn {
-                    self.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
-                } else {
-                    let mut interp = Interp::default();
-                    interp.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
-                    Self::finish_step(frame, Some(worker.spawn(interp)));
-                }
+                self.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
+            }
+            Instr::Spawn(InstrCall {
+                name: func_id,
+                arg_list,
+            }) => {
+                let arg_list: Vec<_> = arg_list
+                    .into_iter()
+                    .map(|(val, morph)| (context.make_addr(val), morph))
+                    .collect();
+                drop(context);
+                let mut interp = Interp::default();
+                interp.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
+                Self::finish_step(frame, Some(worker.spawn(interp)));
             }
             Instr::Op(id, val) => {
                 let res = operator.perform(&id, &val, &mut context);

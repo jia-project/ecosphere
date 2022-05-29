@@ -1,6 +1,6 @@
 use ecosphere::{
     basic,
-    instr::{FuncBuilder, Instr, Val, ValConst},
+    instr::{FuncBuilder, Instr, InstrCall, Val, ValConst},
     loader::{Loader, TagExpr},
     mem::Mem,
     worker::Worker,
@@ -45,11 +45,10 @@ fn main() {
     loader.register_func("fib", &[TagExpr::And(Default::default())], func);
 
     let mut func = FuncBuilder::default();
-    func.push_instr(Instr::Call(
-        "fib".to_string(),
-        vec![(Val::Const(ValConst::I32(10)), vec![])],
-        false,
-    ));
+    func.push_instr(Instr::Call(InstrCall {
+        name: "fib".to_owned(),
+        arg_list: vec![(Val::Const(ValConst::I32(10)), None)],
+    }));
     func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
     loader.register_func("main", &[], func.finish());
 

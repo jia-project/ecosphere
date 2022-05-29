@@ -53,10 +53,12 @@ impl Display for Val {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instr {
     // control flow
-    Call(OwnedName, Vec<(Val, Vec<OwnedName>)>, bool), // true if spawn new task
+    Call(InstrCall),
     Ret(Val),
     Br(Val, LabelId, LabelId),
     Phi(HashMap<LabelId, Val>),
+    // task flow
+    Spawn(InstrCall), // pause is in op level
 
     Op(String, Vec<Val>),
 
@@ -74,37 +76,22 @@ pub enum Instr {
     As(Val, String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstrCall {
+    pub name: OwnedName,
+    pub arg_list: Vec<(Val, Option<ArgMorph>)>,
+}
+pub type ArgMorph = Vec<OwnedName>;
+
 impl Display for Instr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let join = |val_list: &[Val]| {
-            val_list
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
         match self {
             Self::Ret(val) => write!(f, "ret {val}"),
             Self::Br(val, if_true, if_false) => write!(f, "br {val}, l{if_true}, l{if_false}"),
             Self::Phi(..) => write!(f, "phi"), // TODO
-            Self::Op(id, val_list) => write!(f, "op {id}<{}>", join(val_list)),
-            Self::Call(id, val_list, spawn) => write!(
-                f,
-                "{} {id}({})",
-                if *spawn { "spawn" } else { "call" },
-                val_list
-                    .iter()
-                    .map(|(val, val_as)| format!(
-                        "{val} as {}",
-                        if val_as.is_empty() {
-                            "Self".to_string()
-                        } else {
-                            "TODO".to_string()
-                        }
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            Self::Op(id, val_list) => write!(f, "op {id}<{}>", fmt_val_list(val_list)),
+            Self::Call(call) => write!(f, "call {call}"),
+            Self::Spawn(call) => write!(f, "spawn {call}"),
             Self::Alloc => write!(f, "alloc"),
             Self::Load(val) => write!(f, "load {val}"),
             Self::Store(place_val, val) => write!(f, "store {place_val} <- {val}"),
@@ -115,6 +102,37 @@ impl Display for Instr {
             Self::Is(sum, variant) => write!(f, "is {sum} .{variant}"),
             Self::As(sum, variant) => write!(f, "as {sum} .{variant}"),
         }
+    }
+}
+fn fmt_val_list(val_list: &[Val]) -> String {
+    val_list
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+impl Display for InstrCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}({})",
+            self.name,
+            self.arg_list
+                .iter()
+                .map(|(val, morph)| format!(
+                    "{val}{}",
+                    morph
+                        .as_ref()
+                        .map(|morph| morph
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" & "))
+                        .unwrap_or("".to_string())
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
