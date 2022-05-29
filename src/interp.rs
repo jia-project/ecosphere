@@ -5,7 +5,7 @@ use crate::{
     loader::Loader,
     mem::{Mutator, Obj},
     worker::WorkerInterface,
-    Name, ObjCore, Operator, TagId,
+    ObjCore, Operator, OwnedName, TagId,
 };
 
 pub struct Interp {
@@ -78,7 +78,7 @@ impl Interp {
     pub fn push_call(
         &mut self,
         func_id: &str,
-        arg_list: &[(*mut Obj, Vec<Name>)],
+        arg_list: &[(*mut Obj, Vec<OwnedName>)],
         mem: &Mutator<'_>,
         loader: &Loader,
     ) {
@@ -86,7 +86,7 @@ impl Interp {
             .iter()
             .map(|(val, morph)| {
                 let morph = if morph.is_empty() {
-                    vec![unsafe { Self::get_tag(*val, &mem, loader) }]
+                    vec![unsafe { Self::get_tag(*val, mem, loader) }]
                 } else {
                     morph
                         .iter()
@@ -120,7 +120,7 @@ impl Interp {
             Instr::Alloc => Instr::NewProd("intrinsic.Ref".to_string()),
             Instr::Load(val) => Instr::Get(val, "content".to_string()),
             Instr::Store(place_val, val) => Instr::Set(place_val, "content".to_string(), val),
-            instr @ _ => instr,
+            instr => instr,
         };
 
         let mut context = OpContext { frame, worker };
@@ -166,7 +166,7 @@ impl Interp {
                 let unit = context.make_addr(Val::Const(ValConst::Unit));
                 drop(context);
                 let header = worker.loader.query_tag(&name);
-                let prod = worker.mem.new(Prod {
+                let prod = worker.mem.make(Prod {
                     tag: header,
                     data: vec![unit; worker.loader.prod_size(header)],
                 });
@@ -176,7 +176,7 @@ impl Interp {
                 let inner = context.make_addr(inner);
                 drop(context);
                 let header = worker.loader.query_tag(&name);
-                let sum = worker.mem.new(Sum {
+                let sum = worker.mem.make(Sum {
                     tag: header,
                     variant: worker.loader.sum_variant(header, &variant),
                     inner,
@@ -234,7 +234,7 @@ impl Interp {
                 let Sum { tag, .. } = obj.downcast_ref().unwrap();
                 *tag
             }
-            name @ _ => loader.query_tag(name),
+            name => loader.query_tag(name),
         }
     }
 
@@ -316,12 +316,12 @@ impl OpContext<'_, '_> {
     pub fn make_addr(&self, val: Val) -> *mut Obj {
         if let Val::Const(val_const) = val {
             match val_const {
-                ValConst::I32(content) => self.worker.mem.new(I32(content)),
-                ValConst::Unit => self.worker.mem.new(Prod {
+                ValConst::I32(content) => self.worker.mem.make(I32(content)),
+                ValConst::Unit => self.worker.mem.make(Prod {
                     tag: 0,
                     data: Vec::new(),
                 }),
-                ValConst::Bool(content) => self.worker.mem.new(Sum {
+                ValConst::Bool(content) => self.worker.mem.make(Sum {
                     tag: 2,
                     variant: if content { 0 } else { 1 },
                     inner: self.make_addr(Val::Const(ValConst::Unit)),

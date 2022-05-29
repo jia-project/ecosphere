@@ -1,6 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     iter,
+    ops::Deref,
     sync::{Arc, Mutex},
 };
 
@@ -156,7 +157,7 @@ impl Worker {
 
     fn spawn_internal(interp: Interp, mem: &Mutator<'_>, ready_queue: &ReadyQueue) -> TaskHandle {
         let task = TaskHandle {
-            addr: mem.new(Task { interp }),
+            addr: mem.make(Task { interp }),
             status: Arc::new(Mutex::new(TaskStatus::Running)),
         };
         ready_queue.lock().unwrap().push_back(task.clone());
@@ -216,7 +217,7 @@ pub struct WorkerInterface<'a> {
 impl WorkerInterface<'_> {
     pub fn spawn(&self, interp: Interp) -> *mut Obj {
         self.mem
-            .new(Worker::spawn_internal(interp, &self.mem, &self.ready_queue))
+            .make(Worker::spawn_internal(interp, &self.mem, &self.ready_queue))
     }
 
     pub fn pause(&mut self) -> WakeToken {
@@ -230,7 +231,10 @@ impl WorkerInterface<'_> {
     }
 
     pub fn cancel(&self, handle: *mut Obj) -> bool {
-        let handle = unsafe { self.mem.read(handle) };
+        fn read(mem: &Mutator<'_>, handle: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
+            unsafe { mem.read(handle) }
+        }
+        let handle = read(&self.mem, handle);
         let handle: &TaskHandle = handle.downcast_ref().unwrap();
         let mut status = handle.status.lock().unwrap();
         if *status == TaskStatus::Running {

@@ -6,15 +6,15 @@ use std::{
 use crate::{
     instr::{Func, I32},
     mem::{Mem, Obj},
-    AssetId, Name, ObjCore, TagId,
+    AssetId, Name, ObjCore, OwnedName, TagId,
 };
 
 pub struct Loader {
     asset_list: Vec<*mut Obj>,
-    tag_table: HashMap<Name, TagId>,
+    tag_table: HashMap<OwnedName, TagId>,
     prod_table: HashMap<TagId, HashMap<String, usize>>,
     sum_table: HashMap<TagId, HashMap<String, u32>>,
-    func_table: HashMap<Name, DispatchList>,
+    func_table: HashMap<OwnedName, DispatchList>,
 }
 type DispatchList = Vec<(Vec<TagExpr>, Arc<Func>)>;
 
@@ -45,7 +45,7 @@ impl Default for Loader {
 }
 
 impl Loader {
-    pub fn make_tag(&mut self, name: &str) -> TagId {
+    pub fn make_tag(&mut self, name: &Name) -> TagId {
         if let Some(id) = self.tag_table.get(name) {
             *id
         } else {
@@ -55,9 +55,9 @@ impl Loader {
         }
     }
 
-    pub fn register_func(&mut self, id: Name, param_list: &[TagExpr], func: Func) {
+    pub fn register_func(&mut self, id: &Name, param_list: &[TagExpr], func: Func) {
         self.func_table
-            .entry(id)
+            .entry(id.to_owned())
             .or_default()
             .push((param_list.to_vec(), Arc::new(func)));
     }
@@ -131,7 +131,7 @@ impl Loader {
     where
         T: ObjCore,
     {
-        let asset = mem.mutator().new(asset);
+        let asset = mem.mutator().make(asset);
         let id = self.asset_list.len();
         self.asset_list.push(asset);
         id as _

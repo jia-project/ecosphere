@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use crate::{AssetId, Name, ObjCore, OpCode};
+use crate::{AssetId, ObjCore, OwnedName};
 
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
@@ -53,12 +53,12 @@ impl Display for Val {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instr {
     // control flow
-    Call(Name, Vec<(Val, Vec<Name>)>, bool), // true if spawn new task
+    Call(OwnedName, Vec<(Val, Vec<OwnedName>)>, bool), // true if spawn new task
     Ret(Val),
     Br(Val, LabelId, LabelId),
     Phi(HashMap<LabelId, Val>),
 
-    Op(OpCode, Vec<Val>),
+    Op(String, Vec<Val>),
 
     // optimizible with phi
     Alloc,
@@ -66,10 +66,10 @@ pub enum Instr {
     Store(Val, Val),
 
     // compound type operation
-    NewProd(Name),
+    NewProd(OwnedName),
     Get(Val, String),
     Set(Val, String, Val),
-    NewSum(Name, String, Val),
+    NewSum(OwnedName, String, Val),
     Is(Val, String),
     As(Val, String),
 }

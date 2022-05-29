@@ -18,16 +18,16 @@ use std::{
 
 use crate::{instr::Val, interp::OpContext, mem::Obj};
 
-pub type OpCode = String;
 pub type AssetId = u32;
-pub type Name = String;
+pub type Name = str;
+pub type OwnedName = <Name as ToOwned>::Owned;
 pub type TagId = u32;
 
 /// # Safety
 /// As long as all `*mut Obj` that accessible from arguments are valid, the
 /// returned pointer must be valid as well.
 pub unsafe trait Operator {
-    fn perform(&mut self, id: &OpCode, val: &[Val], context: &mut OpContext) -> *mut Obj;
+    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpContext) -> *mut Obj;
 }
 
 pub trait AsAny {
