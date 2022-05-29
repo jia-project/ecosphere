@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    interp::{Interp, Prod},
+    interp::Interp,
     loader::Loader,
     mem::{Mem, Mutator, Obj},
     ObjCore, Operator,
@@ -147,12 +147,8 @@ impl Worker {
                 } else {
                     unreachable!()
                 };
-                let unit = mem.make(Prod {
-                    tag: 0,
-                    data: vec![],
-                });
                 for notify in notify_list {
-                    notify.resolve(&mem, unit);
+                    notify.resolve(&mem, None);
                 }
                 self.task_pool.lock().unwrap().remove(&handle.addr);
             } else {
@@ -205,7 +201,7 @@ pub struct WakeToken {
 }
 
 impl WakeToken {
-    pub fn resolve(mut self, mem: &Mutator<'_>, res: *mut Obj) -> bool {
+    pub fn resolve(mut self, mem: &Mutator<'_>, res: Option<*mut Obj>) -> bool {
         let status = &*self.handle.status.lock().unwrap();
         assert!(!matches!(status, TaskStatus::Running(..)));
         if matches!(status, TaskStatus::Canceled) {
@@ -282,12 +278,8 @@ impl WorkerInterface<'_> {
                     unreachable!()
                 };
             self.task_pool.lock().unwrap().remove(&handle.addr);
-            let unit = self.mem.make(Prod {
-                tag: 0,
-                data: vec![],
-            });
             for notify in notify_list {
-                notify.resolve(&self.mem, unit);
+                notify.resolve(&self.mem, None);
             }
             true
         } else {

@@ -48,6 +48,7 @@ fn main() {
 
     let mem = Mem::default();
     let mut loader = Loader::default();
+    basic::Op::boot(&mut loader);
     loader.register_func("fib", &[TagExpr::And(Default::default())], func);
 
     let mut func = FuncBuilder::default();
@@ -57,7 +58,7 @@ fn main() {
     }));
     let a1 = loader.create_asset(basic::obj::Str("Hello, world!".to_string()), &mem);
     func.push_instr(Instr::Op(
-        "basic.trace_str".to_owned(),
+        "basic.str_trace".to_owned(),
         vec![Val::Const(ValConst::Asset(a1))],
     ));
     func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));

@@ -27,7 +27,7 @@ pub type TagId = u32;
 /// As long as all `*mut Obj` that accessible from arguments are valid and alive,
 /// the returned pointer must point to valid and alive object.
 pub unsafe trait Operator {
-    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpContext) -> *mut Obj;
+    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpContext) -> Option<*mut Obj>;
 }
 
 pub trait AsAny {

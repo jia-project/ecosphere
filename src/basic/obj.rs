@@ -4,7 +4,7 @@ use crate::{mem::Obj, Name, ObjCore};
 
 pub struct List(pub Vec<*mut Obj>);
 impl List {
-    const NAME: &'static Name = "basic.List";
+    pub const NAME: &'static Name = "basic.List";
 }
 unsafe impl ObjCore for List {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
@@ -22,7 +22,7 @@ unsafe impl ObjCore for List {
 
 pub struct Str(pub String);
 impl Str {
-    const NAME: &'static Name = "basic.Str";
+    pub const NAME: &'static Name = "basic.Str";
 }
 unsafe impl ObjCore for Str {
     fn alloc_size(&self) -> usize {

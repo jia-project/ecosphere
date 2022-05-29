@@ -167,7 +167,9 @@ impl Interp {
                 let res = operator.perform(&id, &val, &mut context);
                 if !context.worker.is_paused() {
                     drop(context);
-                    Self::finish_step(frame, Some(res));
+                    Self::finish_step(frame, res);
+                } else {
+                    assert!(res.is_none());
                 }
             }
             Instr::Br(val, if_true, if_false) => {
@@ -259,9 +261,9 @@ impl Interp {
         frame.instr_id.1 += 1;
     }
 
-    pub fn resume(&mut self, result: *mut Obj) {
+    pub fn resume(&mut self, result: Option<*mut Obj>) {
         assert!(self.result.is_none());
-        Self::finish_step(self.frame_list.last_mut().unwrap(), Some(result));
+        Self::finish_step(self.frame_list.last_mut().unwrap(), result);
     }
 
     pub fn get_result(&self) -> Option<*mut Obj> {
