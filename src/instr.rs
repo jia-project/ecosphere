@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use crate::{AssetId, ObjCore, OwnedName};
+use crate::{AssetId, Name, ObjCore, OwnedName};
 
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
@@ -32,10 +32,10 @@ pub enum ValConst {
 
 pub struct I32(pub i32);
 impl I32 {
-    pub const NAME: &'static str = "instrinsic.I32";
+    pub const NAME: &'static Name = "instrinsic.I32";
 }
 unsafe impl ObjCore for I32 {
-    fn name(&self) -> &str {
+    fn name(&self) -> &Name {
         Self::NAME
     }
 }

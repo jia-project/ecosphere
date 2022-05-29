@@ -1,3 +1,8 @@
+use std::{
+    io::{stdout, Stdout, Write},
+    time::Instant,
+};
+
 use ecosphere::{
     basic,
     instr::{FuncBuilder, Instr, InstrCall, Val, ValConst},
@@ -41,6 +46,7 @@ fn main() {
     let func = func.finish();
     print!("{func}");
 
+    let mem = Mem::default();
     let mut loader = Loader::default();
     loader.register_func("fib", &[TagExpr::And(Default::default())], func);
 
@@ -49,15 +55,31 @@ fn main() {
         name: "fib".to_owned(),
         arg_list: vec![(Val::Const(ValConst::I32(10)), None)],
     }));
+    let a1 = loader.create_asset(basic::obj::Str("Hello, world!".to_string()), &mem);
+    func.push_instr(Instr::Op(
+        "basic.trace_str".to_owned(),
+        vec![Val::Const(ValConst::Asset(a1))],
+    ));
     func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
     loader.register_func("main", &[], func.finish());
 
-    let mem = Mem::default();
-    let (mut worker_list, collect) = Worker::new_group(1, mem, loader, || basic::Op {});
+    let t0 = Instant::now();
+    let (mut worker_list, collect) =
+        Worker::new_group(1, mem, loader, || basic::Op::new(t0, TraceOut(stdout())));
     let worker = worker_list.pop().unwrap();
     let get_status = worker.spawn_main("main");
     worker.run_loop();
 
     println!("{:?}", get_status());
     collect.work();
+}
+
+struct TraceOut(Stdout);
+impl Write for TraceOut {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().write_all(buf).map(|()| buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

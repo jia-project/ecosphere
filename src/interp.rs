@@ -5,7 +5,7 @@ use crate::{
     loader::{CallArg, Loader},
     mem::{Mutator, Obj},
     worker::WorkerInterface,
-    ObjCore, Operator, TagId,
+    Name, ObjCore, Operator, TagId,
 };
 
 pub struct Interp {
@@ -35,7 +35,7 @@ pub struct Prod {
 }
 
 impl Prod {
-    pub const NAME: &'static str = "intrinsic.Prod";
+    pub const NAME: &'static Name = "intrinsic.Prod";
 }
 unsafe impl ObjCore for Prod {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
@@ -46,7 +46,7 @@ unsafe impl ObjCore for Prod {
         size_of::<Self>() + self.data.capacity() * size_of::<*mut Obj>()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &Name {
         Self::NAME
     }
 }
@@ -58,14 +58,14 @@ pub struct Sum {
 }
 
 impl Sum {
-    pub const NAME: &'static str = "intrinsic.Sum";
+    pub const NAME: &'static Name = "intrinsic.Sum";
 }
 unsafe impl ObjCore for Sum {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         mark(self.inner);
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &Name {
         Self::NAME
     }
 }

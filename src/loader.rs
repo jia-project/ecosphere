@@ -68,7 +68,7 @@ pub enum CallArg {
     Morph(Vec<TagId>),
 }
 impl Loader {
-    pub fn dispatch_call(&self, id: &str, arg_list: &[CallArg]) -> Arc<Func> {
+    pub fn dispatch_call(&self, id: &Name, arg_list: &[CallArg]) -> Arc<Func> {
         for (param_list, func) in &self.func_table[id] {
             if param_list.len() != arg_list.len() {
                 continue;
@@ -115,7 +115,7 @@ impl Loader {
         );
     }
 
-    pub fn query_tag(&self, name: &str) -> TagId {
+    pub fn query_tag(&self, name: &Name) -> TagId {
         self.tag_table[name]
     }
 

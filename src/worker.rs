@@ -24,6 +24,7 @@ pub struct Worker {
 pub struct CollectWorker {
     mem: Arc<Mem>,
     task_pool: TaskPool,
+    preload: Vec<*mut Obj>,
 }
 
 type ReadyQueue = Arc<Mutex<VecDeque<TaskHandle>>>;
@@ -81,9 +82,12 @@ impl Worker {
         let loader = Arc::new(loader);
         let ready_queue = Arc::new(Mutex::new(VecDeque::new()));
         let task_pool = Arc::new(Mutex::new(HashSet::new()));
+        let mut asset_list = Vec::new();
+        loader.trace(|obj| asset_list.push(obj));
         let collect_worker = CollectWorker {
             mem: mem.clone(),
             task_pool: task_pool.clone(),
+            preload: asset_list,
         };
         (
             iter::repeat_with(move || Self {
@@ -299,6 +303,17 @@ impl WorkerInterface<'_> {
 impl CollectWorker {
     pub fn work(&self) {
         let mut collector = self.mem.collector();
-        unsafe { collector.collect(self.task_pool.lock().unwrap().iter().copied()) };
+        unsafe {
+            collector.collect(
+                self.task_pool
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .copied()
+                    // simply chaining is safe because preload object should never
+                    // duplicate with runtime task object
+                    .chain(self.preload.iter().copied()),
+            )
+        };
     }
 }
