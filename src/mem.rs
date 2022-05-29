@@ -242,10 +242,15 @@ impl Mutator<'_> {
         self.0.make(core)
     }
 
+    /// # Safety
+    /// `obj` must be returned by `make`, and be traced, i.e. not get collected
+    /// in all previous collection.
     pub unsafe fn read(&self, obj: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
         self.0.mutator_read(obj)
     }
 
+    /// # Safety
+    /// Same as `read`.
     pub unsafe fn write(&self, obj: *mut Obj) -> impl DerefMut<Target = dyn ObjCore> {
         self.0.mutator_write(obj)
     }
@@ -253,7 +258,11 @@ impl Mutator<'_> {
 
 impl Collector<'_> {
     /// # Safety
-    /// All allocated objects must only reference to other allocated objects.
+    /// All objects in `root_iter` must be valid and alive, i.e. the pointer
+    /// must be returned by `make`, and pointed object must be either present
+    /// in `root_iter`, or be traced, in all previous collection.
+    ///
+    /// All traced objects must implement `ObjCore::trace` correctly.
     pub unsafe fn collect(&mut self, root_iter: impl Iterator<Item = *mut Obj>) {
         self.0.collect(root_iter);
     }

@@ -1,12 +1,13 @@
 use std::{
     collections::{HashSet, VecDeque},
     iter,
+    mem::replace,
     ops::Deref,
     sync::{Arc, Mutex},
 };
 
 use crate::{
-    interp::Interp,
+    interp::{Interp, Prod},
     loader::Loader,
     mem::{Mem, Mutator, Obj},
     ObjCore, Operator,
@@ -33,7 +34,9 @@ struct Task {
     // something useful like a uuid?
 }
 
-impl ObjCore for Task {
+// reason to put task on heap instead of owning in shared/exclusive state of
+// worker: don't want to keep a reference to task cross interp steps
+unsafe impl ObjCore for Task {
     fn name(&self) -> &str {
         "intrinsic.Task"
     }
@@ -54,14 +57,14 @@ struct TaskHandle {
     status: Arc<Mutex<TaskStatus>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum TaskStatus {
-    Running, // TODO notify list
+    Running(Vec<WakeToken>),
     Finished(*mut Obj),
     Canceled,
 }
 
-impl ObjCore for TaskHandle {
+unsafe impl ObjCore for TaskHandle {
     fn name(&self) -> &str {
         "intrinsic.TaskHandle"
     }
@@ -102,9 +105,9 @@ impl Worker {
             // we don't have to keep this lock, because we are holding a mutator
             // task object must be alive as long as it has not been canceled
             // at the point mutator is acquired
-            let status = *handle.status.lock().unwrap();
+            let status = &*handle.status.lock().unwrap();
             assert!(!matches!(status, TaskStatus::Finished(..)));
-            if status == TaskStatus::Canceled {
+            if matches!(status, TaskStatus::Canceled) {
                 break None;
             }
 
@@ -112,7 +115,7 @@ impl Worker {
             let task: &mut Task = task.downcast_mut().unwrap();
 
             if let Some(res) = task.interp.get_result() {
-                break Some(res);
+                break Some((res, mem));
             }
 
             let mut interface = WorkerInterface {
@@ -128,19 +131,33 @@ impl Worker {
                 break None;
             }
         };
-        if let Some(res) = res {
-            let mut status = handle.status.lock().unwrap();
+        if let Some((res, mem)) = res {
+            let status = &mut *handle.status.lock().unwrap();
             // avoid overriding a concurrent canceling
             // ensure there's only running->finished/canceled transition
-            if *status == TaskStatus::Running {
-                *status = TaskStatus::Finished(res);
-                // TODO notify subscribers
+            if matches!(status, TaskStatus::Running(..)) {
+                let notify_list = if let TaskStatus::Running(notify_list) =
+                    replace(status, TaskStatus::Finished(res))
+                {
+                    notify_list
+                } else {
+                    unreachable!()
+                };
+                let unit = mem.make(Prod {
+                    tag: 0,
+                    data: vec![],
+                });
+                for notify in notify_list {
+                    notify.resolve(&mem, unit);
+                }
                 self.task_pool.lock().unwrap().remove(&handle.addr);
+            } else {
+                assert!(matches!(status, TaskStatus::Canceled));
             }
         }
     }
 
-    pub fn run_loop(mut self) {
+    pub fn run_loop(mut self) -> bool {
         loop {
             if let Some(ready) = {
                 let mut ready_queue = self.ready_queue.lock().unwrap();
@@ -148,9 +165,9 @@ impl Worker {
             } {
                 self.drive_task(ready);
             } else if self.task_pool.lock().unwrap().is_empty() {
-                return;
+                return true;
             } else {
-                // park
+                return false;
             }
         }
     }
@@ -158,20 +175,25 @@ impl Worker {
     fn spawn_internal(interp: Interp, mem: &Mutator<'_>, ready_queue: &ReadyQueue) -> TaskHandle {
         let task = TaskHandle {
             addr: mem.make(Task { interp }),
-            status: Arc::new(Mutex::new(TaskStatus::Running)),
+            status: Arc::new(Mutex::new(TaskStatus::Running(Vec::new()))),
         };
         ready_queue.lock().unwrap().push_back(task.clone());
         task
     }
 
-    pub fn spawn_main(&self, name: &str) -> impl Fn() -> TaskStatus {
+    pub fn spawn_main(&self, name: &str) -> impl Fn() -> Option<*mut Obj> {
         let mut interp = Interp::default();
         interp.push_call(name, &[], &self.mem.mutator(), &self.loader);
         let status = Self::spawn_internal(interp, &self.mem.mutator(), &self.ready_queue).status;
-        move || *status.lock().unwrap()
+        move || match *status.lock().unwrap() {
+            TaskStatus::Running(..) => None,
+            TaskStatus::Finished(res) => Some(res),
+            TaskStatus::Canceled => unreachable!("top level task never be canceled"),
+        }
     }
 }
 
+#[derive(Debug)]
 pub struct WakeToken {
     handle: TaskHandle,
     ready_queue: ReadyQueue,
@@ -179,10 +201,10 @@ pub struct WakeToken {
 }
 
 impl WakeToken {
-    pub fn resolve(mut self, mem: Mutator<'_>, res: *mut Obj) -> bool {
-        let status = *self.handle.status.lock().unwrap();
-        assert_ne!(status, TaskStatus::Running);
-        if status == TaskStatus::Canceled {
+    pub fn resolve(mut self, mem: &Mutator<'_>, res: *mut Obj) -> bool {
+        let status = &*self.handle.status.lock().unwrap();
+        assert!(!matches!(status, TaskStatus::Running(..)));
+        if matches!(status, TaskStatus::Canceled) {
             return false;
         }
         // we are holding a mutator, which means no sweeping can happen concurrently
@@ -230,16 +252,39 @@ impl WorkerInterface<'_> {
         }
     }
 
+    /// # Safety
+    /// `handle` must be valid and alive.
+    pub unsafe fn wait(&mut self, handle: *mut Obj) {
+        let handle = self.mem.read(handle);
+        let handle: &TaskHandle = handle.downcast_ref().unwrap();
+        let status = &mut *handle.status.lock().unwrap();
+        if let TaskStatus::Running(notify_list) = status {
+            notify_list.push(self.pause());
+        }
+    }
+
     pub fn cancel(&self, handle: *mut Obj) -> bool {
         fn read(mem: &Mutator<'_>, handle: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
             unsafe { mem.read(handle) }
         }
         let handle = read(&self.mem, handle);
         let handle: &TaskHandle = handle.downcast_ref().unwrap();
-        let mut status = handle.status.lock().unwrap();
-        if *status == TaskStatus::Running {
-            *status = TaskStatus::Canceled;
+        let status = &mut *handle.status.lock().unwrap();
+        if matches!(status, TaskStatus::Running(..)) {
+            let notify_list =
+                if let TaskStatus::Running(notify_list) = replace(status, TaskStatus::Canceled) {
+                    notify_list
+                } else {
+                    unreachable!()
+                };
             self.task_pool.lock().unwrap().remove(&handle.addr);
+            let unit = self.mem.make(Prod {
+                tag: 0,
+                data: vec![],
+            });
+            for notify in notify_list {
+                notify.resolve(&self.mem, unit);
+            }
             true
         } else {
             false

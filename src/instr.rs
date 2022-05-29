@@ -34,7 +34,7 @@ pub struct I32(pub i32);
 impl I32 {
     pub const NAME: &'static str = "instrinsic.I32";
 }
-impl ObjCore for I32 {
+unsafe impl ObjCore for I32 {
     fn name(&self) -> &str {
         Self::NAME
     }
@@ -59,6 +59,7 @@ pub enum Instr {
     Phi(HashMap<LabelId, Val>),
     // task flow
     Spawn(InstrCall), // pause is in op level
+    Wait(Val),
 
     Op(String, Vec<Val>),
 
@@ -92,6 +93,7 @@ impl Display for Instr {
             Self::Op(id, val_list) => write!(f, "op {id}<{}>", fmt_val_list(val_list)),
             Self::Call(call) => write!(f, "call {call}"),
             Self::Spawn(call) => write!(f, "spawn {call}"),
+            Self::Wait(val) => write!(f, "wait {val}"),
             Self::Alloc => write!(f, "alloc"),
             Self::Load(val) => write!(f, "load {val}"),
             Self::Store(place_val, val) => write!(f, "store {place_val} <- {val}"),

@@ -24,8 +24,8 @@ pub type OwnedName = <Name as ToOwned>::Owned;
 pub type TagId = u32;
 
 /// # Safety
-/// As long as all `*mut Obj` that accessible from arguments are valid, the
-/// returned pointer must be valid as well.
+/// As long as all `*mut Obj` that accessible from arguments are valid and alive,
+/// the returned pointer must point to valid and alive object.
 pub unsafe trait Operator {
     fn perform(&mut self, code: &str, val: &[Val], context: &mut OpContext) -> *mut Obj;
 }
@@ -54,7 +54,11 @@ impl DerefMut for dyn ObjCore {
     }
 }
 
-pub trait ObjCore: AsAny + 'static {
+/// # Safety
+/// While calling `trace`, all marked objects must be valid and alive, i.e.
+/// must be returned by `Mutator::make`, and must be either root object or
+/// traced in all previous collections.
+pub unsafe trait ObjCore: AsAny + 'static {
     #[allow(unused_variables)]
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
     fn alloc_size(&self) -> usize {

@@ -37,7 +37,7 @@ pub struct Prod {
 impl Prod {
     pub const NAME: &'static str = "intrinsic.Prod";
 }
-impl ObjCore for Prod {
+unsafe impl ObjCore for Prod {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         self.data.iter().copied().for_each(mark);
     }
@@ -60,13 +60,9 @@ pub struct Sum {
 impl Sum {
     pub const NAME: &'static str = "intrinsic.Sum";
 }
-impl ObjCore for Sum {
+unsafe impl ObjCore for Sum {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         mark(self.inner);
-    }
-
-    fn alloc_size(&self) -> usize {
-        size_of::<Self>()
     }
 
     fn name(&self) -> &str {
@@ -158,6 +154,14 @@ impl Interp {
                 let mut interp = Interp::default();
                 interp.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
                 Self::finish_step(frame, Some(worker.spawn(interp)));
+            }
+            Instr::Wait(val) => {
+                let val = context.make_addr(val);
+                drop(context);
+                unsafe { worker.wait(val) };
+                if !worker.is_paused() {
+                    Self::finish_step(frame, None);
+                }
             }
             Instr::Op(id, val) => {
                 let res = operator.perform(&id, &val, &mut context);
