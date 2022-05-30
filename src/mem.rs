@@ -31,9 +31,9 @@ static PREV_ALLOC: AtomicU64 = AtomicU64::new(0);
 // const_assert!((0 as *mut Obj).is_null()); // and const `is_null` is not stable yet, shit
 
 impl Obj {
-    fn make(core: impl ObjCore) -> *mut Self {
+    fn make_boxed(core: Box<dyn ObjCore>) -> *mut Self {
         let mut obj = Box::new(Self {
-            core: Box::new(core),
+            core,
             mark: ObjMark::White,
             rw: AtomicU32::new(0),
             prev: NonNull::dangling().as_ptr(),
@@ -46,7 +46,7 @@ impl Obj {
     const COLLECTOR_READ_MASK: u32 = !(u32::MAX >> 1);
 }
 
-pub struct ObjRead(*mut Obj);
+struct ObjRead(*mut Obj);
 impl ObjRead {
     unsafe fn new(obj: *mut Obj) -> Self {
         while {
@@ -77,7 +77,7 @@ impl Deref for ObjRead {
     }
 }
 
-pub struct ObjWrite(*mut Obj);
+struct ObjWrite(*mut Obj);
 impl ObjWrite {
     unsafe fn new(obj: *mut Obj) -> Self {
         while {
@@ -169,10 +169,10 @@ impl MemInner {
 
     // collector read/write if necessary
 
-    fn make(&self, core: impl ObjCore) -> *mut Obj {
+    fn make_boxed(&self, core: Box<dyn ObjCore>) -> *mut Obj {
         self.alloc_size
             .fetch_add(core.alloc_size() + size_of::<Obj>(), SeqCst);
-        Obj::make(core)
+        Obj::make_boxed(core)
     }
 
     pub fn load_factor(&self) -> f32 {
@@ -238,8 +238,12 @@ impl Mem {
 }
 
 impl Mutator<'_> {
-    pub fn make(&self, core: impl ObjCore) -> *mut Obj {
-        self.0.make(core)
+    pub fn make(&self, core: impl ObjCore + 'static) -> *mut Obj {
+        self.make_boxed(Box::new(core))
+    }
+
+    pub fn make_boxed(&self, core: Box<dyn ObjCore>) -> *mut Obj {
+        self.0.make_boxed(core)
     }
 
     /// # Safety

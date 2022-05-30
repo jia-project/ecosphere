@@ -20,7 +20,7 @@ type DispatchList = Vec<(Vec<TagExpr>, Arc<Func>)>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TagExpr {
-    Has(TagId),
+    Has(OwnedName),
     And(BTreeSet<TagExpr>),
 }
 
@@ -131,10 +131,7 @@ impl Loader {
         self.sum_table[&tag][key]
     }
 
-    pub fn create_asset<T>(&mut self, asset: T, mem: &Mem) -> AssetId
-    where
-        T: ObjCore,
-    {
+    pub fn create_asset<T: ObjCore + 'static>(&mut self, asset: T, mem: &Mem) -> AssetId {
         let asset = mem.mutator().make(asset);
         let id = self.asset_list.len();
         self.asset_list.push(asset);

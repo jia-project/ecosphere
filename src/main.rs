@@ -57,10 +57,10 @@ fn main() {
         arg_list: vec![(Val::Const(ValConst::I32(10)), None)],
     }));
     let a1 = loader.create_asset(basic::obj::Str("Hello, world!".to_string()), &mem);
-    func.push_instr(Instr::Op(
-        "basic.str_trace".to_owned(),
-        vec![Val::Const(ValConst::Asset(a1))],
-    ));
+    func.push_instr(Instr::Call(InstrCall {
+        name: "basic.str_trace".to_owned(),
+        arg_list: vec![(Val::Const(ValConst::Asset(a1)), None)],
+    }));
     func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
     loader.register_func("main", &[], func.finish());
 

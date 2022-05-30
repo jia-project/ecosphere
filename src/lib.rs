@@ -58,7 +58,7 @@ impl DerefMut for dyn ObjCore {
 /// While calling `trace`, all marked objects must be valid and alive, i.e.
 /// must be returned by `Mutator::make`, and must be either root object or
 /// traced in all previous collections.
-pub unsafe trait ObjCore: AsAny + 'static {
+pub unsafe trait ObjCore: AsAny {
     #[allow(unused_variables)]
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
     fn alloc_size(&self) -> usize {
