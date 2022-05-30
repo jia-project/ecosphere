@@ -90,7 +90,7 @@ unsafe impl Operator for Op {
 }
 
 impl Op {
-    pub fn boot(loader: &mut Loader) {
+    pub fn load(loader: &mut Loader) {
         loader.make_tag(List::NAME);
         loader.make_tag(Str::NAME);
 

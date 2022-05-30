@@ -1,10 +1,15 @@
-use std::{collections::HashMap, mem::take};
+use std::{
+    collections::HashMap,
+    mem::{replace, take},
+};
 
 use crate::{
-    instr::{FuncBuilder, Val},
+    instr::{FuncBuilder, Instr, InstrCall, LabelId, Val, ValConst},
     loader::{Loader, MatchExpr, Param},
     mem::Mem,
 };
+
+use super::obj::Str;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Token<'a> {
@@ -30,9 +35,13 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     if s.is_empty() {
         return None;
     }
+    let name_pat_all = |c: char| c.is_alphabetic() || c == '_' || c == '.';
+    let name_pat_head = |c| name_pat_all(c) || c == ':';
+    let name_pat_tail = |c| name_pat_all(c) || c.is_numeric();
     match s.split_whitespace().next().unwrap() {
+        // special that must separated with next token
         special @ ("prod" | "sum" | "func" | "tag" | "do" | "end" | "if" | "else" | "while"
-        | "break" | "continue" | "return" | "let" | "is") => {
+        | "break" | "continue" | "return" | "let" | "mut" | "is") => {
             *s = s.strip_prefix(special).unwrap();
             Some(Token::Special(special))
         }
@@ -44,6 +53,18 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
             *s = s.strip_prefix("false").unwrap();
             Some(Token::LitBool(false))
         }
+        // special that allow to connect next token
+        // match longest possible
+        special if ["==", "!="].into_iter().any(|s| special.starts_with(s)) => {
+            *s = s.strip_prefix(special).unwrap();
+            Some(Token::Special(special))
+        }
+        special if special.starts_with(['=', '+', '-', '*', '/', '%', ',', '(', ')', '<', '>']) => {
+            let (special, next_s) = s.split_at(1);
+            *s = next_s;
+            Some(Token::Special(special))
+        }
+        // others
         lit_i32 if lit_i32.starts_with(char::is_numeric) => {
             let lit_i32 = s.split(|c: char| !c.is_numeric()).next().unwrap();
             let token = Token::LitI32(lit_i32.parse().unwrap());
@@ -62,24 +83,16 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
             *s = next_s;
             Some(Token::LitStr(lit_str))
         }
-        special if ["==", "!="].into_iter().any(|s| special.starts_with(s)) => {
-            *s = s.strip_prefix(special).unwrap();
-            Some(Token::Special(special))
-        }
-        special if special.starts_with(['=', '+', '-', '*', '/', '%', ',', '(', ')', '<', '>']) => {
-            let (special, next_s) = s.split_at(1);
-            *s = next_s;
-            Some(Token::Special(special))
-        }
-        name => {
-            let name = name
-                .split(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != ':')
-                .next()
-                .unwrap();
-            assert!(!name.is_empty());
+        name if name.starts_with(name_pat_head) => {
+            let name = name.split(|c: char| !name_pat_tail(c)).next().unwrap();
             *s = s.strip_prefix(name).unwrap();
             Some(Token::Name(name))
         }
+        _ => panic!(
+            "not a token {:.10}{}",
+            s,
+            if s.len() > 10 { ".." } else { "" }
+        ),
     }
 }
 
@@ -90,6 +103,9 @@ pub struct Module<'a> {
     mem: &'a Mem,
     name_table: Vec<HashMap<&'a str, Val>>,
     builder: FuncBuilder,
+    token: Option<Token<'a>>,
+    label_break: Option<LabelId>,
+    label_continue: Option<LabelId>,
 }
 
 impl<'a> Module<'a> {
@@ -101,11 +117,19 @@ impl<'a> Module<'a> {
             mem,
             name_table: Vec::new(),
             builder: FuncBuilder::default(),
+            token: None,
+            label_break: None,
+            label_continue: None,
         }
     }
 
-    pub fn work(mut self) {
-        while let Some(token) = next_token(&mut self.source) {
+    fn shift(&mut self) -> Option<Token<'a>> {
+        replace(&mut self.token, next_token(&mut self.source))
+    }
+
+    pub fn load(mut self) {
+        self.shift();
+        while let Some(token) = &self.token {
             match token {
                 Token::Special("func") => self.func(),
                 Token::Special("prod") => todo!(),
@@ -117,40 +141,263 @@ impl<'a> Module<'a> {
     }
 
     fn func(&mut self) {
-        let name = next_token(&mut self.source).unwrap().into_name();
-        assert_eq!(next_token(&mut self.source), Some(Token::Special("(")));
+        assert_eq!(self.shift(), Some(Token::Special("func")));
+        let name = self.shift().unwrap().into_name();
+        assert_eq!(self.shift(), Some(Token::Special("(")));
         self.name_table.push(HashMap::new());
         let mut param_list = Vec::new();
-        let mut token = next_token(&mut self.source).unwrap();
-        while token != Token::Special(")") {
-            self.insert_name(token.into_name(), Val::Arg(param_list.len()));
+        while *self.token.as_ref().unwrap() != Token::Special(")") {
+            let name = self.shift().unwrap().into_name();
+            self.insert_name(name, Val::Arg(param_list.len()));
             let mut param = Param::Match(MatchExpr::And(Vec::new()));
-            token = next_token(&mut self.source).unwrap();
-            if token == Token::Special("is") {
-                param = Param::Genuine(
-                    next_token(&mut self.source)
-                        .unwrap()
-                        .into_name()
-                        .to_string(),
-                );
-                token = next_token(&mut self.source).unwrap();
+            if self.token == Some(Token::Special("is")) {
+                self.shift();
+                param = Param::Genuine(self.shift().unwrap().into_name().to_string());
             }
             // TODO match param
-            assert!(token == Token::Special(",") || token == Token::Special(")"));
             param_list.push(param);
-            if token == Token::Special(",") {
-                token = next_token(&mut self.source).unwrap();
+            if self.token == Some(Token::Special(",")) {
+                self.shift();
+            } else {
+                assert_eq!(self.token, Some(Token::Special(")")));
             }
         }
+        self.shift().unwrap();
         self.do_block();
         self.name_table.pop().unwrap();
         let func = take(&mut self.builder).finish();
-        self.loader.register_func(name, &param_list, func);
+        println!("{name}");
+        println!("{func}");
+        self.loader
+            .register_func(&[self.path, name].concat(), &param_list, func);
     }
 
-    fn do_block(&mut self) {}
+    fn do_block(&mut self) {
+        if self.token == Some(Token::Special("do")) {
+            self.shift();
+            self.name_table.push(HashMap::new());
+            while *self.token.as_ref().unwrap() != Token::Special("end") {
+                self.stmt();
+            }
+            self.shift();
+            self.name_table.pop().unwrap();
+        } else {
+            self.stmt();
+        }
+    }
+
+    fn stmt(&mut self) {
+        match self.token.as_ref().unwrap() {
+            Token::Special("let") => self.let_stmt(),
+            Token::Special("mut") => self.mut_stmt(),
+            Token::Special("if") => self.if_stmt(),
+            Token::Special("while") => self.while_stmt(),
+            Token::Special("return") => self.return_stmt(),
+            Token::Special("break") => {
+                self.builder
+                    .push_instr(Self::jmp(self.label_break.unwrap()));
+            }
+            Token::Special("continue") => {
+                self.builder
+                    .push_instr(Self::jmp(self.label_continue.unwrap()));
+            }
+            // should we special indicate side effect expr?
+            _ => {
+                self.expr();
+            }
+        }
+    }
+
+    fn let_stmt(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("let")));
+        let name = self.shift().unwrap().into_name();
+        let val = self.builder.push_instr(Instr::Alloc);
+        self.insert_name(name, val);
+        if self.token == Some(Token::Special("=")) {
+            self.shift();
+            let expr_val = self.expr();
+            self.builder.push_instr(Instr::Store(val, expr_val));
+        }
+    }
+
+    fn mut_stmt(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("mut")));
+        let name = self.shift().unwrap().into_name();
+        let place_val = self.resolve_name(name);
+        assert_eq!(self.shift(), Some(Token::Special("=")));
+        let val = self.expr();
+        self.builder.push_instr(Instr::Store(place_val, val));
+    }
+
+    fn if_stmt(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("if")));
+        let label_true = self.builder.push_block();
+        let label_false = self.builder.push_block();
+        let label_merge = self.builder.push_block();
+        let expr = self.expr();
+        self.builder
+            .push_instr(Instr::Br(expr, label_true, label_false));
+        self.builder.with_block(label_true);
+        self.do_block();
+        self.builder.push_instr(Self::jmp(label_merge));
+        self.builder.with_block(label_false);
+        if self.token == Some(Token::Special("else")) {
+            self.do_block();
+        }
+        self.builder.push_instr(Self::jmp(label_merge));
+        self.builder.with_block(label_merge);
+    }
+
+    fn while_stmt(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("while")));
+        let label_expr = self.builder.push_block();
+        let label_continue = self.builder.push_block();
+        let saved_continue = replace(&mut self.label_continue, Some(label_continue));
+        let label_break = self.builder.push_block();
+        let saved_break = replace(&mut self.label_break, Some(label_break));
+        self.builder.push_instr(Self::jmp(label_expr));
+        self.builder.with_block(label_expr);
+        let val = self.expr();
+        self.builder
+            .push_instr(Instr::Br(val, label_continue, label_break));
+        self.builder.with_block(label_continue);
+        self.do_block();
+        self.builder.push_instr(Self::jmp(label_expr));
+        self.builder.with_block(label_break);
+        self.label_continue = saved_continue;
+        self.label_break = saved_break;
+    }
+
+    fn return_stmt(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("return")));
+        let val = self.expr();
+        self.builder.push_instr(Instr::Ret(val));
+    }
+
+    fn jmp(label: LabelId) -> Instr {
+        Instr::Br(Val::Const(ValConst::Bool(true)), label, label)
+    }
+
+    fn expr(&mut self) -> Val {
+        match self.token.as_ref().unwrap() {
+            Token::Special("(") => self.paren(),
+            Token::Special("unit") => {
+                let val = Val::Const(ValConst::Unit);
+                self.shift();
+                val
+            }
+            Token::LitBool(content) => {
+                let val = Val::Const(ValConst::Bool(*content));
+                self.shift();
+                val
+            }
+            Token::LitI32(content) => {
+                let val = Val::Const(ValConst::I32(*content));
+                self.shift();
+                val
+            }
+            Token::LitStr(content) => {
+                let val = Val::Const(ValConst::Asset(
+                    self.loader
+                        .create_asset(Str(content.to_string()), &self.mem),
+                ));
+                self.shift();
+                val
+            }
+            Token::Name(..) => {
+                // I don't really like to lookahead twice :|
+                let name = self.shift().unwrap().into_name();
+                self.guess_call(name)
+                    .or_else(|| self.guess_binary(name))
+                    // just stop here, let other one handle the following mess :)
+                    .unwrap_or_else(|| {
+                        let val = self.resolve_name(name);
+                        self.builder.push_instr(Instr::Load(val))
+                    })
+            }
+            token => panic!("unexpected token {token:?}"),
+        }
+    }
+
+    fn paren(&mut self) -> Val {
+        assert_eq!(self.shift(), Some(Token::Special("(")));
+        let val = self.expr();
+        assert_eq!(self.shift(), Some(Token::Special(")")));
+        val
+    }
+
+    fn guess_call(&mut self, name: &str) -> Option<Val> {
+        if self.token != Some(Token::Special("(")) {
+            return None;
+        }
+        self.shift().unwrap();
+        let mut arg_list = Vec::new();
+        while *self.token.as_ref().unwrap() != Token::Special(")") {
+            let val = self.expr();
+            // TODO morph
+            arg_list.push((val, None));
+            if self.token == Some(Token::Special(",")) {
+                self.shift();
+            } else {
+                assert_eq!(self.token, Some(Token::Special(")")));
+            }
+        }
+        self.shift().unwrap();
+        Some(self.builder.push_instr(Instr::Call(InstrCall {
+            name: self.canonical_name(name),
+            arg_list,
+        })))
+    }
+
+    fn guess_binary(&mut self, name: &str) -> Option<Val> {
+        let mut inv = false;
+        let op = match self.token {
+            Some(Token::Special("+")) => "intrinsic.i32add",
+            Some(Token::Special("-")) => "intrinsic.i32sub",
+            Some(Token::Special("*")) => "intrinsic.i32mul",
+            Some(Token::Special("/")) => "intrinsic.i32div",
+            Some(Token::Special("%")) => "intrinsic.i32mod",
+            Some(Token::Special("==")) => "intrinsic.i32eq",
+            Some(Token::Special("<")) => "intrinsic.i32lt",
+            Some(Token::Special("!=")) => {
+                inv = true;
+                "intrinsic.i32eq"
+            }
+            _ => return None,
+        };
+        self.shift();
+        let this_val = self.resolve_name(name);
+        let that_val = self.expr();
+        let mut val = self
+            .builder
+            .push_instr(Instr::Op(op.to_string(), vec![this_val, that_val]));
+        if inv {
+            val = self
+                .builder
+                .push_instr(Instr::Op("intrinsic.boolneg".to_string(), vec![val]));
+        }
+        Some(val)
+    }
 
     fn insert_name(&mut self, name: &'a str, val: Val) {
         self.name_table.last_mut().unwrap().insert(name, val);
+    }
+
+    fn resolve_name(&self, name: &str) -> Val {
+        for scope in self.name_table.iter().rev() {
+            if let Some(val) = scope.get(name) {
+                return *val;
+            }
+        }
+        panic!("cannot resolve name {name}");
+    }
+
+    fn canonical_name(&self, name: &str) -> String {
+        match name {
+            "unit" => "intrinsic.Unit".to_string(),
+            "int" => "intrinsic.I32".to_string(),
+            name if name.starts_with('.') => [self.path, name].concat(),
+            name => name.to_string(),
+        }
     }
 }

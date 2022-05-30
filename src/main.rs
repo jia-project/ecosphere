@@ -23,9 +23,9 @@ func to_str(n is int) do
     let s = ""
     while n != 0 do
         let old_s = s
-        s = basic.str(basic.list_index(digit_table, n % 10))
+        mut s = basic.str(basic.list_index(digit_table, n % 10))
         basic.str_push(s, old_s)
-        n = n / 10
+        mut n = n / 10
     end
     return s
 end
@@ -36,25 +36,26 @@ func fib(n is int) do
     let b = 0
     while i < n do
         let c = a
-        a = a + b
-        b = c
+        mut a = a + b
+        mut b = c
+        mut i = i + 1
     end
     return a
 end
 
 func main() do
-    let s = "fib(10) = "
-    basic.push_str(s, to_str(fib(10)))
+    let s = basic.str("fib(10) = ")
+    basic.str_push(s, .to_str(.fib(10)))
     basic.str_trace(s)
-    return
+    return unit
 end
 "#;
 
 fn main() {
     let mem = Mem::default();
     let mut loader = Loader::default();
-    basic::Op::boot(&mut loader);
-    basic::parse::Module::new("testbed", TEXT, &mut loader, &mem).work();
+    basic::Op::load(&mut loader);
+    basic::parse::Module::new("testbed", TEXT, &mut loader, &mem).load();
 
     let t0 = Instant::now();
     let (mut worker_list, collect) =
