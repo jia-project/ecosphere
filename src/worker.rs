@@ -162,10 +162,8 @@ impl Worker {
                 ready_queue.pop_front()
             } {
                 self.drive_task(ready);
-            } else if self.task_pool.lock().unwrap().is_empty() {
-                return true;
             } else {
-                return false;
+                return self.task_pool.lock().unwrap().is_empty();
             }
         }
     }

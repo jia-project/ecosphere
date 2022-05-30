@@ -5,7 +5,7 @@ use std::{
 
 use ecosphere::{basic, loader::Loader, mem::Mem, worker::Worker};
 
-const TEXT: &'static str = r#"
+const TEXT: &str = r#"
 func to_str(n is int) do
     let digit_table = basic.list()
     basic.list_push(digit_table, "0")
@@ -51,19 +51,19 @@ end
 "#;
 
 fn main() {
-    println!("{:?}", basic::parse::iter_token(TEXT).collect::<Vec<_>>());
-
     let mem = Mem::default();
     let mut loader = Loader::default();
     basic::Op::boot(&mut loader);
+    basic::parse::Module::new("testbed", TEXT, &mut loader, &mem).work();
+
     let t0 = Instant::now();
     let (mut worker_list, collect) =
         Worker::new_group(1, mem, loader, || basic::Op::new(t0, TraceOut(stdout())));
     let worker = worker_list.pop().unwrap();
-    // let get_status = worker.spawn_main("main");
+    let get_status = worker.spawn_main("testbed.main");
     worker.run_loop();
 
-    // println!("{:?}", get_status());
+    println!("{:?}", get_status());
     collect.work();
 }
 

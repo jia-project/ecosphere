@@ -1,12 +1,28 @@
-use std::iter::from_fn;
+use std::{collections::HashMap, mem::take};
 
-#[derive(Debug)]
+use crate::{
+    instr::{FuncBuilder, Val},
+    loader::{Loader, MatchExpr, Param},
+    mem::Mem,
+};
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Token<'a> {
     Name(&'a str),
     LitI32(i32),
     LitBool(bool),
     LitStr(&'a str),
     Special(&'a str),
+}
+
+impl<'a> Token<'a> {
+    fn into_name(self) -> &'a str {
+        if let Self::Name(name) = self {
+            name
+        } else {
+            panic!("unexpected token {self:?}");
+        }
+    }
 }
 
 fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
@@ -67,6 +83,74 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     }
 }
 
-pub fn iter_token(mut s: &str) -> impl Iterator<Item = Token<'_>> {
-    from_fn(move || next_token(&mut s))
+pub struct Module<'a> {
+    path: &'a str,
+    source: &'a str,
+    loader: &'a mut Loader,
+    mem: &'a Mem,
+    name_table: Vec<HashMap<&'a str, Val>>,
+    builder: FuncBuilder,
+}
+
+impl<'a> Module<'a> {
+    pub fn new(path: &'a str, source: &'a str, loader: &'a mut Loader, mem: &'a Mem) -> Self {
+        Self {
+            path,
+            source,
+            loader,
+            mem,
+            name_table: Vec::new(),
+            builder: FuncBuilder::default(),
+        }
+    }
+
+    pub fn work(mut self) {
+        while let Some(token) = next_token(&mut self.source) {
+            match token {
+                Token::Special("func") => self.func(),
+                Token::Special("prod") => todo!(),
+                Token::Special("sum") => todo!(),
+                Token::Special("tag") => todo!(),
+                _ => panic!("unexpected token {token:?}"),
+            }
+        }
+    }
+
+    fn func(&mut self) {
+        let name = next_token(&mut self.source).unwrap().into_name();
+        assert_eq!(next_token(&mut self.source), Some(Token::Special("(")));
+        self.name_table.push(HashMap::new());
+        let mut param_list = Vec::new();
+        let mut token = next_token(&mut self.source).unwrap();
+        while token != Token::Special(")") {
+            self.insert_name(token.into_name(), Val::Arg(param_list.len()));
+            let mut param = Param::Match(MatchExpr::And(Vec::new()));
+            token = next_token(&mut self.source).unwrap();
+            if token == Token::Special("is") {
+                param = Param::Genuine(
+                    next_token(&mut self.source)
+                        .unwrap()
+                        .into_name()
+                        .to_string(),
+                );
+                token = next_token(&mut self.source).unwrap();
+            }
+            // TODO match param
+            assert!(token == Token::Special(",") || token == Token::Special(")"));
+            param_list.push(param);
+            if token == Token::Special(",") {
+                token = next_token(&mut self.source).unwrap();
+            }
+        }
+        self.do_block();
+        self.name_table.pop().unwrap();
+        let func = take(&mut self.builder).finish();
+        self.loader.register_func(name, &param_list, func);
+    }
+
+    fn do_block(&mut self) {}
+
+    fn insert_name(&mut self, name: &'a str, val: Val) {
+        self.name_table.last_mut().unwrap().insert(name, val);
+    }
 }

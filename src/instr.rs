@@ -130,7 +130,7 @@ impl Display for InstrCall {
                             .map(ToString::to_string)
                             .collect::<Vec<_>>()
                             .join(" & "))
-                        .unwrap_or("".to_string())
+                        .unwrap_or_default()
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
