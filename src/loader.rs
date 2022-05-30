@@ -80,6 +80,9 @@ impl Loader {
             let mut genuine_dispatch = true;
             for (param, arg) in param_list.iter().zip(arg_list.iter()) {
                 match (param, arg) {
+                    (Param::Match(MatchExpr::And(expr_list)), _) if expr_list.is_empty() => {
+                        // TODO remove this ad-hoc patch
+                    }
                     (Param::Genuine(name), CallArg::Genuine(tag))
                         if self.query_tag(name) == *tag => {}
                     _ => {

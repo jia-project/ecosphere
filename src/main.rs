@@ -47,7 +47,7 @@ func main() do
     let s = basic.str("fib(10) = ")
     basic.str_push(s, .to_str(.fib(10)))
     basic.str_trace(s)
-    return unit
+    return _
 end
 "#;
 
@@ -61,10 +61,9 @@ fn main() {
     let (mut worker_list, collect) =
         Worker::new_group(1, mem, loader, || basic::Op::new(t0, TraceOut(stdout())));
     let worker = worker_list.pop().unwrap();
-    let get_status = worker.spawn_main("testbed.main");
+    let _ = worker.spawn_main("testbed.main");
     worker.run_loop();
 
-    println!("{:?}", get_status());
     collect.work();
 }
 

@@ -35,13 +35,12 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     if s.is_empty() {
         return None;
     }
-    let name_pat_all = |c: char| c.is_alphabetic() || c == '_' || c == '.';
-    let name_pat_head = |c| name_pat_all(c) || c == ':';
-    let name_pat_tail = |c| name_pat_all(c) || c.is_numeric();
+    let name_pat = |c: char| c.is_alphabetic() || c == '_' || c == '.';
+    let name_pat_tail = |c| name_pat(c) || c.is_numeric();
     match s.split_whitespace().next().unwrap() {
         // special that must separated with next token
         special @ ("prod" | "sum" | "func" | "tag" | "do" | "end" | "if" | "else" | "while"
-        | "break" | "continue" | "return" | "let" | "mut" | "is") => {
+        | "break" | "continue" | "return" | "let" | "mut" | "is" | "_") => {
             *s = s.strip_prefix(special).unwrap();
             Some(Token::Special(special))
         }
@@ -83,7 +82,7 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
             *s = next_s;
             Some(Token::LitStr(lit_str))
         }
-        name if name.starts_with(name_pat_head) => {
+        name if name.starts_with(name_pat) => {
             let name = name.split(|c: char| !name_pat_tail(c)).next().unwrap();
             *s = s.strip_prefix(name).unwrap();
             Some(Token::Name(name))
@@ -148,11 +147,15 @@ impl<'a> Module<'a> {
         let mut param_list = Vec::new();
         while *self.token.as_ref().unwrap() != Token::Special(")") {
             let name = self.shift().unwrap().into_name();
-            self.insert_name(name, Val::Arg(param_list.len()));
+            let val = self.builder.push_instr(Instr::Alloc);
+            self.builder
+                .push_instr(Instr::Store(val, Val::Arg(param_list.len())));
+            self.insert_name(name, val);
             let mut param = Param::Match(MatchExpr::And(Vec::new()));
             if self.token == Some(Token::Special("is")) {
                 self.shift();
-                param = Param::Genuine(self.shift().unwrap().into_name().to_string());
+                let name = self.shift().unwrap().into_name();
+                param = Param::Genuine(self.canonical_name(name));
             }
             // TODO match param
             param_list.push(param);
@@ -166,10 +169,10 @@ impl<'a> Module<'a> {
         self.do_block();
         self.name_table.pop().unwrap();
         let func = take(&mut self.builder).finish();
-        println!("{name}");
-        println!("{func}");
+        // println!("{name}");
+        // println!("{func}");
         self.loader
-            .register_func(&[self.path, name].concat(), &param_list, func);
+            .register_func(&[self.path, ".", name].concat(), &param_list, func);
     }
 
     fn do_block(&mut self) {
@@ -252,9 +255,9 @@ impl<'a> Module<'a> {
         assert_eq!(self.shift(), Some(Token::Special("while")));
         let label_expr = self.builder.push_block();
         let label_continue = self.builder.push_block();
-        let saved_continue = replace(&mut self.label_continue, Some(label_continue));
+        let saved_continue = self.label_continue.replace(label_continue);
         let label_break = self.builder.push_block();
-        let saved_break = replace(&mut self.label_break, Some(label_break));
+        let saved_break = self.label_break.replace(label_break);
         self.builder.push_instr(Self::jmp(label_expr));
         self.builder.with_block(label_expr);
         let val = self.expr();
@@ -281,7 +284,7 @@ impl<'a> Module<'a> {
     fn expr(&mut self) -> Val {
         match self.token.as_ref().unwrap() {
             Token::Special("(") => self.paren(),
-            Token::Special("unit") => {
+            Token::Special("_") => {
                 let val = Val::Const(ValConst::Unit);
                 self.shift();
                 val
@@ -309,7 +312,7 @@ impl<'a> Module<'a> {
                 let name = self.shift().unwrap().into_name();
                 self.guess_call(name)
                     .or_else(|| self.guess_binary(name))
-                    // just stop here, let other one handle the following mess :)
+                    // just stop here, let the others handle the following mess :)
                     .unwrap_or_else(|| {
                         let val = self.resolve_name(name);
                         self.builder.push_instr(Instr::Load(val))
@@ -367,6 +370,7 @@ impl<'a> Module<'a> {
         };
         self.shift();
         let this_val = self.resolve_name(name);
+        let this_val = self.builder.push_instr(Instr::Load(this_val));
         let that_val = self.expr();
         let mut val = self
             .builder

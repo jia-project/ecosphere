@@ -3,7 +3,7 @@ use std::{io::Write, time::Instant};
 use crate::{
     instr::{FuncBuilder, Instr, Val, ValConst, I32},
     interp::OpContext,
-    loader::{Loader, Param},
+    loader::{Loader, MatchExpr, Param},
     mem::Obj,
     Operator,
 };
@@ -51,6 +51,14 @@ unsafe impl Operator for Op {
                 let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
                 Some(context.make_addr(Val::Const(ValConst::Bool(i1 == i2))))
             }
+            "intrinsic.i32lt" => {
+                let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
+                Some(context.make_addr(Val::Const(ValConst::Bool(i1 < i2))))
+            }
+            "intrinsic.boolneg" => {
+                let b = unsafe { context.get_bool(val[0]) };
+                Some(context.make_addr(Val::Const(ValConst::Bool(!b))))
+            }
 
             "basic.str" => {
                 let s = context.make_addr(val[0]);
@@ -82,6 +90,13 @@ unsafe impl Operator for Op {
                 let List(l) = l.downcast_mut().unwrap();
                 l.push(context.make_addr(val[1]));
                 None
+            }
+            "basic.list_index" => {
+                let l = context.make_addr(val[0]);
+                let l = unsafe { context.worker.mem.read(l) };
+                let List(l) = l.downcast_ref().unwrap();
+                let i = unsafe { context.get_i32(val[1]) };
+                Some(l[i as usize])
             }
 
             _ => unimplemented!(),
@@ -142,7 +157,7 @@ impl Op {
             "basic.list_push",
             &[
                 Param::Genuine(List::NAME.to_owned()),
-                Param::Genuine(List::NAME.to_owned()),
+                Param::Match(MatchExpr::And(Vec::new())),
             ],
             func.finish(),
         );
