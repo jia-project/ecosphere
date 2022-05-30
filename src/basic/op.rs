@@ -3,7 +3,7 @@ use std::{io::Write, time::Instant};
 use crate::{
     instr::{FuncBuilder, Instr, Val, ValConst},
     interp::OpContext,
-    loader::{Loader, TagExpr},
+    loader::{Loader, Param},
     mem::Obj,
     Operator,
 };
@@ -93,7 +93,22 @@ impl Op {
         func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
         loader.register_func(
             "basic.str_trace",
-            &[TagExpr::Has(Str::NAME.to_owned())],
+            &[Param::Genuine(Str::NAME.to_owned())],
+            func.finish(),
+        );
+
+        let mut func = FuncBuilder::default();
+        func.push_instr(Instr::Op(
+            "basic.str_push".to_string(),
+            vec![Val::Arg(0), Val::Arg(1)],
+        ));
+        func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
+        loader.register_func(
+            "basic.str_push",
+            &[
+                Param::Genuine(Str::NAME.to_owned()),
+                Param::Genuine(Str::NAME.to_owned()),
+            ],
             func.finish(),
         );
     }

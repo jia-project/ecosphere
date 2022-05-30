@@ -22,7 +22,7 @@ pub enum Val {
 pub enum ValConst {
     // represented as Prod{tag=0}
     Unit,
-    // represented as Sum{tag=2}
+    // represented as Sum{tag=2}, reusing Some(Unit) as True, and None as False
     Bool(bool),
     // represented as I32 below
     // should/can we move I32 op here as well?
@@ -32,7 +32,7 @@ pub enum ValConst {
 
 pub struct I32(pub i32);
 impl I32 {
-    pub const NAME: &'static Name = "instrinsic.I32";
+    pub const NAME: &'static Name = "intrinsic.I32";
 }
 unsafe impl ObjCore for I32 {
     fn name(&self) -> &Name {

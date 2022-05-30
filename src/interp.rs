@@ -2,10 +2,10 @@ use std::{collections::HashMap, mem::size_of, sync::Arc};
 
 use crate::{
     instr::{ArgMorph, Func, Instr, InstrCall, InstrId, Val, ValConst, I32},
-    loader::{CallArg, Loader},
+    loader::{CallArg, Loader, TagId},
     mem::{Mutator, Obj},
     worker::WorkerInterface,
-    Name, ObjCore, Operator, TagId,
+    Name, ObjCore, Operator,
 };
 
 pub struct Interp {

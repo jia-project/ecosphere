@@ -6,7 +6,7 @@ use std::{
 use ecosphere::{
     basic,
     instr::{FuncBuilder, Instr, InstrCall, Val, ValConst},
-    loader::{Loader, TagExpr},
+    loader::{Loader, Param},
     mem::Mem,
     worker::Worker,
 };
@@ -49,7 +49,7 @@ fn main() {
     let mem = Mem::default();
     let mut loader = Loader::default();
     basic::Op::boot(&mut loader);
-    loader.register_func("fib", &[TagExpr::And(Default::default())], func);
+    loader.register_func("fib", &[Param::Genuine("intrinsic.I32".to_string())], func);
 
     let mut func = FuncBuilder::default();
     func.push_instr(Instr::Call(InstrCall {

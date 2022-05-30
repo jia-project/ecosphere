@@ -1,13 +1,12 @@
-use std::{
-    collections::{BTreeSet, HashMap},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     instr::{Func, I32},
     mem::{Mem, Obj},
-    AssetId, Name, ObjCore, OwnedName, TagId,
+    AssetId, Name, ObjCore, OwnedName,
 };
+
+pub type TagId = u32;
 
 pub struct Loader {
     asset_list: Vec<*mut Obj>,
@@ -16,12 +15,18 @@ pub struct Loader {
     sum_table: HashMap<TagId, HashMap<String, u32>>,
     func_table: HashMap<OwnedName, DispatchList>,
 }
-type DispatchList = Vec<(Vec<TagExpr>, Arc<Func>)>;
+type DispatchList = Vec<(Vec<Param>, Arc<Func>)>;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TagExpr {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Param {
+    Genuine(OwnedName),
+    Match(MatchExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MatchExpr {
     Has(OwnedName),
-    And(BTreeSet<TagExpr>),
+    And(Vec<MatchExpr>),
 }
 
 impl Default for Loader {
@@ -33,12 +38,9 @@ impl Default for Loader {
             sum_table: HashMap::new(),
             func_table: HashMap::new(),
         };
-        let tag_unit = loader.make_tag("intrinsic.Unit");
-        loader.register_prod(tag_unit, &[]);
-        let tag_ref = loader.make_tag("intrinsic.Ref");
-        loader.register_prod(tag_ref, &["content"]);
-        let tag_bool = loader.make_tag("intrinsic.Bool");
-        loader.register_sum(tag_bool, &["True", "False"]);
+        loader.register_prod("intrinsic.Unit", &[]);
+        loader.register_prod("intrinsic.Ref", &["content"]);
+        loader.register_sum("intrinsic.Option", &["Some", "None"]);
         loader.make_tag(I32::NAME);
         loader
     }
@@ -55,7 +57,7 @@ impl Loader {
         }
     }
 
-    pub fn register_func(&mut self, id: &Name, param_list: &[TagExpr], func: Func) {
+    pub fn register_func(&mut self, id: &Name, param_list: &[Param], func: Func) {
         self.func_table
             .entry(id.to_owned())
             .or_default()
@@ -67,30 +69,35 @@ pub enum CallArg {
     Genuine(TagId),
     Morph(Vec<TagId>),
 }
+
 impl Loader {
     pub fn dispatch_call(&self, id: &Name, arg_list: &[CallArg]) -> Arc<Func> {
-        for (param_list, func) in &self.func_table[id] {
+        let candicate_list = &self.func_table[id];
+        for (param_list, func) in candicate_list {
             if param_list.len() != arg_list.len() {
                 continue;
             }
-            if arg_list
-                .iter()
-                .zip(param_list.iter())
-                // TODO
-                .all(|(arg, param)| self.is_compatible(arg, param).is_some())
-            {
+            let mut genuine_dispatch = true;
+            for (param, arg) in param_list.iter().zip(arg_list.iter()) {
+                match (param, arg) {
+                    (Param::Genuine(name), CallArg::Genuine(tag))
+                        if self.query_tag(name) == *tag => {}
+                    _ => {
+                        genuine_dispatch = false;
+                        // TODO check match dispatch
+                    }
+                }
+            }
+            if genuine_dispatch {
                 return func.clone();
             }
         }
-        unreachable!()
+        panic!("dispatch failed func {id}");
     }
 
-    fn is_compatible(&self, arg: &CallArg, param: &TagExpr) -> Option<u32> {
-        Some(u32::MAX) // TODO
-    }
-
-    pub fn register_prod(&mut self, tag: TagId, key_list: &[&str]) {
-        assert!(self.tag_table.len() > tag as _);
+    pub fn register_prod(&mut self, name: &Name, key_list: &[&str]) {
+        let tag = self.make_tag(name);
+        assert!(!self.prod_table.contains_key(&tag));
         assert!(!self.sum_table.contains_key(&tag));
         self.prod_table.insert(
             tag,
@@ -102,9 +109,10 @@ impl Loader {
         );
     }
 
-    pub fn register_sum(&mut self, tag: TagId, key_list: &[&str]) {
-        assert!(self.tag_table.len() > tag as _);
+    pub fn register_sum(&mut self, name: &Name, key_list: &[&str]) {
+        let tag = self.make_tag(name);
         assert!(!self.prod_table.contains_key(&tag));
+        assert!(!self.sum_table.contains_key(&tag));
         self.sum_table.insert(
             tag,
             key_list

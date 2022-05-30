@@ -21,7 +21,6 @@ use crate::{instr::Val, interp::OpContext, mem::Obj};
 pub type AssetId = u32;
 pub type Name = str;
 pub type OwnedName = <Name as ToOwned>::Owned;
-pub type TagId = u32;
 
 /// # Safety
 /// As long as all `*mut Obj` that accessible from arguments are valid and alive,
