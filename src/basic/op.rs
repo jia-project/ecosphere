@@ -1,7 +1,7 @@
 use std::{io::Write, time::Instant};
 
 use crate::{
-    instr::{FuncBuilder, Instr, Val, ValConst},
+    instr::{FuncBuilder, Instr, Val, ValConst, I32},
     interp::OpContext,
     loader::{Loader, Param},
     mem::Obj,
@@ -52,6 +52,12 @@ unsafe impl Operator for Op {
                 Some(context.make_addr(Val::Const(ValConst::Bool(i1 == i2))))
             }
 
+            "basic.str" => {
+                let s = context.make_addr(val[0]);
+                let s = unsafe { context.worker.mem.read(s) };
+                let Str(s) = s.downcast_ref().unwrap();
+                Some(context.worker.mem.make(Str(s.clone())))
+            }
             "basic.str_trace" => {
                 let s = context.make_addr(val[0]);
                 let s = unsafe { context.worker.mem.read(s) };
@@ -69,7 +75,7 @@ unsafe impl Operator for Op {
                 None
             }
 
-            "basic.list_new" => Some(context.worker.mem.make(List(Vec::new()))),
+            "basic.list" => Some(context.worker.mem.make(List(Vec::new()))),
             "basic.list_push" => {
                 let l = context.make_addr(val[0]);
                 let mut l = unsafe { context.worker.mem.write(l) };
@@ -87,6 +93,15 @@ impl Op {
     pub fn boot(loader: &mut Loader) {
         loader.make_tag(List::NAME);
         loader.make_tag(Str::NAME);
+
+        let mut func = FuncBuilder::default();
+        let i1 = func.push_instr(Instr::Op("basic.str".to_string(), vec![Val::Arg(0)]));
+        func.push_instr(Instr::Ret(i1));
+        loader.register_func(
+            "basic.str",
+            &[Param::Genuine(Str::NAME.to_owned())],
+            func.finish(),
+        );
 
         let mut func = FuncBuilder::default();
         func.push_instr(Instr::Op("basic.str_trace".to_string(), vec![Val::Arg(0)]));
@@ -108,6 +123,41 @@ impl Op {
             &[
                 Param::Genuine(Str::NAME.to_owned()),
                 Param::Genuine(Str::NAME.to_owned()),
+            ],
+            func.finish(),
+        );
+
+        let mut func = FuncBuilder::default();
+        let i1 = func.push_instr(Instr::Op("basic.list".to_string(), vec![]));
+        func.push_instr(Instr::Ret(i1));
+        loader.register_func("basic.list", &[], func.finish());
+
+        let mut func = FuncBuilder::default();
+        func.push_instr(Instr::Op(
+            "basic.list_push".to_string(),
+            vec![Val::Arg(0), Val::Arg(1)],
+        ));
+        func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
+        loader.register_func(
+            "basic.list_push",
+            &[
+                Param::Genuine(List::NAME.to_owned()),
+                Param::Genuine(List::NAME.to_owned()),
+            ],
+            func.finish(),
+        );
+
+        let mut func = FuncBuilder::default();
+        let i1 = func.push_instr(Instr::Op(
+            "basic.list_index".to_string(),
+            vec![Val::Arg(0), Val::Arg(1)],
+        ));
+        func.push_instr(Instr::Ret(i1));
+        loader.register_func(
+            "basic.list_index",
+            &[
+                Param::Genuine(List::NAME.to_owned()),
+                Param::Genuine(I32::NAME.to_owned()),
             ],
             func.finish(),
         );
