@@ -219,12 +219,13 @@ impl<'a> Module<'a> {
         assert_eq!(self.shift(), Some(Token::Special("let")));
         let name = self.shift().unwrap().into_name();
         let val = self.builder.push_instr(Instr::Alloc);
-        self.insert_name(name, val);
         if self.token == Some(Token::Special("=")) {
             self.shift();
             let expr_val = self.expr();
             self.builder.push_instr(Instr::Store(val, expr_val));
         }
+        // only insert name after expr is evaluated, so as Rust's name shadowing
+        self.insert_name(name, val);
     }
 
     fn mut_stmt(&mut self) {

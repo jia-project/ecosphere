@@ -21,7 +21,7 @@ use crate::{
 pub struct Worker {
     mem: Arc<Mem>,
     loader: Arc<Loader>,
-    operator: Box<dyn Operator>,
+    operator: Box<dyn Operator + Send>,
     ready_queue: ReadyQueue,
     task_pool: TaskPool,
     trace_out: Box<dyn Write + Send>,
@@ -84,7 +84,7 @@ unsafe impl ObjCore for TaskHandle {
 }
 
 impl Worker {
-    pub fn new_group<O: Operator + 'static, W: Write + Send + 'static>(
+    pub fn new_group<O: Operator + Send + 'static, W: Write + Send + 'static>(
         count: usize,
         mem: Mem,
         loader: Loader,
@@ -186,7 +186,7 @@ impl Worker {
         }
     }
 
-    pub fn run_loop(mut self) -> bool {
+    pub fn run_loop(&mut self) -> bool {
         loop {
             if let Some(ready) = {
                 let mut ready_queue = self.ready_queue.lock().unwrap();

@@ -1,5 +1,5 @@
 use std::{
-    io::{stdout, LineWriter, Stdout, Write},
+    io::{stdout, LineWriter, Write},
     thread::spawn,
     time::Instant,
 };
@@ -45,9 +45,16 @@ func fib(n is int) do
 end
 
 func trace_hi(id is int) do
-    let s = "hello from task "
+    let s = "[task "
     run basic.str_push(s, .to_str(id))
-    run basic.str_trace(s)
+    let i = 0
+    while i < 5 do
+        let s = basic.str(s)
+        run basic.str_push(s, "] hi #")
+        run basic.str_push(s, .to_str(i))
+        run basic.str_trace(s)
+        mut i = i + 1
+    end
     return _
 end
 
@@ -68,24 +75,35 @@ fn main() {
     basic::parse::Module::new("testbed", TEXT, &mut loader, &mem).load();
 
     let t0 = Instant::now();
-    let (mut worker_list, collect) = Worker::new_group(
-        1,
+    let (worker_list, collect) = Worker::new_group(
+        4,
         mem,
         loader,
         || basic::Op::new(),
-        || LineWriter::new(TraceOut::new(SeqStdout(stdout()), t0)),
+        || LineWriter::new(TraceOut::new(LineWriter::new(SeqStdout), t0)),
     );
     let collect = spawn(move || collect.run_loop());
-    let worker = worker_list.pop().unwrap();
-    let _ = worker.spawn_main("testbed.main");
-    worker.run_loop();
+    let _ = worker_list[0].spawn_main("testbed.main");
+    let worker_list: Vec<_> = worker_list
+        .into_iter()
+        .map(|mut worker| {
+            spawn(move || {
+                while !worker.run_loop() {
+                    // TODO park
+                }
+            })
+        })
+        .collect();
+    for worker in worker_list {
+        worker.join().unwrap();
+    }
     collect.join().unwrap();
 }
 
-struct SeqStdout(Stdout);
+struct SeqStdout;
 impl Write for SeqStdout {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().write_all(buf).map(|()| buf.len())
+        stdout().lock().write_all(buf).map(|()| buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
