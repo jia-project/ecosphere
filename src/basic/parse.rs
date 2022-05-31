@@ -142,7 +142,7 @@ impl<'a> Module<'a> {
 
     fn func(&mut self) {
         assert_eq!(self.shift(), Some(Token::Special("func")));
-        let name = self.shift().unwrap().into_name();
+        let func_id = self.shift().unwrap().into_name();
         assert_eq!(self.shift(), Some(Token::Special("(")));
         self.name_table.push(HashMap::new());
         let mut param_list = Vec::new();
@@ -172,8 +172,8 @@ impl<'a> Module<'a> {
         let func = take(&mut self.builder).finish();
         // println!("{name}");
         // println!("{func}");
-        self.loader
-            .register_func(&[self.path, ".", name].concat(), &param_list, func);
+        let func_id = self.canonical_name(func_id);
+        self.loader.register_func(&func_id, &param_list, func);
     }
 
     fn do_block(&mut self) {
@@ -427,8 +427,8 @@ impl<'a> Module<'a> {
         match name {
             "unit" => "intrinsic.Unit".to_string(),
             "int" => "intrinsic.I32".to_string(),
-            name if name.starts_with('.') => [self.path, name].concat(),
-            name => name.to_string(),
+            name if name.starts_with("_.") => name.strip_prefix("_.").unwrap().to_string(),
+            name => [self.path, ".", name].concat(),
         }
     }
 }

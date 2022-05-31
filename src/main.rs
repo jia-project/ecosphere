@@ -8,24 +8,24 @@ use ecosphere::{basic, loader::Loader, mem::Mem, worker::Worker, TraceOut};
 
 const TEXT: &str = r#"
 func to_str(n is int) do
-    let digit_table = basic.list()
-    run basic.list_push(digit_table, "0")
-    run basic.list_push(digit_table, "1")
-    run basic.list_push(digit_table, "2")
-    run basic.list_push(digit_table, "3")
-    run basic.list_push(digit_table, "4")
-    run basic.list_push(digit_table, "5")
-    run basic.list_push(digit_table, "6")
-    run basic.list_push(digit_table, "7")
-    run basic.list_push(digit_table, "8")
-    run basic.list_push(digit_table, "9")
+    let digit_table = _.basic.list()
+    run _.basic.list_push(digit_table, "0")
+    run _.basic.list_push(digit_table, "1")
+    run _.basic.list_push(digit_table, "2")
+    run _.basic.list_push(digit_table, "3")
+    run _.basic.list_push(digit_table, "4")
+    run _.basic.list_push(digit_table, "5")
+    run _.basic.list_push(digit_table, "6")
+    run _.basic.list_push(digit_table, "7")
+    run _.basic.list_push(digit_table, "8")
+    run _.basic.list_push(digit_table, "9")
 
     if n == 0 return "0"
     let s = ""
     while n != 0 do
         let old_s = s
-        mut s = basic.str(basic.list_index(digit_table, n % 10))
-        run basic.str_push(s, old_s)
+        mut s = _.basic.str(_.basic.list_index(digit_table, n % 10))
+        run _.basic.str_push(s, old_s)
         mut n = n / 10
     end
     return s
@@ -46,24 +46,24 @@ end
 
 func trace_hi(id is int) do
     let s = "[task "
-    run basic.str_push(s, .to_str(id))
+    run _.basic.str_push(s, to_str(id))
     let i = 0
-    while i < 5 do
-        let s = basic.str(s)
-        run basic.str_push(s, "] hi #")
-        run basic.str_push(s, .to_str(i))
-        run basic.str_trace(s)
+    while i < 10 do
+        let s = _.basic.str(s)
+        run _.basic.str_push(s, "] hi #")
+        run _.basic.str_push(s, to_str(i))
+        run _.basic.str_trace(s)
         mut i = i + 1
     end
     return _
 end
 
 func main() do
-    let h1 = spawn .trace_hi(117)
-    let h2 = spawn .trace_hi(418)
+    let h1 = spawn trace_hi(117)
+    let h2 = spawn trace_hi(418)
     wait h1
     wait h2
-    run basic.str_trace("all done")
+    run _.basic.str_trace("all done")
     return _
 end
 "#;

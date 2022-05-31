@@ -348,7 +348,7 @@ impl CollectWorker {
                 continue;
             }
             let mut collector = self.mem.collector();
-            writeln!(self.trace_out, "collector start").unwrap();
+            writeln!(self.trace_out, "[collector] start").unwrap();
             let mut preload_list = Vec::new();
             self.loader.trace(|obj| preload_list.push(obj));
 
@@ -366,14 +366,14 @@ impl CollectWorker {
             };
             writeln!(
                 self.trace_out,
-                "collector exit cap {:.1}MiB",
+                "[collector] exit capacity {:.2}MiB",
                 cap as f32 / (1 << 20) as f32
             )
             .unwrap();
         }
         writeln!(
             self.trace_out,
-            "at exit {:.1}MiB allocated load {:.3}",
+            "[collect worker] exit {:.2}MiB allocated load {:.3}",
             MEM_STAT.allocated.load(SeqCst) as f32 / (1 << 20) as f32,
             self.mem.load_factor()
         )
