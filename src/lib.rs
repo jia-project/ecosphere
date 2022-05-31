@@ -13,8 +13,11 @@ pub mod basic {
 
 use std::{
     any::Any,
+    io::Write,
     mem::size_of_val,
     ops::{Deref, DerefMut},
+    str,
+    time::Instant,
 };
 
 use crate::{instr::Val, interp::OpContext, mem::Obj};
@@ -65,4 +68,33 @@ pub unsafe trait ObjCore: AsAny {
         size_of_val(self)
     }
     fn name(&self) -> &Name;
+}
+
+// consider make a util module
+pub struct TraceOut<W> {
+    write: W,
+    t0: Instant,
+}
+
+impl<W> TraceOut<W> {
+    pub fn new(write: W, t0: Instant) -> Self {
+        Self { write, t0 }
+    }
+}
+
+impl<W: Write> Write for TraceOut<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        writeln!(
+            self.write,
+            "[{:11.6}] {}",
+            (Instant::now() - self.t0).as_secs_f64(),
+            str::from_utf8(buf).unwrap()
+        )
+        .unwrap();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

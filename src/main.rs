@@ -1,30 +1,31 @@
 use std::{
     io::{stdout, Stdout, Write},
+    thread::spawn,
     time::Instant,
 };
 
-use ecosphere::{basic, loader::Loader, mem::Mem, worker::Worker};
+use ecosphere::{basic, loader::Loader, mem::Mem, worker::Worker, TraceOut};
 
 const TEXT: &str = r#"
 func to_str(n is int) do
     let digit_table = basic.list()
-    basic.list_push(digit_table, "0")
-    basic.list_push(digit_table, "1")
-    basic.list_push(digit_table, "2")
-    basic.list_push(digit_table, "3")
-    basic.list_push(digit_table, "4")
-    basic.list_push(digit_table, "5")
-    basic.list_push(digit_table, "6")
-    basic.list_push(digit_table, "7")
-    basic.list_push(digit_table, "8")
-    basic.list_push(digit_table, "9")
+    run basic.list_push(digit_table, "0")
+    run basic.list_push(digit_table, "1")
+    run basic.list_push(digit_table, "2")
+    run basic.list_push(digit_table, "3")
+    run basic.list_push(digit_table, "4")
+    run basic.list_push(digit_table, "5")
+    run basic.list_push(digit_table, "6")
+    run basic.list_push(digit_table, "7")
+    run basic.list_push(digit_table, "8")
+    run basic.list_push(digit_table, "9")
 
     if n == 0 return "0"
     let s = ""
     while n != 0 do
         let old_s = s
         mut s = basic.str(basic.list_index(digit_table, n % 10))
-        basic.str_push(s, old_s)
+        run basic.str_push(s, old_s)
         mut n = n / 10
     end
     return s
@@ -45,8 +46,8 @@ end
 
 func main() do
     let s = basic.str("fib(10) = ")
-    basic.str_push(s, .to_str(.fib(10)))
-    basic.str_trace(s)
+    run basic.str_push(s, .to_str(.fib(10)))
+    run basic.str_trace(s)
     return _
 end
 "#;
@@ -58,17 +59,22 @@ fn main() {
     basic::parse::Module::new("testbed", TEXT, &mut loader, &mem).load();
 
     let t0 = Instant::now();
-    let (mut worker_list, collect) =
-        Worker::new_group(1, mem, loader, || basic::Op::new(t0, TraceOut(stdout())));
+    let (mut worker_list, collect) = Worker::new_group(
+        1,
+        mem,
+        loader,
+        || basic::Op::new(),
+        || TraceOut::new(SeqStdout(stdout()), t0),
+    );
+    let collect = spawn(move || collect.run_loop());
     let worker = worker_list.pop().unwrap();
     let _ = worker.spawn_main("testbed.main");
     worker.run_loop();
-
-    collect.work();
+    collect.join().unwrap();
 }
 
-struct TraceOut(Stdout);
-impl Write for TraceOut {
+struct SeqStdout(Stdout);
+impl Write for SeqStdout {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.lock().write_all(buf).map(|()| buf.len())
     }

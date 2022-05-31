@@ -40,7 +40,7 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     match s.split_whitespace().next().unwrap() {
         // special that must separated with next token
         special @ ("prod" | "sum" | "func" | "tag" | "do" | "end" | "if" | "else" | "while"
-        | "break" | "continue" | "return" | "let" | "mut" | "is" | "_") => {
+        | "break" | "continue" | "return" | "let" | "mut" | "run" | "is" | "_") => {
             *s = s.strip_prefix(special).unwrap();
             Some(Token::Special(special))
         }
@@ -204,10 +204,11 @@ impl<'a> Module<'a> {
                 self.builder
                     .push_instr(Self::jmp(self.label_continue.unwrap()));
             }
-            // should we special indicate side effect expr?
-            _ => {
+            Token::Special("run") => {
+                self.shift();
                 self.expr();
             }
+            token => panic!("unexpected token {token:?}"),
         }
     }
 

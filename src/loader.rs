@@ -29,6 +29,9 @@ pub enum MatchExpr {
     And(Vec<MatchExpr>),
 }
 
+unsafe impl Send for Loader {}
+unsafe impl Sync for Loader {}
+
 impl Default for Loader {
     fn default() -> Self {
         let mut loader = Self {

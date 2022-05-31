@@ -1,5 +1,3 @@
-use std::{io::Write, time::Instant};
-
 use crate::{
     instr::{FuncBuilder, Instr, Val, ValConst, I32},
     interp::OpContext,
@@ -10,17 +8,11 @@ use crate::{
 
 use super::obj::{List, Str};
 
-pub struct Op {
-    t0: Instant,
-    trace_out: Box<dyn Write>,
-}
+pub struct Op {}
 
 impl Op {
-    pub fn new(t0: Instant, trace_out: impl Write + 'static) -> Self {
-        Self {
-            t0,
-            trace_out: Box::new(trace_out),
-        }
+    pub fn new() -> Self {
+        Self {}
     }
 }
 
@@ -70,8 +62,7 @@ unsafe impl Operator for Op {
                 let s = context.make_addr(val[0]);
                 let s = unsafe { context.worker.mem.read(s) };
                 let Str(s) = s.downcast_ref().unwrap();
-                let t = (Instant::now() - self.t0).as_secs_f64();
-                writeln!(self.trace_out, "[{t:11.6}] {s}").unwrap();
+                write!(context.worker.trace_out, "{s}").unwrap();
                 None
             }
             "basic.str_push" => {

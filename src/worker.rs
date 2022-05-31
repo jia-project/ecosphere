@@ -1,9 +1,13 @@
 use std::{
     collections::{HashSet, VecDeque},
+    io::Write,
     iter,
     mem::replace,
     ops::Deref,
-    sync::{Arc, Mutex},
+    sync::{
+        mpsc::{channel, Receiver, Sender},
+        Arc, Mutex,
+    },
 };
 
 use crate::{
@@ -19,16 +23,24 @@ pub struct Worker {
     operator: Box<dyn Operator>,
     ready_queue: ReadyQueue,
     task_pool: TaskPool,
+    trace_out: Box<dyn Write + Send>,
+    wake_collect: Sender<()>,
 }
 
 pub struct CollectWorker {
     mem: Arc<Mem>,
     task_pool: TaskPool,
     loader: Arc<Loader>,
+    trace_out: Box<dyn Write + Send>,
+    wake: Receiver<()>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TaskAddr(*mut Obj);
+unsafe impl Send for TaskAddr {}
+
 type ReadyQueue = Arc<Mutex<VecDeque<TaskHandle>>>;
-type TaskPool = Arc<Mutex<HashSet<*mut Obj>>>;
+type TaskPool = Arc<Mutex<HashSet<TaskAddr>>>;
 
 struct Task {
     interp: Interp,
@@ -51,7 +63,7 @@ unsafe impl ObjCore for Task {
 
 #[derive(Debug, Clone)]
 struct TaskHandle {
-    addr: *mut Obj,
+    addr: TaskAddr,
     // probably cannot implement TaskHandle as a plain Prod object, with status
     // as a managed mutex, because this shared status has an unbounded lifetime,
     // it may even outlive `Mem` if a wake token has been kept forever
@@ -64,6 +76,7 @@ pub enum TaskStatus {
     Finished(*mut Obj),
     Canceled,
 }
+unsafe impl Send for TaskStatus {}
 
 unsafe impl ObjCore for TaskHandle {
     fn name(&self) -> &str {
@@ -72,20 +85,24 @@ unsafe impl ObjCore for TaskHandle {
 }
 
 impl Worker {
-    pub fn new_group<O: Operator + 'static>(
+    pub fn new_group<O: Operator + 'static, W: Write + Send + 'static>(
         count: usize,
         mem: Mem,
         loader: Loader,
         make_operator: impl Fn() -> O,
+        make_trace: impl Fn() -> W,
     ) -> (Vec<Self>, CollectWorker) {
         let mem = Arc::new(mem);
         let loader = Arc::new(loader);
         let ready_queue = Arc::new(Mutex::new(VecDeque::new()));
         let task_pool = Arc::new(Mutex::new(HashSet::new()));
+        let (wake_tx, wake_rx) = channel();
         let collect_worker = CollectWorker {
             mem: mem.clone(),
             task_pool: task_pool.clone(),
             loader: loader.clone(),
+            trace_out: Box::new(make_trace()),
+            wake: wake_rx,
         };
         (
             iter::repeat_with(move || Self {
@@ -94,6 +111,8 @@ impl Worker {
                 operator: Box::new(make_operator()),
                 ready_queue: ready_queue.clone(),
                 task_pool: task_pool.clone(),
+                trace_out: Box::new(make_trace()),
+                wake_collect: wake_tx.clone(),
             })
             .take(count)
             .collect(),
@@ -113,7 +132,8 @@ impl Worker {
                 break None;
             }
 
-            let mut task = unsafe { mem.write(handle.addr) };
+            let TaskAddr(task) = handle.addr;
+            let mut task = unsafe { mem.write(task) };
             let task: &mut Task = task.downcast_mut().unwrap();
 
             if let Some(res) = task.interp.get_result() {
@@ -127,6 +147,7 @@ impl Worker {
                 mem,
                 loader: &self.loader,
                 is_paused: false,
+                trace_out: &mut self.trace_out,
             };
             task.interp.step(&mut interface, &mut *self.operator);
             if interface.is_paused() {
@@ -170,7 +191,7 @@ impl Worker {
 
     fn spawn_internal(interp: Interp, mem: &Mutator<'_>, ready_queue: &ReadyQueue) -> TaskHandle {
         let task = TaskHandle {
-            addr: mem.make(Task { interp }),
+            addr: TaskAddr(mem.make(Task { interp })),
             status: Arc::new(Mutex::new(TaskStatus::Running(Vec::new()))),
         };
         ready_queue.lock().unwrap().push_back(task.clone());
@@ -203,9 +224,10 @@ impl WakeToken {
         if matches!(status, TaskStatus::Canceled) {
             return false;
         }
+        let TaskAddr(task) = self.handle.addr;
         // we are holding a mutator, which means no sweeping can happen concurrently
         // so it is safe to access task object
-        let mut task = unsafe { mem.write(self.handle.addr) };
+        let mut task = unsafe { mem.write(task) };
         let task: &mut Task = task.downcast_mut().unwrap();
         task.interp.resume(res);
         self.ready_queue
@@ -230,6 +252,7 @@ pub struct WorkerInterface<'a> {
     is_paused: bool,
     pub mem: Mutator<'a>,
     pub loader: &'a Loader,
+    pub trace_out: &'a mut dyn Write,
 }
 
 impl WorkerInterface<'_> {
@@ -289,21 +312,25 @@ impl WorkerInterface<'_> {
 }
 
 impl CollectWorker {
-    pub fn work(&self) {
-        let mut collector = self.mem.collector();
-        unsafe {
+    pub fn run_loop(mut self) {
+        while let Ok(()) = self.wake.recv() {
+            let mut collector = self.mem.collector();
+            write!(self.trace_out, "collector start").unwrap();
             let mut preload_list = Vec::new();
             self.loader.trace(|obj| preload_list.push(obj));
-            collector.collect(
-                self.task_pool
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .copied()
-                    // simply chaining is safe because preload object should never
-                    // duplicate with runtime task object
-                    .chain(preload_list),
-            )
-        };
+
+            unsafe {
+                collector.collect(
+                    self.task_pool
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|TaskAddr(task)| *task)
+                        // simply chaining is safe because preload object should never
+                        // duplicate with runtime task object
+                        .chain(preload_list),
+                )
+            };
+        }
     }
 }
