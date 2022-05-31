@@ -1,5 +1,6 @@
 use std::{
-    mem::size_of,
+    alloc::{GlobalAlloc, System},
+    marker::PhantomData,
     ops::{Deref, DerefMut},
     ptr::{null_mut, NonNull},
     sync::{
@@ -46,8 +47,8 @@ impl Obj {
     const COLLECTOR_READ_MASK: u32 = !(u32::MAX >> 1);
 }
 
-struct ObjRead(*mut Obj);
-impl ObjRead {
+struct ObjRead<'a>(*mut Obj, PhantomData<&'a ()>);
+impl ObjRead<'_> {
     unsafe fn new(obj: *mut Obj) -> Self {
         while {
             let rw = (*obj).rw.load(SeqCst);
@@ -60,25 +61,25 @@ impl ObjRead {
         } {
             yield_now();
         }
-        Self(obj)
+        Self(obj, PhantomData)
     }
 }
-impl Drop for ObjRead {
+impl Drop for ObjRead<'_> {
     fn drop(&mut self) {
         let rw = unsafe { &*self.0 }.rw.fetch_sub(1, SeqCst);
         assert_ne!(rw, 0);
         assert_eq!(rw & Obj::COLLECTOR_READ_MASK, 0);
     }
 }
-impl Deref for ObjRead {
+impl Deref for ObjRead<'_> {
     type Target = dyn ObjCore;
     fn deref(&self) -> &Self::Target {
         &*unsafe { &*self.0 }.core
     }
 }
 
-struct ObjWrite(*mut Obj);
-impl ObjWrite {
+struct ObjWrite<'a>(*mut Obj, PhantomData<&'a ()>);
+impl ObjWrite<'_> {
     unsafe fn new(obj: *mut Obj) -> Self {
         while {
             let rw = (*obj).rw.load(SeqCst);
@@ -91,22 +92,22 @@ impl ObjWrite {
         } {
             yield_now();
         }
-        Self(obj)
+        Self(obj, PhantomData)
     }
 }
-impl Drop for ObjWrite {
+impl Drop for ObjWrite<'_> {
     fn drop(&mut self) {
         let rw = unsafe { &*self.0 }.rw.swap(0, SeqCst);
         assert_eq!(rw, Obj::MUTATOR_WRITE);
     }
 }
-impl Deref for ObjWrite {
+impl Deref for ObjWrite<'_> {
     type Target = dyn ObjCore;
     fn deref(&self) -> &Self::Target {
         &*unsafe { &*self.0 }.core
     }
 }
-impl DerefMut for ObjWrite {
+impl DerefMut for ObjWrite<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut *unsafe { &mut *self.0 }.core
     }
@@ -117,6 +118,7 @@ impl CollectorRead {
     unsafe fn new(obj: *mut Obj) -> Self {
         while {
             let rw = (*obj).rw.load(SeqCst);
+            assert_ne!(rw, Obj::MUTATOR_WRITE);
             assert_eq!(rw & Obj::COLLECTOR_READ_MASK, 0);
             rw == Obj::MUTATOR_WRITE
                 || (*obj)
@@ -141,53 +143,102 @@ impl Drop for CollectorRead {
 
 pub struct Mem(RwLock<MemInner>);
 struct MemInner {
-    alloc_size: AtomicUsize,
     cap: usize,
 }
 
 impl Mem {
-    const INITIAL_CAP: usize = 4 << 10;
+    const INITIAL_CAP: usize = 64 << 10;
 }
 
 impl Default for Mem {
     fn default() -> Self {
         Self(RwLock::new(MemInner {
-            alloc_size: AtomicUsize::new(0),
             cap: Self::INITIAL_CAP,
         }))
     }
 }
 
 impl MemInner {
-    unsafe fn mutator_read(&self, obj: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
+    unsafe fn mutator_read(&self, obj: *mut Obj) -> ObjRead<'_> {
         ObjRead::new(obj)
     }
 
-    unsafe fn mutator_write(&self, obj: *mut Obj) -> impl DerefMut<Target = dyn ObjCore> {
+    unsafe fn mutator_write(&self, obj: *mut Obj) -> ObjWrite<'_> {
         ObjWrite::new(obj)
     }
 
     // collector read/write if necessary
+}
 
+pub struct MemStat {
+    pub num_alloc: AtomicU32,
+    pub num_dealloc: AtomicU32,
+    pub num_realloc: AtomicU32,
+    pub allocated: AtomicUsize,
+}
+
+#[global_allocator]
+pub static MEM_STAT: MemStat = MemStat {
+    num_alloc: AtomicU32::new(0),
+    num_dealloc: AtomicU32::new(0),
+    num_realloc: AtomicU32::new(0),
+    allocated: AtomicUsize::new(0),
+};
+
+unsafe impl GlobalAlloc for MemStat {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        self.num_alloc.fetch_add(1, SeqCst);
+        self.allocated.fetch_add(layout.size(), SeqCst);
+        System.alloc(layout)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        self.num_dealloc.fetch_add(1, SeqCst);
+        self.allocated.fetch_sub(layout.size(), SeqCst);
+        System.dealloc(ptr, layout);
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        self.num_alloc.fetch_add(1, SeqCst);
+        self.allocated.fetch_add(layout.size(), SeqCst);
+        System.alloc_zeroed(layout)
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        self.num_realloc.fetch_add(1, SeqCst);
+        if layout.size() < new_size {
+            self.allocated.fetch_add(new_size - layout.size(), SeqCst);
+        } else {
+            self.allocated.fetch_sub(layout.size() - new_size, SeqCst);
+        }
+        System.realloc(ptr, layout, new_size)
+    }
+}
+
+impl Mem {
+    pub const COLLECT_THRESHOLD: f32 = 0.8;
+}
+
+impl MemInner {
     fn make_boxed(&self, core: Box<dyn ObjCore>) -> *mut Obj {
-        self.alloc_size
-            .fetch_add(core.alloc_size() + size_of::<Obj>(), SeqCst);
         Obj::make_boxed(core)
     }
 
     pub fn load_factor(&self) -> f32 {
-        self.alloc_size.load(SeqCst) as f32 / self.cap as f32
+        MEM_STAT.allocated.load(SeqCst) as f32 / self.cap as f32
     }
 
-    fn update_cap(&mut self) {
-        while self.load_factor() > 0.75 {
-            self.cap *= 2;
-        }
+    fn update_cap(&mut self) -> usize {
+        self.cap = (MEM_STAT.allocated.load(SeqCst) as f32 / (Mem::COLLECT_THRESHOLD / 2.)) as _;
+        self.cap
     }
 
-    unsafe fn collect(&mut self, root_iter: impl Iterator<Item = *mut Obj>) {
+    unsafe fn collect(&mut self, root_iter: impl Iterator<Item = *mut Obj>) -> usize {
         let mut mark_list = Vec::new();
         mark_list.extend(root_iter);
+        // mark phase
+        // collector can be concurrent reader to mutators, use `CollectorRead`
+        // guard as read-write spinlock
         while let Some(obj) = mark_list.pop() {
             let obj = CollectorRead::new(obj);
             let obj = &mut *obj.0;
@@ -199,28 +250,31 @@ impl MemInner {
             });
         }
 
-        let mut scan_obj = PREV_ALLOC.load(SeqCst) as *mut Obj;
+        // sweep phase, no plan to make it better than stop the world
+        // must grab a global mutex at this point. In current implementation
+        // the global mutex is acquired before mark phase so no need here
+        // use a `ObjWrite` guard to assert global exclusive accessing
+        let saved_prev = PREV_ALLOC.load(SeqCst) as *mut Obj;
+        let mut scan_obj = saved_prev;
         let mut prev_obj = null_mut();
-        let mut alloc_size = 0;
         while !scan_obj.is_null() {
-            let obj_guard = CollectorRead::new(scan_obj);
+            let obj_guard = ObjWrite::new(scan_obj);
             let obj = &mut *obj_guard.0;
-            let next_obj = obj.prev;
+            let next_scan = obj.prev;
             if obj.mark == ObjMark::Black {
                 obj.mark = ObjMark::White;
                 obj.prev = prev_obj;
                 prev_obj = obj;
-                alloc_size += obj.core.alloc_size() + size_of::<Obj>();
             } else {
                 drop(obj_guard);
                 drop(Box::from_raw(obj));
             }
-            scan_obj = next_obj;
+            scan_obj = next_scan;
         }
-        PREV_ALLOC.store(prev_obj as _, SeqCst);
+        let res = PREV_ALLOC.compare_exchange(saved_prev as _, prev_obj as _, SeqCst, SeqCst);
+        assert!(res.is_ok());
 
-        self.alloc_size.store(alloc_size, SeqCst);
-        self.update_cap();
+        self.update_cap()
     }
 }
 
@@ -234,6 +288,10 @@ impl Mem {
 
     pub fn collector(&self) -> Collector<'_> {
         Collector(self.0.write().unwrap())
+    }
+
+    pub fn load_factor(&self) -> f32 {
+        self.0.read().unwrap().load_factor()
     }
 }
 
@@ -249,13 +307,13 @@ impl Mutator<'_> {
     /// # Safety
     /// `obj` must be returned by `make`, and be traced, i.e. not get collected
     /// in all previous collection.
-    pub unsafe fn read(&self, obj: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
+    pub unsafe fn read(&self, obj: *mut Obj) -> impl Deref<Target = dyn ObjCore> + '_ {
         self.0.mutator_read(obj)
     }
 
     /// # Safety
     /// Same as `read`.
-    pub unsafe fn write(&self, obj: *mut Obj) -> impl DerefMut<Target = dyn ObjCore> {
+    pub unsafe fn write(&self, obj: *mut Obj) -> impl DerefMut<Target = dyn ObjCore> + '_ {
         self.0.mutator_write(obj)
     }
 }
@@ -267,7 +325,7 @@ impl Collector<'_> {
     /// in `root_iter`, or be traced, in all previous collection.
     ///
     /// All traced objects must implement `ObjCore::trace` correctly.
-    pub unsafe fn collect(&mut self, root_iter: impl Iterator<Item = *mut Obj>) {
-        self.0.collect(root_iter);
+    pub unsafe fn collect(&mut self, root_iter: impl Iterator<Item = *mut Obj>) -> usize {
+        self.0.collect(root_iter)
     }
 }

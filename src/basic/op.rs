@@ -62,7 +62,7 @@ unsafe impl Operator for Op {
                 let s = context.make_addr(val[0]);
                 let s = unsafe { context.worker.mem.read(s) };
                 let Str(s) = s.downcast_ref().unwrap();
-                write!(context.worker.trace_out, "{s}").unwrap();
+                writeln!(context.worker.trace_out, "{s}").unwrap();
                 None
             }
             "basic.str_push" => {

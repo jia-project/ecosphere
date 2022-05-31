@@ -1,5 +1,5 @@
 use std::{
-    io::{stdout, Stdout, Write},
+    io::{stdout, LineWriter, Stdout, Write},
     thread::spawn,
     time::Instant,
 };
@@ -45,8 +45,8 @@ func fib(n is int) do
 end
 
 func main() do
-    let s = basic.str("fib(10) = ")
-    run basic.str_push(s, .to_str(.fib(10)))
+    let s = basic.str("fib(46) = ")
+    run basic.str_push(s, .to_str(.fib(46)))
     run basic.str_trace(s)
     return _
 end
@@ -64,7 +64,7 @@ fn main() {
         mem,
         loader,
         || basic::Op::new(),
-        || TraceOut::new(SeqStdout(stdout()), t0),
+        || LineWriter::new(TraceOut::new(SeqStdout(stdout()), t0)),
     );
     let collect = spawn(move || collect.run_loop());
     let worker = worker_list.pop().unwrap();

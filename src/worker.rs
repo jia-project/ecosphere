@@ -5,6 +5,7 @@ use std::{
     mem::replace,
     ops::Deref,
     sync::{
+        atomic::Ordering::SeqCst,
         mpsc::{channel, Receiver, Sender},
         Arc, Mutex,
     },
@@ -13,7 +14,7 @@ use std::{
 use crate::{
     interp::Interp,
     loader::Loader,
-    mem::{Mem, Mutator, Obj},
+    mem::{Mem, Mutator, Obj, MEM_STAT},
     ObjCore, Operator,
 };
 
@@ -57,8 +58,6 @@ unsafe impl ObjCore for Task {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         self.interp.trace(mark);
     }
-
-    // TODO impl alloc size correctly to reflect Interp's on-heap allocation
 }
 
 #[derive(Debug, Clone)]
@@ -133,10 +132,11 @@ impl Worker {
             }
 
             let TaskAddr(task) = handle.addr;
-            let mut task = unsafe { mem.write(task) };
-            let task: &mut Task = task.downcast_mut().unwrap();
+            let mut task_obj = unsafe { mem.write(task) };
+            let task: &mut Task = task_obj.downcast_mut().unwrap();
 
             if let Some(res) = task.interp.get_result() {
+                drop(task_obj);
                 break Some((res, mem));
             }
 
@@ -144,7 +144,7 @@ impl Worker {
                 handle: handle.clone(),
                 ready_queue: self.ready_queue.clone(),
                 task_pool: self.task_pool.clone(),
-                mem,
+                mem: &mem,
                 loader: &self.loader,
                 is_paused: false,
                 trace_out: &mut self.trace_out,
@@ -152,6 +152,15 @@ impl Worker {
             task.interp.step(&mut interface, &mut *self.operator);
             if interface.is_paused() {
                 break None;
+            }
+            drop(interface);
+
+            let load_factor = self.mem.load_factor();
+            if load_factor > 1. {
+                writeln!(self.trace_out, "heap overflow load factor {load_factor:.3}").unwrap();
+            }
+            if load_factor >= Mem::COLLECT_THRESHOLD {
+                self.wake_collect.send(()).unwrap();
             }
         };
         if let Some((res, mem)) = res {
@@ -169,7 +178,8 @@ impl Worker {
                 for notify in notify_list {
                     notify.resolve(&mem, None);
                 }
-                self.task_pool.lock().unwrap().remove(&handle.addr);
+                let res = self.task_pool.lock().unwrap().remove(&handle.addr);
+                assert!(res);
             } else {
                 assert!(matches!(status, TaskStatus::Canceled));
             }
@@ -189,11 +199,17 @@ impl Worker {
         }
     }
 
-    fn spawn_internal(interp: Interp, mem: &Mutator<'_>, ready_queue: &ReadyQueue) -> TaskHandle {
+    fn spawn_internal(
+        interp: Interp,
+        mem: &Mutator<'_>,
+        task_pool: &TaskPool,
+        ready_queue: &ReadyQueue,
+    ) -> TaskHandle {
         let task = TaskHandle {
             addr: TaskAddr(mem.make(Task { interp })),
             status: Arc::new(Mutex::new(TaskStatus::Running(Vec::new()))),
         };
+        task_pool.lock().unwrap().insert(task.addr);
         ready_queue.lock().unwrap().push_back(task.clone());
         task
     }
@@ -201,7 +217,13 @@ impl Worker {
     pub fn spawn_main(&self, name: &str) -> impl Fn() -> Option<*mut Obj> {
         let mut interp = Interp::default();
         interp.push_call(name, &[], &self.mem.mutator(), &self.loader);
-        let status = Self::spawn_internal(interp, &self.mem.mutator(), &self.ready_queue).status;
+        let status = Self::spawn_internal(
+            interp,
+            &self.mem.mutator(),
+            &self.task_pool,
+            &self.ready_queue,
+        )
+        .status;
         move || match *status.lock().unwrap() {
             TaskStatus::Running(..) => None,
             TaskStatus::Finished(res) => Some(res),
@@ -250,15 +272,19 @@ pub struct WorkerInterface<'a> {
     ready_queue: ReadyQueue,
     task_pool: TaskPool,
     is_paused: bool,
-    pub mem: Mutator<'a>,
+    pub mem: &'a Mutator<'a>,
     pub loader: &'a Loader,
     pub trace_out: &'a mut dyn Write,
 }
 
 impl WorkerInterface<'_> {
     pub fn spawn(&self, interp: Interp) -> *mut Obj {
-        self.mem
-            .make(Worker::spawn_internal(interp, &self.mem, &self.ready_queue))
+        self.mem.make(Worker::spawn_internal(
+            interp,
+            &self.mem,
+            &self.task_pool,
+            &self.ready_queue,
+        ))
     }
 
     pub fn pause(&mut self) -> WakeToken {
@@ -283,7 +309,10 @@ impl WorkerInterface<'_> {
     }
 
     pub fn cancel(&self, handle: *mut Obj) -> bool {
-        fn read(mem: &Mutator<'_>, handle: *mut Obj) -> impl Deref<Target = dyn ObjCore> {
+        fn read<'a>(
+            mem: &'a Mutator<'_>,
+            handle: *mut Obj,
+        ) -> impl Deref<Target = dyn ObjCore> + 'a {
             unsafe { mem.read(handle) }
         }
         let handle = read(&self.mem, handle);
@@ -296,7 +325,8 @@ impl WorkerInterface<'_> {
                 } else {
                     unreachable!()
                 };
-            self.task_pool.lock().unwrap().remove(&handle.addr);
+            let res = self.task_pool.lock().unwrap().remove(&handle.addr);
+            assert!(res);
             for notify in notify_list {
                 notify.resolve(&self.mem, None);
             }
@@ -314,12 +344,15 @@ impl WorkerInterface<'_> {
 impl CollectWorker {
     pub fn run_loop(mut self) {
         while let Ok(()) = self.wake.recv() {
+            if self.mem.load_factor() < Mem::COLLECT_THRESHOLD {
+                continue;
+            }
             let mut collector = self.mem.collector();
-            write!(self.trace_out, "collector start").unwrap();
+            writeln!(self.trace_out, "collector start").unwrap();
             let mut preload_list = Vec::new();
             self.loader.trace(|obj| preload_list.push(obj));
 
-            unsafe {
+            let cap = unsafe {
                 collector.collect(
                     self.task_pool
                         .lock()
@@ -331,6 +364,19 @@ impl CollectWorker {
                         .chain(preload_list),
                 )
             };
+            writeln!(
+                self.trace_out,
+                "collector exit cap {:.1}MiB",
+                cap as f32 / (1 << 20) as f32
+            )
+            .unwrap();
         }
+        writeln!(
+            self.trace_out,
+            "at exit {:.1}MiB allocated load {:.3}",
+            MEM_STAT.allocated.load(SeqCst) as f32 / (1 << 20) as f32,
+            self.mem.load_factor()
+        )
+        .unwrap();
     }
 }

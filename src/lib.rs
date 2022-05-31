@@ -14,7 +14,6 @@ pub mod basic {
 use std::{
     any::Any,
     io::Write,
-    mem::size_of_val,
     ops::{Deref, DerefMut},
     str,
     time::Instant,
@@ -64,9 +63,6 @@ impl DerefMut for dyn ObjCore {
 pub unsafe trait ObjCore: AsAny {
     #[allow(unused_variables)]
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
-    fn alloc_size(&self) -> usize {
-        size_of_val(self)
-    }
     fn name(&self) -> &Name;
 }
 
@@ -84,7 +80,7 @@ impl<W> TraceOut<W> {
 
 impl<W: Write> Write for TraceOut<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        writeln!(
+        write!(
             self.write,
             "[{:11.6}] {}",
             (Instant::now() - self.t0).as_secs_f64(),

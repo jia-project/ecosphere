@@ -1,4 +1,4 @@
-use std::{collections::HashMap, mem::size_of, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     instr::{ArgMorph, Func, Instr, InstrCall, InstrId, Val, ValConst, I32},
@@ -40,10 +40,6 @@ impl Prod {
 unsafe impl ObjCore for Prod {
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {
         self.data.iter().copied().for_each(mark);
-    }
-
-    fn alloc_size(&self) -> usize {
-        size_of::<Self>() + self.data.capacity() * size_of::<*mut Obj>()
     }
 
     fn name(&self) -> &Name {
