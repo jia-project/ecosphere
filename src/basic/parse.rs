@@ -40,7 +40,8 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     match s.split_whitespace().next().unwrap() {
         // special that must separated with next token
         special @ ("prod" | "sum" | "func" | "tag" | "do" | "end" | "if" | "else" | "while"
-        | "break" | "continue" | "return" | "let" | "mut" | "run" | "is" | "_") => {
+        | "break" | "continue" | "return" | "let" | "mut" | "run" | "is" | "spawn"
+        | "wait" | "_") => {
             *s = s.strip_prefix(special).unwrap();
             Some(Token::Special(special))
         }
@@ -191,6 +192,7 @@ impl<'a> Module<'a> {
 
     fn stmt(&mut self) {
         match self.token.as_ref().unwrap() {
+            // add `_stmt` to avoid keyword confliction
             Token::Special("let") => self.let_stmt(),
             Token::Special("mut") => self.mut_stmt(),
             Token::Special("if") => self.if_stmt(),
@@ -206,8 +208,9 @@ impl<'a> Module<'a> {
             }
             Token::Special("run") => {
                 self.shift();
-                self.expr();
+                self.expr(); // limit to call expr?
             }
+            Token::Special("wait") => self.wait(),
             token => panic!("unexpected token {token:?}"),
         }
     }
@@ -278,6 +281,12 @@ impl<'a> Module<'a> {
         self.builder.push_instr(Instr::Ret(val));
     }
 
+    fn wait(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("wait")));
+        let val = self.expr();
+        self.builder.push_instr(Instr::Wait(val));
+    }
+
     fn jmp(label: LabelId) -> Instr {
         Instr::Br(Val::Const(ValConst::Bool(true)), label, label)
     }
@@ -290,6 +299,7 @@ impl<'a> Module<'a> {
                 self.shift();
                 val
             }
+            Token::Special("spawn") => self.spawn(),
             Token::LitBool(content) => {
                 let val = Val::Const(ValConst::Bool(*content));
                 self.shift();
@@ -300,13 +310,16 @@ impl<'a> Module<'a> {
                 self.shift();
                 val
             }
+            // every time copy a new str object, ensure asset is read-only
+            // should bool and i32 be copied as well?
             Token::LitStr(content) => {
                 let val = Val::Const(ValConst::Asset(
                     self.loader
                         .create_asset(Str(content.to_string()), &self.mem),
                 ));
                 self.shift();
-                val
+                self.builder
+                    .push_instr(Instr::Op("basic.str".to_string(), vec![val]))
             }
             Token::Name(..) => {
                 // I don't really like to lookahead twice :|
@@ -330,11 +343,23 @@ impl<'a> Module<'a> {
         val
     }
 
+    fn spawn(&mut self) -> Val {
+        assert_eq!(self.shift(), Some(Token::Special("spawn")));
+        let name = self.shift().unwrap().into_name();
+        let instr_call = self.call_like(name);
+        self.builder.push_instr(Instr::Spawn(instr_call))
+    }
+
     fn guess_call(&mut self, name: &str) -> Option<Val> {
         if self.token != Some(Token::Special("(")) {
             return None;
         }
-        self.shift().unwrap();
+        let instr_call = self.call_like(name);
+        Some(self.builder.push_instr(Instr::Call(instr_call)))
+    }
+
+    fn call_like(&mut self, name: &str) -> InstrCall {
+        assert_eq!(self.shift(), Some(Token::Special("(")));
         let mut arg_list = Vec::new();
         while *self.token.as_ref().unwrap() != Token::Special(")") {
             let val = self.expr();
@@ -347,10 +372,10 @@ impl<'a> Module<'a> {
             }
         }
         self.shift().unwrap();
-        Some(self.builder.push_instr(Instr::Call(InstrCall {
+        InstrCall {
             name: self.canonical_name(name),
             arg_list,
-        })))
+        }
     }
 
     fn guess_binary(&mut self, name: &str) -> Option<Val> {

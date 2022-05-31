@@ -242,7 +242,7 @@ pub struct WakeToken {
 impl WakeToken {
     pub fn resolve(mut self, mem: &Mutator<'_>, res: Option<*mut Obj>) -> bool {
         let status = &*self.handle.status.lock().unwrap();
-        assert!(!matches!(status, TaskStatus::Running(..)));
+        assert!(!matches!(status, TaskStatus::Finished(..)));
         if matches!(status, TaskStatus::Canceled) {
             return false;
         }

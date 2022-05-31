@@ -44,10 +44,19 @@ func fib(n is int) do
     return a
 end
 
-func main() do
-    let s = basic.str("fib(46) = ")
-    run basic.str_push(s, .to_str(.fib(46)))
+func trace_hi(id is int) do
+    let s = "hello from task "
+    run basic.str_push(s, .to_str(id))
     run basic.str_trace(s)
+    return _
+end
+
+func main() do
+    let h1 = spawn .trace_hi(117)
+    let h2 = spawn .trace_hi(418)
+    wait h1
+    wait h2
+    run basic.str_trace("all done")
     return _
 end
 "#;
