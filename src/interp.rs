@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    instr::{ArgMorph, Func, Instr, InstrCall, InstrId, Val, ValConst, I32},
+    instr::{ArgMorph, CoreOp, Func, Instr, InstrCall, InstrId, Val, ValConst},
     loader::{CallArg, Loader, TagId},
     mem::{Mutator, Obj},
     worker::WorkerInterface,
@@ -66,7 +66,30 @@ unsafe impl ObjCore for Sum {
     }
 }
 
+#[derive(Default)]
+pub struct I32(pub i32);
+impl I32 {
+    pub const NAME: &'static Name = "intrinsic.I32";
+}
+unsafe impl ObjCore for I32 {
+    fn name(&self) -> &Name {
+        Self::NAME
+    }
+}
+
 impl Interp {
+    pub fn load(loader: &mut Loader) {
+        // it may be possible to load these intrinsic from source text, like
+        // Rust's std::intrinsic
+        // but in this language source parser is not the part of essential, so
+        // we don't want a inversing dependency, i.e. use basic::parse in here
+        // outside of basic module
+        loader.register_prod("intrinsic.Unit", &[]);
+        loader.register_prod("intrinsic.Ref", &["content"]);
+        loader.register_sum("intrinsic.Option", &["Some", "None"]);
+        loader.make_tag(I32::NAME);
+    }
+
     pub fn push_call(
         &mut self,
         func_id: &str,
@@ -106,20 +129,14 @@ impl Interp {
 
     pub fn step(&mut self, worker: &mut WorkerInterface<'_>, operator: &mut dyn Operator) {
         assert!(self.result.is_none());
-        let frame = self.frame_list.last_mut().unwrap();
-
-        let instr = match frame.func.get_instr(&frame.instr_id).clone() {
-            Instr::Alloc => Instr::NewProd("intrinsic.Ref".to_string()),
-            Instr::Load(val) => Instr::Get(val, "content".to_string()),
-            Instr::Store(place_val, val) => Instr::Set(place_val, "content".to_string(), val),
-            instr => instr,
+        let mut ctx = OpCtx {
+            frame: self.frame_list.last_mut().unwrap(),
+            worker,
         };
-
-        let mut context = OpContext { frame, worker };
-        match instr {
+        match ctx.frame.func.get_instr(&ctx.frame.instr_id) {
             Instr::Ret(val) => {
-                let ret = context.make_addr(val);
-                drop(context);
+                let ret = ctx.make_addr(*val);
+                drop(ctx); // or we cannot pop from frame list
                 self.frame_list.pop().unwrap();
                 if let Some(frame) = self.frame_list.last_mut() {
                     Self::finish_step(frame, Some(ret));
@@ -131,11 +148,12 @@ impl Interp {
                 name: func_id,
                 arg_list,
             }) => {
+                let func_id = func_id.clone();
                 let arg_list: Vec<_> = arg_list
-                    .into_iter()
-                    .map(|(val, morph)| (context.make_addr(val), morph))
+                    .iter()
+                    .map(|(val, morph)| (ctx.make_addr(*val), morph.clone()))
                     .collect();
-                drop(context);
+                drop(ctx);
                 self.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
             }
             Instr::Spawn(InstrCall {
@@ -144,94 +162,39 @@ impl Interp {
             }) => {
                 let arg_list: Vec<_> = arg_list
                     .into_iter()
-                    .map(|(val, morph)| (context.make_addr(val), morph))
+                    .map(|(val, morph)| (ctx.make_addr(*val), morph.clone()))
                     .collect();
-                drop(context);
                 let mut interp = Interp::default();
-                interp.push_call(&func_id, &arg_list, &worker.mem, worker.loader);
-                Self::finish_step(frame, Some(worker.spawn(interp)));
+                interp.push_call(&func_id, &arg_list, &ctx.worker.mem, ctx.worker.loader);
+                Self::finish_step(ctx.frame, Some(ctx.worker.spawn(interp)));
             }
             Instr::Wait(val) => {
-                let val = context.make_addr(val);
-                drop(context);
-                unsafe { worker.wait(val) };
-                if !worker.is_paused() {
-                    Self::finish_step(frame, None);
+                let val = ctx.make_addr(*val);
+                unsafe { ctx.worker.wait(val) };
+                if !ctx.worker.is_paused() {
+                    Self::finish_step(ctx.frame, None);
                 }
             }
             Instr::Op(id, val) => {
-                let res = operator.perform(&id, &val, &mut context);
-                if !context.worker.is_paused() {
-                    drop(context);
-                    Self::finish_step(frame, res);
+                let (id, val) = (id.clone(), val.clone());
+                let res = operator.perform(&id, &val, &mut ctx);
+                if !ctx.worker.is_paused() {
+                    Self::finish_step(ctx.frame, res);
                 } else {
                     assert!(res.is_none());
                 }
             }
             Instr::Br(val, if_true, if_false) => {
-                let val = unsafe { context.get_bool(val) };
-                drop(context);
-                frame.instr_id = (if val { if_true } else { if_false }, 0);
+                let val = unsafe { ctx.get_bool(*val) };
+                ctx.frame.instr_id = (*if val { if_true } else { if_false }, 0);
             }
             Instr::Phi(..) => todo!(),
-            Instr::NewProd(name) => {
-                let unit = context.make_addr(Val::Const(ValConst::Unit));
-                drop(context);
-                let header = worker.loader.query_tag(&name);
-                let prod = worker.mem.make(Prod {
-                    tag: header,
-                    data: vec![unit; worker.loader.prod_size(header)],
-                });
-                Self::finish_step(frame, Some(prod));
+            Instr::CoreOp(op) => Self::step_core_op(op.clone(), ctx),
+            Instr::Alloc => Self::step_core_op(CoreOp::NewProd(Prod::NAME.to_owned()), ctx),
+            Instr::Load(val) => Self::step_core_op(CoreOp::Get(*val, "content".to_string()), ctx),
+            Instr::Store(place_val, val) => {
+                Self::step_core_op(CoreOp::Set(*place_val, "content".to_string(), *val), ctx)
             }
-            Instr::NewSum(name, variant, inner) => {
-                let inner = context.make_addr(inner);
-                drop(context);
-                let header = worker.loader.query_tag(&name);
-                let sum = worker.mem.make(Sum {
-                    tag: header,
-                    variant: worker.loader.sum_variant(header, &variant),
-                    inner,
-                });
-                Self::finish_step(frame, Some(sum));
-            }
-            Instr::Get(prod, key) => {
-                let prod = context.make_addr(prod);
-                drop(context);
-                let prod = unsafe { worker.mem.read(prod) };
-                let prod: &Prod = prod.downcast_ref().unwrap();
-                let res = prod.data[worker.loader.prod_offset(prod.tag, &key)];
-                Self::finish_step(frame, Some(res));
-            }
-            Instr::Set(prod, key, val) => {
-                let prod = context.make_addr(prod);
-                let val = context.make_addr(val);
-                drop(context);
-                let mut prod = unsafe { worker.mem.write(prod) };
-                let prod: &mut Prod = prod.downcast_mut().unwrap();
-                prod.data[worker.loader.prod_offset(prod.tag, &key)] = val;
-                Self::finish_step(frame, None);
-            }
-            Instr::Is(sum, key) => {
-                let worker = &context.worker;
-                let sum = unsafe { worker.mem.read(context.make_addr(sum)) };
-                let sum: &Sum = sum.downcast_ref().unwrap();
-                let res = sum.variant == worker.loader.sum_variant(sum.tag, &key);
-                let res = context.make_addr(Val::Const(ValConst::Bool(res)));
-                drop(context);
-                Self::finish_step(frame, Some(res));
-            }
-            Instr::As(sum, key) => {
-                let sum = context.make_addr(sum);
-                drop(context);
-                let sum = unsafe { worker.mem.read(sum) };
-                let sum: &Sum = sum.downcast_ref().unwrap();
-                // consider a unchecked version
-                assert_eq!(sum.variant, worker.loader.sum_variant(sum.tag, &key));
-                let res = sum.inner;
-                Self::finish_step(frame, Some(res));
-            }
-            _ => unreachable!(),
         }
     }
 
@@ -277,12 +240,12 @@ impl Interp {
     }
 }
 
-pub struct OpContext<'a, 'b> {
+pub struct OpCtx<'a, 'b> {
     pub worker: &'b mut WorkerInterface<'a>,
-    frame: &'b Frame,
+    frame: &'b mut Frame,
 }
 
-impl OpContext<'_, '_> {
+impl OpCtx<'_, '_> {
     /// # Safety
     /// If `val` is not constant, it's frame record must be a valid allocation.
     pub unsafe fn get_i32(&self, val: Val) -> i32 {
@@ -342,6 +305,81 @@ impl OpContext<'_, '_> {
             }
         } else {
             self.frame.val_table[&val]
+        }
+    }
+}
+
+impl Interp {
+    fn step_core_op(core_op: CoreOp, ctx: OpCtx<'_, '_>) {
+        match core_op {
+            CoreOp::NewProd(name) => {
+                let unit = ctx.make_addr(Val::Const(ValConst::Unit));
+                let header = ctx.worker.loader.query_tag(&name);
+                let prod = ctx.worker.mem.make(Prod {
+                    tag: header,
+                    data: vec![unit; ctx.worker.loader.prod_size(header)],
+                });
+                Self::finish_step(ctx.frame, Some(prod));
+            }
+            CoreOp::NewSum(name, variant, inner) => {
+                let inner = ctx.make_addr(inner);
+                let header = ctx.worker.loader.query_tag(&name);
+                let sum = ctx.worker.mem.make(Sum {
+                    tag: header,
+                    variant: ctx.worker.loader.sum_variant(header, &variant),
+                    inner,
+                });
+                Self::finish_step(ctx.frame, Some(sum));
+            }
+            CoreOp::Get(prod, key) => {
+                let prod = ctx.make_addr(prod);
+                let prod = unsafe { ctx.worker.mem.read(prod) };
+                let prod: &Prod = prod.downcast_ref().unwrap();
+                let res = prod.data[ctx.worker.loader.prod_offset(prod.tag, &key)];
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::Set(prod, key, val) => {
+                let prod = ctx.make_addr(prod);
+                let val = ctx.make_addr(val);
+                let mut prod = unsafe { ctx.worker.mem.write(prod) };
+                let prod: &mut Prod = prod.downcast_mut().unwrap();
+                prod.data[ctx.worker.loader.prod_offset(prod.tag, &key)] = val;
+                Self::finish_step(ctx.frame, None);
+            }
+            CoreOp::Is(sum, key) => {
+                let worker = &ctx.worker;
+                let sum = unsafe { worker.mem.read(ctx.make_addr(sum)) };
+                let sum: &Sum = sum.downcast_ref().unwrap();
+                let res = sum.variant == worker.loader.sum_variant(sum.tag, &key);
+                let res = ctx.make_addr(Val::Const(ValConst::Bool(res)));
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::As(sum, key) => {
+                let sum = ctx.make_addr(sum);
+                let sum = unsafe { ctx.worker.mem.read(sum) };
+                let sum: &Sum = sum.downcast_ref().unwrap();
+                // consider a unchecked version
+                assert_eq!(sum.variant, ctx.worker.loader.sum_variant(sum.tag, &key));
+                let res = sum.inner;
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Add(v1, v2)
+            | CoreOp::I32Sub(v1, v2)
+            | CoreOp::I32Mul(v1, v2)
+            | CoreOp::I32Div(v1, v2)
+            | CoreOp::I32Mod(v1, v2)
+            | CoreOp::I32Eq(v1, v2)
+            | CoreOp::I32Lt(v1, v2) => {
+                let (i1, i2) = unsafe { (ctx.get_i32(v1), ctx.get_i32(v2)) };
+                todo!()
+            }
+            CoreOp::BoolNeg(val) => {
+                let b = unsafe { ctx.get_bool(val) };
+                Self::finish_step(
+                    ctx.frame,
+                    Some(ctx.make_addr(Val::Const(ValConst::Bool(!b)))),
+                );
+            }
         }
     }
 }

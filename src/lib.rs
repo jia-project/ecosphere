@@ -12,14 +12,14 @@ pub mod basic {
 }
 
 use std::{
-    any::Any,
+    any::{type_name, Any},
     io::Write,
     ops::{Deref, DerefMut},
     str,
     time::Instant,
 };
 
-use crate::{instr::Val, interp::OpContext, mem::Obj};
+use crate::{instr::Val, interp::OpCtx, mem::Obj};
 
 pub type AssetId = u32;
 pub type Name = str;
@@ -29,7 +29,7 @@ pub type OwnedName = <Name as ToOwned>::Owned;
 /// As long as all `*mut Obj` that accessible from arguments are valid and alive,
 /// the returned pointer must point to valid and alive object.
 pub unsafe trait Operator {
-    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpContext) -> Option<*mut Obj>;
+    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpCtx) -> Option<*mut Obj>;
 }
 
 pub trait AsAny {
@@ -63,7 +63,10 @@ impl DerefMut for dyn ObjCore {
 pub unsafe trait ObjCore: AsAny {
     #[allow(unused_variables)]
     fn trace(&self, mark: &mut dyn FnMut(*mut Obj)) {}
-    fn name(&self) -> &Name;
+    fn name(&self) -> &Name {
+        // according to doc this name may not be unique so be care
+        type_name::<Self>()
+    }
 }
 
 // consider make a util module

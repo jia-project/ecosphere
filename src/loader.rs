@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    instr::{Func, I32},
+    instr::Func,
+    interp::Interp,
     mem::{Mem, Obj},
     AssetId, Name, ObjCore, OwnedName,
 };
@@ -41,10 +42,7 @@ impl Default for Loader {
             sum_table: HashMap::new(),
             func_table: HashMap::new(),
         };
-        loader.register_prod("intrinsic.Unit", &[]);
-        loader.register_prod("intrinsic.Ref", &["content"]);
-        loader.register_sum("intrinsic.Option", &["Some", "None"]);
-        loader.make_tag(I32::NAME);
+        Interp::load(&mut loader);
         loader
     }
 }

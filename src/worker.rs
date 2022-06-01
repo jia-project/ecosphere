@@ -373,7 +373,7 @@ impl CollectWorker {
         }
         writeln!(
             self.trace_out,
-            "[collect worker] exit {:.2}MiB allocated load {:.3}",
+            "[collect worker] exit allocated {:.2}MiB load {:.3}",
             MEM_STAT.allocated.load(SeqCst) as f32 / (1 << 20) as f32,
             self.mem.load_factor()
         )

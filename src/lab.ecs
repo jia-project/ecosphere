@@ -1,0 +1,28 @@
+func to_str(n is int) do
+    let digit_table = _.basic.list()
+    run _.basic.list_push(digit_table, "0")
+    run _.basic.list_push(digit_table, "1")
+    run _.basic.list_push(digit_table, "2")
+    run _.basic.list_push(digit_table, "3")
+    run _.basic.list_push(digit_table, "4")
+    run _.basic.list_push(digit_table, "5")
+    run _.basic.list_push(digit_table, "6")
+    run _.basic.list_push(digit_table, "7")
+    run _.basic.list_push(digit_table, "8")
+    run _.basic.list_push(digit_table, "9")
+
+    if n == 0 return "0"
+    let s = ""
+    while n != 0 do
+        let old_s = s
+        mut s = _.basic.str(_.basic.list_index(digit_table, n % 10))
+        run _.basic.str_push(s, old_s)
+        mut n = n / 10
+    end
+    return s
+end
+
+func main() do
+    run _.basic.str_trace("Hello, world!")
+    return _
+end

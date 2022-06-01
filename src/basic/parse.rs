@@ -170,8 +170,6 @@ impl<'a> Module<'a> {
         self.do_block();
         self.name_table.pop().unwrap();
         let func = take(&mut self.builder).finish();
-        // println!("{name}");
-        // println!("{func}");
         let func_id = self.canonical_name(func_id);
         self.loader.register_func(&func_id, &param_list, func);
     }

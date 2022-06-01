@@ -1,6 +1,6 @@
 use crate::{
-    instr::{FuncBuilder, Instr, Val, ValConst, I32},
-    interp::OpContext,
+    instr::{FuncBuilder, Instr, Val, ValConst},
+    interp::{OpCtx, I32},
     loader::{Loader, MatchExpr, Param},
     mem::Obj,
     Operator,
@@ -17,41 +17,8 @@ impl Op {
 }
 
 unsafe impl Operator for Op {
-    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpContext) -> Option<*mut Obj> {
+    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpCtx) -> Option<*mut Obj> {
         match code {
-            "intrinsic.i32add" => {
-                let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
-                Some(context.make_addr(Val::Const(ValConst::I32(i1 + i2))))
-            }
-            "intrinsic.i32sub" => {
-                let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
-                Some(context.make_addr(Val::Const(ValConst::I32(i1 - i2))))
-            }
-            "intrinsic.i32mul" => {
-                let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
-                Some(context.make_addr(Val::Const(ValConst::I32(i1 * i2))))
-            }
-            "intrinsic.i32div" => {
-                let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
-                Some(context.make_addr(Val::Const(ValConst::I32(i1 / i2))))
-            }
-            "intrinsic.i32mod" => {
-                let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
-                Some(context.make_addr(Val::Const(ValConst::I32(i1 % i2))))
-            }
-            "intrinsic.i32eq" => {
-                let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
-                Some(context.make_addr(Val::Const(ValConst::Bool(i1 == i2))))
-            }
-            "intrinsic.i32lt" => {
-                let (i1, i2) = unsafe { (context.get_i32(val[0]), context.get_i32(val[1])) };
-                Some(context.make_addr(Val::Const(ValConst::Bool(i1 < i2))))
-            }
-            "intrinsic.boolneg" => {
-                let b = unsafe { context.get_bool(val[0]) };
-                Some(context.make_addr(Val::Const(ValConst::Bool(!b))))
-            }
-
             "basic.str" => {
                 let s = context.make_addr(val[0]);
                 let s = unsafe { context.worker.mem.read(s) };

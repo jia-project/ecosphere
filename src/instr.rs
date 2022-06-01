@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use crate::{AssetId, Name, ObjCore, OwnedName};
+use crate::{AssetId, OwnedName};
 
 pub type LabelId = usize;
 pub type InstrId = (LabelId, usize);
@@ -24,20 +24,9 @@ pub enum ValConst {
     Unit,
     // represented as Sum{tag=2}, reusing Some(Unit) as True, and None as False
     Bool(bool),
-    // represented as I32 below
-    // should/can we move I32 op here as well?
+    // represented as interp::I32
     I32(i32),
     Asset(AssetId),
-}
-
-pub struct I32(pub i32);
-impl I32 {
-    pub const NAME: &'static Name = "intrinsic.I32";
-}
-unsafe impl ObjCore for I32 {
-    fn name(&self) -> &Name {
-        Self::NAME
-    }
 }
 
 impl Display for Val {
@@ -62,19 +51,30 @@ pub enum Instr {
     Wait(Val),
 
     Op(String, Vec<Val>),
+    CoreOp(CoreOp),
 
-    // optimizible with phi
+    // keep in explicit top level because they are optimizible with phi
     Alloc,
     Load(Val),
     Store(Val, Val),
+}
 
-    // compound type operation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreOp {
     NewProd(OwnedName),
+    NewSum(OwnedName, String, Val),
     Get(Val, String),
     Set(Val, String, Val),
-    NewSum(OwnedName, String, Val),
     Is(Val, String),
     As(Val, String),
+    I32Add(Val, Val),
+    I32Sub(Val, Val),
+    I32Mul(Val, Val),
+    I32Div(Val, Val),
+    I32Mod(Val, Val),
+    I32Eq(Val, Val),
+    I32Lt(Val, Val),
+    BoolNeg(Val),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,18 +91,13 @@ impl Display for Instr {
             Self::Br(val, if_true, if_false) => write!(f, "br {val}, l{if_true}, l{if_false}"),
             Self::Phi(..) => write!(f, "phi"), // TODO
             Self::Op(id, val_list) => write!(f, "op {id}<{}>", fmt_val_list(val_list)),
+            Self::CoreOp(op) => write!(f, "coreop {op}"),
             Self::Call(call) => write!(f, "call {call}"),
             Self::Spawn(call) => write!(f, "spawn {call}"),
             Self::Wait(val) => write!(f, "wait {val}"),
             Self::Alloc => write!(f, "alloc"),
             Self::Load(val) => write!(f, "load {val}"),
             Self::Store(place_val, val) => write!(f, "store {place_val} <- {val}"),
-            Self::NewProd(name) => write!(f, "newprod {name}"),
-            Self::NewSum(name, variant, inner) => write!(f, "newsum {name}.{variant} {inner}"),
-            Self::Get(prod, key) => write!(f, "get {prod} .{key}"),
-            Self::Set(prod, key, val) => write!(f, "set {prod} .{key} <- {val}"),
-            Self::Is(sum, variant) => write!(f, "is {sum} .{variant}"),
-            Self::As(sum, variant) => write!(f, "as {sum} .{variant}"),
         }
     }
 }
@@ -115,26 +110,42 @@ fn fmt_val_list(val_list: &[Val]) -> String {
 }
 impl Display for InstrCall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}({})",
-            self.name,
-            self.arg_list
-                .iter()
-                .map(|(val, morph)| format!(
+        let arg_list = self
+            .arg_list
+            .iter()
+            .map(|(val, morph)| {
+                format!(
                     "{val}{}",
-                    morph
-                        .as_ref()
-                        .map(|morph| morph
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(" & "))
-                        .unwrap_or_default()
-                ))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+                    if let Some(morph) = morph {
+                        " as ".to_string() + &morph.join(" & ")
+                    } else {
+                        String::new()
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "{}({arg_list})", self.name)
+    }
+}
+impl Display for CoreOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NewProd(name) => write!(f, "newprod {name}"),
+            Self::NewSum(name, variant, inner) => write!(f, "newsum {name}.{variant} {inner}"),
+            Self::Get(prod, key) => write!(f, "get {prod} .{key}"),
+            Self::Set(prod, key, val) => write!(f, "set {prod} .{key} <- {val}"),
+            Self::Is(sum, variant) => write!(f, "is {sum} .{variant}"),
+            Self::As(sum, variant) => write!(f, "as {sum} .{variant}"),
+            Self::I32Add(i1, i2) => write!(f, "i32add {i1} {i2}"),
+            Self::I32Sub(i1, i2) => write!(f, "i32sub {i1} {i2}"),
+            Self::I32Mul(i1, i2) => write!(f, "i32mul {i1} {i2}"),
+            Self::I32Div(i1, i2) => write!(f, "i32div {i1} {i2}"),
+            Self::I32Mod(i1, i2) => write!(f, "i32mod {i1} {i2}"),
+            Self::I32Eq(i1, i2) => write!(f, "i32eq {i1} {i2}"),
+            Self::I32Lt(i1, i2) => write!(f, "i32lt {i1} {i2}"),
+            Self::BoolNeg(val) => write!(f, "boolneg {val}"),
+        }
     }
 }
 
