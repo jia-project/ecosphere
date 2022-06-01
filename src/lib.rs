@@ -19,7 +19,11 @@ use std::{
     time::Instant,
 };
 
-use crate::{instr::Val, interp::OpCtx, mem::Obj};
+use crate::{
+    instr::Val,
+    interp::{FrameObj, OpCtx},
+    mem::Obj,
+};
 
 pub type AssetId = u32;
 pub type Name = str;
@@ -29,7 +33,7 @@ pub type OwnedName = <Name as ToOwned>::Owned;
 /// As long as all `*mut Obj` that accessible from arguments are valid and alive,
 /// the returned pointer must point to valid and alive object.
 pub unsafe trait Operator {
-    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpCtx) -> Option<*mut Obj>;
+    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpCtx) -> Option<FrameObj>;
 }
 
 pub trait AsAny {

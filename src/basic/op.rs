@@ -1,8 +1,7 @@
 use crate::{
     instr::{FuncBuilder, Instr, Val, ValConst},
-    interp::{OpCtx, I32},
+    interp::{FrameObj, OpCtx, I32},
     loader::{Loader, MatchExpr, Param},
-    mem::Obj,
     Operator,
 };
 
@@ -17,13 +16,13 @@ impl Op {
 }
 
 unsafe impl Operator for Op {
-    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpCtx) -> Option<*mut Obj> {
+    fn perform(&mut self, code: &str, val: &[Val], context: &mut OpCtx) -> Option<FrameObj> {
         match code {
             "basic.str" => {
                 let s = context.make_addr(val[0]);
                 let s = unsafe { context.worker.mem.read(s) };
                 let Str(s) = s.downcast_ref().unwrap();
-                Some(context.worker.mem.make(Str(s.clone())))
+                Some(context.make(Str(s.clone())))
             }
             "basic.str_trace" => {
                 let s = context.make_addr(val[0]);
@@ -41,7 +40,7 @@ unsafe impl Operator for Op {
                 None
             }
 
-            "basic.list" => Some(context.worker.mem.make(List(Vec::new()))),
+            "basic.list" => Some(context.make(List(Vec::new()))),
             "basic.list_push" => {
                 let l = context.make_addr(val[0]);
                 let mut l = unsafe { context.worker.mem.write(l) };
@@ -54,7 +53,7 @@ unsafe impl Operator for Op {
                 let l = unsafe { context.worker.mem.read(l) };
                 let List(l) = l.downcast_ref().unwrap();
                 let i = unsafe { context.get_i32(val[1]) };
-                Some(l[i as usize])
+                Some(FrameObj::Addr(l[i as usize]))
             }
 
             _ => unimplemented!(),

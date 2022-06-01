@@ -216,7 +216,7 @@ impl Worker {
 
     pub fn spawn_main(&self, name: &str) -> impl Fn() -> Option<*mut Obj> {
         let mut interp = Interp::default();
-        interp.push_call(name, &[], &self.mem.mutator(), &self.loader);
+        interp.push_call(name, Vec::new(), &self.mem.mutator(), &self.loader);
         let status = Self::spawn_internal(
             interp,
             &self.mem.mutator(),
