@@ -15,14 +15,104 @@ func to_str(n is int) do
     let s = ""
     while n != 0 do
         let old_s = s
-        mut s = _.basic.str(_.basic.list_index(digit_table, n % 10))
+        mut s = _.basic.str(_.basic.list_get(digit_table, n % 10))
         run _.basic.str_push(s, old_s)
         mut n = n / 10
     end
     return s
 end
 
+func fib(n is int) do
+    let a = big_int(1)
+    let b = bit_int(0)
+    let i = 1
+    while i < n do
+        let t = a
+        mut a = add(a, b)
+        mut b = t
+        mut i = i + 1
+    end
+    return a
+end
+
+prod BigInt has
+    seg_list is _.basic.List
+end
+
+func big_int(n is int) do
+    let b = prod BigInt
+        mut seg_list = _.basic.list()
+    end
+    let n0 = n % 0x4fffffff  ; low 30 bits
+    run _.basic.list_push(b->seg_list, n0)
+    mut n = n - n0
+    if n != 0 run _.basic.list_push(b->seg_list, n)
+    return b
+end
+
+func add(n1 is BigInt, n2 is int) return add(n1, big_int(n2))
+func add(n1 is int, n2 is BigInt) return add(big_int(n1), n2)
+func add(n1 is BigInt, n2 is BigInt) do
+    let i = 0
+    let len1 = _.basic.list_len(n1->seg_list)
+    len len2 = _.basic.list_len(n2->seg_list)
+    let res = big_int(0)
+    let carry = 0
+    while i < len1 || i < len 2 do
+        let seg1 = 0
+        if i < len1 mut seg1 = _.basic.list_get(n1->seg_list, i)
+        let seg2 = 0
+        if i < len2 mut seg2 = _.basic.list_get(n2->seg_list, i)
+        let seg = seg1 + seg2 + carry
+        run _.basic.list_push(res->seg_list, seg % 0x4fffffff)
+        mut carry = seg / 0x4fffffff
+        mut i = i + 1
+    end
+    if carry != 0 run _.basic.list_push(res->seg_list, carry)
+    return res
+end
+
+func eq(n1 is BigInt, n2 is int) return eq(n1, big_int(n2))
+func eq(n1 is int, n2 is BigInt) return eq(big_int(n1), n2)
+func eq(n1 is int, n2 is int) return n1 == n2
+func eq(n1 is BigInt, n2 is BigInt) return eq(n1->seg_list, n2->seg_list)
+func eq(l1 is _.basic.List, l2 is _.basic.List) do
+    let len = _.basic.list_len(l1)
+    if _.basic.list_len(l2) != len return false
+    let i = 0
+    while i < len do
+        if not eq(_.basic.list_get(l1, i), _.basic.list_get(l2, i)) return false
+    end
+    return true
+end
+
+func div(n is BigInt, m is int, rem is intrinsic.Ref) do
+    let i = _.basic.list_len(n->seg_list)
+    let res = big_int(0)
+    mut->content rem = 0
+    while i > 0
+        let seg = _.basic.list_get(n->seg_list, i - 1) + rem->content
+        run _.basic.list_insert(res->seg_list, 0, seg / m)
+        mut->content rem = seg % m
+        mut i = i - 1
+    end
+    return res
+end
+
+func to_str(n is BigInt) do
+    if eq(n, 0) return "0"
+    let digit = prod intrinsic.Ref end
+    let s = ""
+    while not eq(n, 0) do
+        mut n = div(n, 1000000000, digit)
+        let s0 = s
+        mut s = to_str(digit->content)
+        run _.basic.push_str(s, s0)
+    end
+    return s
+end
+
 func main() do
-    run _.basic.str_trace(to_str(117418))
+    run _.basic.str_trace(to_str(fib(10)))
     return _
 end
