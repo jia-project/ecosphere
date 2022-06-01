@@ -23,6 +23,6 @@ func to_str(n is int) do
 end
 
 func main() do
-    run _.basic.str_trace("Hello, world!")
+    run _.basic.str_trace(to_str(117418))
     return _
 end

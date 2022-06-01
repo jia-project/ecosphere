@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    mem::replace,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
@@ -27,14 +26,14 @@ struct Frame {
 
 pub enum FrameObj {
     Addr(*mut Obj),
-    Lifted, // into upper frame as argument
+    Stub,
 }
 
 impl FrameObj {
     unsafe fn read<'a>(&'a self, mem: &'a Mutator<'a>) -> impl Deref<Target = dyn ObjCore> + 'a {
         match self {
             Self::Addr(addr) => mem.read(*addr),
-            Self::Lifted => unreachable!(),
+            Self::Stub => unreachable!(),
         }
     }
     unsafe fn write<'a>(
@@ -43,14 +42,14 @@ impl FrameObj {
     ) -> impl DerefMut<Target = dyn ObjCore> + 'a {
         match self {
             Self::Addr(addr) => mem.write(*addr),
-            Self::Lifted => unreachable!(),
+            Self::Stub => unreachable!(),
         }
     }
 
     fn make_addr(&mut self, _mem: &Mutator<'_>) -> *mut Obj {
         match self {
             Self::Addr(addr) => *addr,
-            Self::Lifted => unreachable!(),
+            Self::Stub => unreachable!(),
         }
     }
 }
@@ -170,7 +169,7 @@ impl Interp {
         };
         match ctx.frame.func.get_instr(&ctx.frame.instr_id).clone() {
             Instr::Ret(val) => {
-                let mut ret = FrameObj::Addr(ctx.make_addr(val)); // TODO
+                let mut ret = ctx.replace(val, FrameObj::Stub);
                 drop(ctx); // or we cannot pop from frame list
                 let mut arg_table = self.frame_list.pop().unwrap().val_table;
                 if let Some(frame) = self.frame_list.last_mut() {
@@ -183,11 +182,12 @@ impl Interp {
                     };
                     for (i, (val, _)) in arg_list.iter().enumerate() {
                         if matches!(val, Val::Arg(..)) || matches!(val, Val::Instr(..)) {
-                            let lifted = frame
+                            // don't have ctx.replace any more...
+                            let stub = frame
                                 .val_table
                                 .insert(*val, arg_table.remove(&Val::Arg(i)).unwrap())
                                 .unwrap();
-                            assert!(matches!(lifted, FrameObj::Lifted));
+                            assert!(matches!(stub, FrameObj::Stub));
                         }
                     }
                     Self::finish_step(frame, Some(ret));
@@ -202,13 +202,7 @@ impl Interp {
                 let func_id = func_id.clone();
                 let arg_list: Vec<_> = arg_list
                     .iter()
-                    // TODO get arguments back after return
-                    .map(|(val, morph)| {
-                        (
-                            replace(ctx.frame.val_table.get_mut(val).unwrap(), FrameObj::Lifted),
-                            morph.clone(),
-                        )
-                    })
+                    .map(|(val, morph)| (ctx.replace(*val, FrameObj::Stub), morph.clone()))
                     .collect();
                 drop(ctx);
                 self.push_call(&func_id, arg_list, &worker.mem, worker.loader);
@@ -247,12 +241,16 @@ impl Interp {
                 ctx.frame.instr_id = (if val { if_true } else { if_false }, 0);
             }
             Instr::Phi(..) => todo!(),
-            Instr::CoreOp(op) => Self::step_core_op(op, ctx),
-            Instr::Alloc => Self::step_core_op(CoreOp::NewProd(Prod::NAME.to_owned()), ctx),
-            Instr::Load(val) => Self::step_core_op(CoreOp::Get(val, "content".to_string()), ctx),
-            Instr::Store(place_val, val) => {
+            Instr::CoreOp(op) => unsafe { Self::step_core_op(op, ctx) },
+            Instr::Alloc => unsafe {
+                Self::step_core_op(CoreOp::NewProd("intrinsic.Ref".to_owned()), ctx)
+            },
+            Instr::Load(val) => unsafe {
+                Self::step_core_op(CoreOp::Get(val, "content".to_string()), ctx)
+            },
+            Instr::Store(place_val, val) => unsafe {
                 Self::step_core_op(CoreOp::Set(place_val, "content".to_string(), val), ctx)
-            }
+            },
         }
     }
 
@@ -361,6 +359,14 @@ impl<'b> OpCtx<'_, 'b> {
         FrameObj::Addr(self.worker.mem.make(core))
     }
 
+    pub fn replace(&mut self, val: Val, obj: FrameObj) -> FrameObj {
+        if matches!(val, Val::Const(..)) {
+            FrameObj::Addr(self.make_addr(val)) // TODO
+        } else {
+            self.frame.val_table.insert(val, obj).unwrap()
+        }
+    }
+
     pub unsafe fn read(&self, val: Val) -> impl Deref<Target = dyn ObjCore> + '_ {
         self.frame.val_table[&val].read(self.worker.mem)
     }
@@ -399,30 +405,30 @@ impl<'b> OpCtx<'_, 'b> {
 }
 
 impl Interp {
-    fn step_core_op(core_op: CoreOp, mut ctx: OpCtx<'_, '_>) {
+    unsafe fn step_core_op(core_op: CoreOp, mut ctx: OpCtx<'_, '_>) {
         match core_op {
             CoreOp::NewProd(name) => {
                 let unit = ctx.make_addr(Val::Const(ValConst::Unit));
-                let header = ctx.worker.loader.query_tag(&name);
+                let tag = ctx.worker.loader.query_tag(&name);
                 let prod = ctx.make(Prod {
-                    tag: header,
-                    data: vec![unit; ctx.worker.loader.prod_size(header)],
+                    tag,
+                    data: vec![unit; ctx.worker.loader.prod_size(tag)],
                 });
                 Self::finish_step(ctx.frame, Some(prod));
             }
             CoreOp::NewSum(name, variant, inner) => {
                 let inner = ctx.make_addr(inner);
-                let header = ctx.worker.loader.query_tag(&name);
+                let tag = ctx.worker.loader.query_tag(&name);
                 let sum = ctx.make(Sum {
-                    tag: header,
-                    variant: ctx.worker.loader.sum_variant(header, &variant),
+                    tag,
+                    variant: ctx.worker.loader.sum_variant(tag, &variant),
                     inner,
                 });
                 Self::finish_step(ctx.frame, Some(sum));
             }
             CoreOp::Get(prod, key) => {
                 let res = {
-                    let prod = unsafe { ctx.read(prod) };
+                    let prod = ctx.read(prod);
                     let prod: &Prod = prod.downcast_ref().unwrap();
                     prod.data[ctx.worker.loader.prod_offset(prod.tag, &key)]
                 };
@@ -431,12 +437,12 @@ impl Interp {
             CoreOp::Set(prod, key, val) => {
                 let val = ctx.make_addr(val);
                 let offset = {
-                    let prod = unsafe { ctx.read(prod) };
+                    let prod = ctx.read(prod);
                     let prod: &Prod = prod.downcast_ref().unwrap();
                     ctx.worker.loader.prod_offset(prod.tag, &key)
                 };
                 {
-                    let mut prod = unsafe { ctx.write(prod) };
+                    let mut prod = ctx.write(prod);
                     let prod: &mut Prod = prod.downcast_mut().unwrap();
                     prod.data[offset] = val;
                 }
@@ -444,7 +450,7 @@ impl Interp {
             }
             CoreOp::Is(sum, key) => {
                 let res = {
-                    let sum = unsafe { ctx.read(sum) };
+                    let sum = ctx.read(sum);
                     let sum: &Sum = sum.downcast_ref().unwrap();
                     sum.variant == ctx.worker.loader.sum_variant(sum.tag, &key)
                 };
@@ -453,7 +459,7 @@ impl Interp {
             }
             CoreOp::As(sum, key) => {
                 let res = {
-                    let sum = unsafe { ctx.read(sum) };
+                    let sum = ctx.read(sum);
                     let sum: &Sum = sum.downcast_ref().unwrap();
                     // consider a unchecked version
                     assert_eq!(sum.variant, ctx.worker.loader.sum_variant(sum.tag, &key));
@@ -461,20 +467,45 @@ impl Interp {
                 };
                 Self::finish_step(ctx.frame, Some(FrameObj::Addr(res)));
             }
-            CoreOp::I32Add(v1, v2)
-            | CoreOp::I32Sub(v1, v2)
-            | CoreOp::I32Mul(v1, v2)
-            | CoreOp::I32Div(v1, v2)
-            | CoreOp::I32Mod(v1, v2)
-            | CoreOp::I32Eq(v1, v2)
-            | CoreOp::I32Lt(v1, v2) => {
-                let (i1, i2) = unsafe { (ctx.get_i32(v1), ctx.get_i32(v2)) };
-                todo!()
+            CoreOp::I32Add(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_i32(i1 + i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Sub(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_i32(i1 - i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Mul(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_i32(i1 * i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Div(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_i32(i1 / i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Mod(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_i32(i1 % i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Eq(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_bool(i1 == i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Lt(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_bool(i1 < i2);
+                Self::finish_step(ctx.frame, Some(res));
             }
             CoreOp::BoolNeg(val) => {
-                let b = unsafe { ctx.get_bool(val) };
+                let b = ctx.get_bool(val);
                 let res = ctx.make_bool(!b);
-                Self::finish_step(ctx.frame, Some(res))
+                Self::finish_step(ctx.frame, Some(res));
             }
         }
     }

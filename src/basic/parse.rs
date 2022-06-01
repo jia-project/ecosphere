@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    instr::{FuncBuilder, Instr, InstrCall, LabelId, Val, ValConst},
+    instr::{CoreOp, FuncBuilder, Instr, InstrCall, LabelId, Val, ValConst},
     loader::{Loader, MatchExpr, Param},
     mem::Mem,
 };
@@ -380,16 +380,16 @@ impl<'a> Module<'a> {
     fn guess_binary(&mut self, name: &str) -> Option<Val> {
         let mut inv = false;
         let op = match self.token {
-            Some(Token::Special("+")) => "intrinsic.i32add",
-            Some(Token::Special("-")) => "intrinsic.i32sub",
-            Some(Token::Special("*")) => "intrinsic.i32mul",
-            Some(Token::Special("/")) => "intrinsic.i32div",
-            Some(Token::Special("%")) => "intrinsic.i32mod",
-            Some(Token::Special("==")) => "intrinsic.i32eq",
-            Some(Token::Special("<")) => "intrinsic.i32lt",
+            Some(Token::Special("+")) => |i1, i2| CoreOp::I32Add(i1, i2),
+            Some(Token::Special("-")) => |i1, i2| CoreOp::I32Sub(i1, i2),
+            Some(Token::Special("*")) => |i1, i2| CoreOp::I32Mul(i1, i2),
+            Some(Token::Special("/")) => |i1, i2| CoreOp::I32Div(i1, i2),
+            Some(Token::Special("%")) => |i1, i2| CoreOp::I32Mod(i1, i2),
+            Some(Token::Special("==")) => |i1, i2| CoreOp::I32Eq(i1, i2),
+            Some(Token::Special("<")) => |i1, i2| CoreOp::I32Lt(i1, i2),
             Some(Token::Special("!=")) => {
                 inv = true;
-                "intrinsic.i32eq"
+                |i1, i2| CoreOp::I32Eq(i1, i2)
             }
             _ => return None,
         };
@@ -399,11 +399,9 @@ impl<'a> Module<'a> {
         let that_val = self.expr();
         let mut val = self
             .builder
-            .push_instr(Instr::Op(op.to_string(), vec![this_val, that_val]));
+            .push_instr(Instr::CoreOp(op(this_val, that_val)));
         if inv {
-            val = self
-                .builder
-                .push_instr(Instr::Op("intrinsic.boolneg".to_string(), vec![val]));
+            val = self.builder.push_instr(Instr::CoreOp(CoreOp::BoolNeg(val)));
         }
         Some(val)
     }
