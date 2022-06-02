@@ -147,7 +147,7 @@ struct MemInner {
 }
 
 impl Mem {
-    const INITIAL_CAP: usize = 64 << 10;
+    const INITIAL_CAP: usize = 4 << 20;
 }
 
 impl Default for Mem {
@@ -229,7 +229,8 @@ impl MemInner {
     }
 
     fn update_cap(&mut self) -> usize {
-        self.cap = (MEM_STAT.allocated.load(SeqCst) as f32 / (Mem::COLLECT_THRESHOLD / 2.)) as _;
+        self.cap = Mem::INITIAL_CAP
+            .max((MEM_STAT.allocated.load(SeqCst) as f32 / (Mem::COLLECT_THRESHOLD / 2.)) as _);
         self.cap
     }
 

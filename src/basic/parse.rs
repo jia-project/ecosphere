@@ -401,7 +401,7 @@ impl<'a> Module<'a> {
                 ));
                 self.shift();
                 self.builder
-                    .push_instr(Instr::Op("basic.str".to_string(), vec![val]))
+                    .push_instr(Instr::Op("basic.str_copy".to_string(), vec![val]))
             }
             Token::Name(..) => {
                 // I don't really like to lookahead twice :|

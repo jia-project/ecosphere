@@ -59,8 +59,8 @@ impl Loader {
     }
 
     pub fn register_func(&mut self, id: &Name, param_list: &[Param], func: Func) {
-        println!("{id}{param_list:?}");
-        println!("{func}");
+        // println!("{id}{param_list:?}");
+        // println!("{func}");
         self.func_table
             .entry(id.to_owned())
             .or_default()
@@ -68,6 +68,7 @@ impl Loader {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallArg {
     Genuine(TagId),
     Morph(Vec<TagId>),

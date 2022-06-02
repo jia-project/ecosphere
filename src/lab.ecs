@@ -24,7 +24,7 @@ end
 
 func fib(n is int) do
     let a = big_int(1)
-    let b = bit_int(0)
+    let b = big_int(0)
     let i = 1
     while i < n do
         let t = a
@@ -50,6 +50,15 @@ func big_int(n is int) do
     return b
 end
 
+func normalize(n is BigInt) do
+    while true do
+        let len = _.basic.list_len(n->seg_list)
+        if len == 1 return _
+        if _.basic.list_get(n->seg_list, len - 1) != 0 return _
+        run _.basic.list_pop(n->seg_list)
+    end
+end
+
 func add(n1 is BigInt, n2 is BigInt) do
     let i = 0
     let len1 = _.basic.list_len(n1->seg_list)
@@ -67,6 +76,7 @@ func add(n1 is BigInt, n2 is BigInt) do
         mut i = i + 1
     end
     if carry != 0 run _.basic.list_push(res->seg_list, carry)
+    run normalize(res)
     return res
 end
 
@@ -83,6 +93,21 @@ func eq(l1 is _.basic.List, l2 is _.basic.List) do
     return true
 end
 
+func lt(n1 is BigInt, n2 is BigInt) do
+    let len = _.basic.list_len(n1->seg_list)
+    if len < _.basic.list_len(n2->seg_list) return true
+    if len > _.basic.list_len(n2->seg_list) return false
+    let i = len
+    while i > 0 do
+        mut i = i - 1
+        let seg1 = _.basic.list_get(n1->seg_list, i)
+        let seg2 = _.basic.list_get(n2->seg_list, i)
+        if seg1 < seg2 return true
+        if seg1 > seg2 return false
+    end
+    return false
+end
+
 func div(n is BigInt, m is int, rem is ref) do
     let i = _.basic.list_len(n->seg_list)
     let res = big_int(0)
@@ -93,23 +118,24 @@ func div(n is BigInt, m is int, rem is ref) do
         run _.basic.list_insert(res->seg_list, 0, seg / m)
         mut->content rem = seg % m
     end
+    run normalize(res)
     return res
 end
 
 func to_str(n is BigInt) do
-    if eq(n, 0) return "0"
-    let digit = prod ref
+    if eq(n, big_int(0)) return "0"
+    let part = prod ref
     let s = ""
-    while not eq(n, 0) do
-        mut n = div(n, 1000000000, digit)
+    while not eq(n, big_int(0)) do
+        mut n = div(n, 1000000000, part)
         let s0 = s
-        mut s = to_str(digit->content)
-        run _.basic.push_str(s, s0)
+        mut s = to_str(part->content)
+        run _.basic.str_push(s, s0)
     end
     return s
 end
 
 func main() do
-    run _.basic.str_trace(to_str(fib(10)))
+    run _.basic.str_trace(to_str(fib(100)))
     return _
 end

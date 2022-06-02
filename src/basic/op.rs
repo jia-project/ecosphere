@@ -48,12 +48,36 @@ unsafe impl Operator for Op {
                 l.push(context.make_addr(val[1]));
                 None
             }
+            "basic.list_pop" => {
+                let res = {
+                    let mut l = unsafe { context.write(val[0]) };
+                    let List(l) = l.downcast_mut().unwrap();
+                    l.pop().unwrap()
+                };
+                Some(FrameObj::Addr(res))
+            }
             "basic.list_get" => {
                 let l = context.make_addr(val[0]);
                 let l = unsafe { context.worker.mem.read(l) };
                 let List(l) = l.downcast_ref().unwrap();
                 let i = unsafe { context.get_i32(val[1]) };
                 Some(FrameObj::Addr(l[i as usize]))
+            }
+            "basic.list_len" => {
+                let len = {
+                    let l = unsafe { context.read(val[0]) };
+                    let List(l) = l.downcast_ref().unwrap();
+                    l.len()
+                };
+                Some(context.make_i32(len as _))
+            }
+            "basic.list_insert" => {
+                let index = unsafe { context.get_i32(val[1]) };
+                let addr = context.make_addr(val[2]);
+                let mut l = unsafe { context.write(val[0]) };
+                let List(l) = l.downcast_mut().unwrap();
+                l.insert(index as _, addr);
+                None
             }
 
             _ => unimplemented!(),
@@ -120,6 +144,15 @@ impl Op {
         );
 
         let mut func = FuncBuilder::default();
+        let i1 = func.push_instr(Instr::Op("basic.list_pop".to_string(), vec![Val::Arg(0)]));
+        func.push_instr(Instr::Ret(i1));
+        loader.register_func(
+            "basic.list_pop",
+            &[Param::Genuine(List::NAME.to_owned())],
+            func.finish(),
+        );
+
+        let mut func = FuncBuilder::default();
         let i1 = func.push_instr(Instr::Op(
             "basic.list_get".to_string(),
             vec![Val::Arg(0), Val::Arg(1)],
@@ -130,6 +163,31 @@ impl Op {
             &[
                 Param::Genuine(List::NAME.to_owned()),
                 Param::Genuine(I32::NAME.to_owned()),
+            ],
+            func.finish(),
+        );
+
+        let mut func = FuncBuilder::default();
+        let i1 = func.push_instr(Instr::Op("basic.list_len".to_string(), vec![Val::Arg(0)]));
+        func.push_instr(Instr::Ret(i1));
+        loader.register_func(
+            "basic.list_len",
+            &[Param::Genuine(List::NAME.to_owned())],
+            func.finish(),
+        );
+
+        let mut func = FuncBuilder::default();
+        func.push_instr(Instr::Op(
+            "basic.list_insert".to_string(),
+            vec![Val::Arg(0), Val::Arg(1), Val::Arg(2)],
+        ));
+        func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
+        loader.register_func(
+            "basic.list_insert",
+            &[
+                Param::Genuine(List::NAME.to_owned()),
+                Param::Genuine(I32::NAME.to_owned()),
+                Param::Match(MatchExpr::And(Vec::new())),
             ],
             func.finish(),
         );
