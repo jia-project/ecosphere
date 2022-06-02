@@ -147,7 +147,7 @@ struct MemInner {
 }
 
 impl Mem {
-    const INITIAL_CAP: usize = 4 << 20;
+    const INITIAL_CAP: usize = 5 << 20;
 }
 
 impl Default for Mem {

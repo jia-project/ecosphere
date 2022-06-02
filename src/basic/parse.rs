@@ -303,6 +303,7 @@ impl<'a> Module<'a> {
         self.builder.push_instr(Self::jmp(label_merge));
         self.builder.with_block(label_false);
         if self.token == Some(Token::Special("else")) {
+            self.shift().unwrap();
             self.do_block();
         }
         self.builder.push_instr(Self::jmp(label_merge));

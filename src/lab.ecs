@@ -36,52 +36,42 @@ func fib(n is int) do
 end
 
 prod BigInt has
-    seg_list is _.basic.List
+    digit_list is _.basic.List
 end
+
+func digit_mask() return 0x8000  ; 15 bits
 
 func big_int(n is int) do
-    let b = prod BigInt do
-        mut seg_list = _.basic.list()
-    end
-    let n0 = n % 0x4fffffff  ; low 30 bits
-    run _.basic.list_push(b->seg_list, n0)
-    mut n = n - n0
-    if n != 0 run _.basic.list_push(b->seg_list, n)
-    return b
-end
-
-func normalize(n is BigInt) do
-    while true do
-        let len = _.basic.list_len(n->seg_list)
-        if len == 1 return _
-        if _.basic.list_get(n->seg_list, len - 1) != 0 return _
-        run _.basic.list_pop(n->seg_list)
-    end
+    let digit_list = _.basic.list()
+    if n == 0 return prod BigInt do mut digit_list = digit_list end
+    run _.basic.list_push(digit_list, n % digit_mask())
+    mut n = n / digit_mask()
+    if n != 0 run _.basic.list_push(digit_list, n)
+    return prod BigInt do mut digit_list = digit_list end
 end
 
 func add(n1 is BigInt, n2 is BigInt) do
-    let i = 0
-    let len1 = _.basic.list_len(n1->seg_list)
-    let len2 = _.basic.list_len(n2->seg_list)
-    let res = big_int(0)
+    let len1 = _.basic.list_len(n1->digit_list)
+    let len2 = _.basic.list_len(n2->digit_list)
+    let res = _.basic.list()
     let carry = 0
+    let i = 0
     while i < len1 or i < len2 do
-        let seg1 = 0
-        if i < len1 mut seg1 = _.basic.list_get(n1->seg_list, i)
-        let seg2 = 0
-        if i < len2 mut seg2 = _.basic.list_get(n2->seg_list, i)
-        let seg = seg1 + seg2 + carry
-        run _.basic.list_push(res->seg_list, seg % 0x4fffffff)
-        mut carry = seg / 0x4fffffff
+        let digit1 = 0
+        if i < len1 mut digit1 = _.basic.list_get(n1->digit_list, i)
+        let digit2 = 0
+        if i < len2 mut digit2 = _.basic.list_get(n2->digit_list, i)
+        let digit = digit1 + digit2 + carry
+        run _.basic.list_push(res, digit % digit_mask())
+        mut carry = digit / digit_mask()
         mut i = i + 1
     end
-    if carry != 0 run _.basic.list_push(res->seg_list, carry)
-    run normalize(res)
-    return res
+    if carry != 0 run _.basic.list_push(res, carry)
+    return prod BigInt do mut digit_list = res end
 end
 
 func eq(n1 is int, n2 is int) return n1 == n2
-func eq(n1 is BigInt, n2 is BigInt) return eq(n1->seg_list, n2->seg_list)
+func eq(n1 is BigInt, n2 is BigInt) return eq(n1->digit_list, n2->digit_list)
 func eq(l1 is _.basic.List, l2 is _.basic.List) do
     let len = _.basic.list_len(l1)
     if _.basic.list_len(l2) != len return false
@@ -93,49 +83,70 @@ func eq(l1 is _.basic.List, l2 is _.basic.List) do
     return true
 end
 
+; TODO negative number
 func lt(n1 is BigInt, n2 is BigInt) do
-    let len = _.basic.list_len(n1->seg_list)
-    if len < _.basic.list_len(n2->seg_list) return true
-    if len > _.basic.list_len(n2->seg_list) return false
+    let len = _.basic.list_len(n1->digit_list)
+    let len2 = _.basic.list_len(n2->digit_list)
+    if len != len2 return len < len2
     let i = len
     while i > 0 do
         mut i = i - 1
-        let seg1 = _.basic.list_get(n1->seg_list, i)
-        let seg2 = _.basic.list_get(n2->seg_list, i)
-        if seg1 < seg2 return true
-        if seg1 > seg2 return false
+        let digit1 = _.basic.list_get(n1->digit_list, i)
+        let digit2 = _.basic.list_get(n2->digit_list, i)
+        if digit1 != digit2 return digit1 < digit2
     end
     return false
 end
 
 func div(n is BigInt, m is int, rem is ref) do
-    let i = _.basic.list_len(n->seg_list)
-    let res = big_int(0)
+    ; assert 0 < m < digit_mask()
     mut->content rem = 0
+    let res = _.basic.list()
+    let i = _.basic.list_len(n->digit_list)
     while i > 0 do
         mut i = i - 1
-        let seg = _.basic.list_get(n->seg_list, i) + rem->content
-        run _.basic.list_insert(res->seg_list, 0, seg / m)
-        mut->content rem = seg % m
+        let digit = _.basic.list_get(n->digit_list, i) 
+            + rem->content * digit_mask()
+        mut->content rem = digit % m
+        mut digit = digit / m
+        if digit != 0 or _.basic.list_len(res) != 0
+            run _.basic.list_insert(res, 0, digit)
     end
-    run normalize(res)
-    return res
+    return prod BigInt do mut digit_list = res end
 end
 
 func to_str(n is BigInt) do
     if eq(n, big_int(0)) return "0"
-    let part = prod ref
     let s = ""
-    while not eq(n, big_int(0)) do
-        mut n = div(n, 1000000000, part)
-        let s0 = s
-        mut s = to_str(part->content)
-        run _.basic.str_push(s, s0)
+    while not eq(n, big_int(0)) do   
+        let rem = prod ref
+        mut n = div(n, 10000, rem)
+        let rem = to_str(rem->content)
+
+        let prev_s = s
+        mut s = ""
+        if not eq(n, big_int(0))
+            while _.basic.str_len(s) + _.basic.str_len(rem) < 4
+                run _.basic.str_push(s, "0")
+        run _.basic.str_push(s, rem)
+        run _.basic.str_push(s, prev_s)
+    end
+    return s
+end
+
+func to_str(l is _.basic.List) do
+    let s = "["
+    let i = 0
+    while i < _.basic.list_len(l) do
+        run _.basic.str_push(s, to_str(_.basic.list_get(l, i)))
+        if i < _.basic.list_len(l) - 1 run _.basic.str_push(s, ", ")
+        else run _.basic.str_push(s, "]")
+        mut i = i + 1
     end
     return s
 end
 
 func main() do
-    run _.basic.str_trace(to_str(fib(100)))
+    run _.basic.str_trace(to_str(fib(1000)))
     return _
 end

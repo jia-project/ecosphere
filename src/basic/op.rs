@@ -39,6 +39,14 @@ unsafe impl Operator for Op {
                 s1.push_str(s2);
                 None
             }
+            "basic.str_len" => {
+                let len = {
+                    let s = unsafe { context.read(val[0]) };
+                    let Str(s) = s.downcast_ref().unwrap();
+                    s.len()
+                };
+                Some(context.make_i32(len as _))
+            }
 
             "basic.list_new" => Some(context.make(List(Vec::new()))),
             "basic.list_push" => {
@@ -120,6 +128,15 @@ impl Op {
                 Param::Genuine(Str::NAME.to_owned()),
                 Param::Genuine(Str::NAME.to_owned()),
             ],
+            func.finish(),
+        );
+
+        let mut func = FuncBuilder::default();
+        let i1 = func.push_instr(Instr::Op("basic.str_len".to_string(), vec![Val::Arg(0)]));
+        func.push_instr(Instr::Ret(i1));
+        loader.register_func(
+            "basic.str_len",
+            &[Param::Genuine(Str::NAME.to_owned())],
             func.finish(),
         );
 
