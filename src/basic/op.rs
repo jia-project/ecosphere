@@ -18,7 +18,7 @@ impl Op {
 unsafe impl Operator for Op {
     fn perform(&mut self, code: &str, val: &[Val], context: &mut OpCtx) -> Option<FrameObj> {
         match code {
-            "basic.str" => {
+            "basic.str_copy" => {
                 let s = context.make_addr(val[0]);
                 let s = unsafe { context.worker.mem.read(s) };
                 let Str(s) = s.downcast_ref().unwrap();
@@ -40,7 +40,7 @@ unsafe impl Operator for Op {
                 None
             }
 
-            "basic.list" => Some(context.make(List(Vec::new()))),
+            "basic.list_new" => Some(context.make(List(Vec::new()))),
             "basic.list_push" => {
                 let l = context.make_addr(val[0]);
                 let mut l = unsafe { context.worker.mem.write(l) };
@@ -48,7 +48,7 @@ unsafe impl Operator for Op {
                 l.push(context.make_addr(val[1]));
                 None
             }
-            "basic.list_index" => {
+            "basic.list_get" => {
                 let l = context.make_addr(val[0]);
                 let l = unsafe { context.worker.mem.read(l) };
                 let List(l) = l.downcast_ref().unwrap();
@@ -67,7 +67,7 @@ impl Op {
         loader.make_tag(Str::NAME);
 
         let mut func = FuncBuilder::default();
-        let i1 = func.push_instr(Instr::Op("basic.str".to_string(), vec![Val::Arg(0)]));
+        let i1 = func.push_instr(Instr::Op("basic.str_copy".to_string(), vec![Val::Arg(0)]));
         func.push_instr(Instr::Ret(i1));
         loader.register_func(
             "basic.str",
@@ -100,7 +100,7 @@ impl Op {
         );
 
         let mut func = FuncBuilder::default();
-        let i1 = func.push_instr(Instr::Op("basic.list".to_string(), vec![]));
+        let i1 = func.push_instr(Instr::Op("basic.list_new".to_string(), vec![]));
         func.push_instr(Instr::Ret(i1));
         loader.register_func("basic.list", &[], func.finish());
 
@@ -121,12 +121,12 @@ impl Op {
 
         let mut func = FuncBuilder::default();
         let i1 = func.push_instr(Instr::Op(
-            "basic.list_index".to_string(),
+            "basic.list_get".to_string(),
             vec![Val::Arg(0), Val::Arg(1)],
         ));
         func.push_instr(Instr::Ret(i1));
         loader.register_func(
-            "basic.list_index",
+            "basic.list_get",
             &[
                 Param::Genuine(List::NAME.to_owned()),
                 Param::Genuine(I32::NAME.to_owned()),
