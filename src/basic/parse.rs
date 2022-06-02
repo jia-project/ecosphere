@@ -346,7 +346,7 @@ impl<'a> Module<'a> {
     }
 
     fn expr(&mut self) -> Val {
-        match self.token.as_ref().unwrap() {
+        let mut val = match self.token.as_ref().unwrap() {
             Token::Special("(") => self.paren(),
             Token::Special("_") => {
                 let val = Val::Const(ValConst::Unit);
@@ -355,6 +355,7 @@ impl<'a> Module<'a> {
             }
             Token::Special("spawn") => self.spawn(),
             Token::Special("prod") => self.prod_expr(),
+            Token::Special("not") => self.not_expr(),
             Token::LitBool(content) => {
                 let val = Val::Const(ValConst::Bool(*content));
                 self.shift();
@@ -379,16 +380,23 @@ impl<'a> Module<'a> {
             Token::Name(..) => {
                 // I don't really like to lookahead twice :|
                 let name = self.shift().unwrap().into_name();
-                self.guess_call(name)
-                    .or_else(|| self.guess_binary(name))
-                    .or_else(|| self.guess_get(name))
-                    // just stop here, let the others handle the following mess :)
-                    .unwrap_or_else(|| {
-                        let val = self.resolve_name(name);
-                        self.builder.push_instr(Instr::Load(val))
-                    })
+                self.guess_call(name).unwrap_or_else(|| {
+                    let val = self.resolve_name(name);
+                    self.builder.push_instr(Instr::Load(val))
+                })
             }
             token => panic!("unexpected token {token:?}"),
+        };
+        loop {
+            if let Some(next_val) = self.guess_binary(val) {
+                val = next_val;
+                continue;
+            }
+            if let Some(next_val) = self.guess_get(val) {
+                val = next_val;
+                continue;
+            }
+            break val;
         }
     }
 
@@ -404,6 +412,12 @@ impl<'a> Module<'a> {
         let name = self.shift().unwrap().into_name();
         let instr_call = self.call_like(name);
         self.builder.push_instr(Instr::Spawn(instr_call))
+    }
+
+    fn not_expr(&mut self) -> Val {
+        assert_eq!(self.shift(), Some(Token::Special("not")));
+        let val = self.expr();
+        self.not(val)
     }
 
     fn prod_expr(&mut self) -> Val {
@@ -456,42 +470,100 @@ impl<'a> Module<'a> {
         }
     }
 
-    fn guess_binary(&mut self, name: &str) -> Option<Val> {
-        let mut inv = false;
-        let op = match self.token {
-            Some(Token::Special("+")) => |i1, i2| CoreOp::I32Add(i1, i2),
-            Some(Token::Special("-")) => |i1, i2| CoreOp::I32Sub(i1, i2),
-            Some(Token::Special("*")) => |i1, i2| CoreOp::I32Mul(i1, i2),
-            Some(Token::Special("/")) => |i1, i2| CoreOp::I32Div(i1, i2),
-            Some(Token::Special("%")) => |i1, i2| CoreOp::I32Mod(i1, i2),
-            Some(Token::Special("==")) => |i1, i2| CoreOp::I32Eq(i1, i2),
-            Some(Token::Special("<")) => |i1, i2| CoreOp::I32Lt(i1, i2),
-            Some(Token::Special("!=")) => {
-                inv = true;
-                |i1, i2| CoreOp::I32Eq(i1, i2)
-            }
-            _ => return None,
+    fn guess_binary(&mut self, val: Val) -> Option<Val> {
+        let token = if let Some(token) = &self.token {
+            token
+        } else {
+            return None;
         };
-        self.shift();
-        let this_val = self.resolve_name(name);
-        let this_val = self.builder.push_instr(Instr::Load(this_val));
-        let that_val = self.expr();
-        let mut val = self
-            .builder
-            .push_instr(Instr::CoreOp(op(this_val, that_val)));
-        if inv {
-            val = self.builder.push_instr(Instr::CoreOp(CoreOp::BoolNeg(val)));
-        }
-        Some(val)
+        let tower = [
+            &["*", "/", "%"] as &[_],
+            &["+", "-"],
+            &["==", "!=", ">", "<", ">=", "<="],
+            &["and", "or"],
+        ];
+        let token_level = |token: &Token| {
+            for (i, layer) in tower.iter().enumerate() {
+                if layer.iter().any(|op| *token == Token::Special(op)) {
+                    return Some(i);
+                }
+            }
+            None
+        };
+        let level = if let Some(level) = token_level(token) {
+            level
+        } else {
+            return None;
+        };
+        let op = if let Token::Special(op) = self.shift().unwrap() {
+            op
+        } else {
+            unreachable!()
+        };
+        let middle_expr = self.expr();
+        let right_val = if self
+            .token
+            .as_ref()
+            .and_then(token_level)
+            .map(|right_level| right_level < level)
+            .unwrap_or(false)
+        {
+            self.guess_binary(middle_expr).unwrap()
+        } else {
+            middle_expr
+        };
+        Some(self.binary(op, val, right_val))
     }
 
-    fn guess_get(&mut self, name: &str) -> Option<Val> {
+    fn not(&mut self, val: Val) -> Val {
+        self.builder.push_instr(Instr::CoreOp(CoreOp::BoolNeg(val)))
+    }
+
+    fn binary(&mut self, op: &str, v1: Val, v2: Val) -> Val {
+        match op {
+            "or" => {
+                let not_v1 = self.not(v1);
+                let not_v2 = self.not(v2);
+                let not_val = self.binary("and", not_v1, not_v2);
+                self.not(not_val)
+            }
+            "<=" => {
+                let v3 = self.binary("<", v1, v2);
+                let v4 = self.binary("==", v1, v2);
+                self.binary("or", v3, v4)
+            }
+            ">" => {
+                let v3 = self.binary("<=", v1, v2);
+                self.not(v3)
+            }
+            "!=" => {
+                let v3 = self.binary("==", v1, v2);
+                self.not(v3)
+            }
+            ">=" => {
+                let v3 = self.binary("<", v1, v2);
+                self.not(v3)
+            }
+            op => self.builder.push_instr(Instr::CoreOp(match op {
+                "+" => CoreOp::I32Add(v1, v2),
+                "-" => CoreOp::I32Sub(v1, v2),
+                "*" => CoreOp::I32Mul(v1, v2),
+                "/" => CoreOp::I32Div(v1, v2),
+                "%" => CoreOp::I32Mod(v1, v2),
+                "<" => CoreOp::I32Lt(v1, v2),
+                "==" => CoreOp::I32Eq(v1, v2),
+                "and" => CoreOp::BoolAnd(v1, v2),
+                _ => unreachable!(),
+            })),
+        }
+    }
+
+    fn guess_get(&mut self, prod: Val) -> Option<Val> {
         if self.token != Some(Token::Special("->")) {
             return None;
         }
         self.shift().unwrap();
         let key = self.shift().unwrap().into_name();
-        let prod = self.resolve_name(name);
         Some(
             self.builder
                 .push_instr(Instr::CoreOp(CoreOp::Get(prod, key.to_string()))),
@@ -514,6 +586,7 @@ impl<'a> Module<'a> {
     fn canonical_name(&self, name: &str) -> String {
         match name {
             "unit" => "intrinsic.Unit".to_string(),
+            "ref" => "intrinsic.Ref".to_string(),
             "int" => "intrinsic.I32".to_string(),
             name if name.starts_with("_.") => name.strip_prefix("_.").unwrap().to_string(),
             name => [self.path, ".", name].concat(),

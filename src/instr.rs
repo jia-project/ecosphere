@@ -75,6 +75,7 @@ pub enum CoreOp {
     I32Eq(Val, Val),
     I32Lt(Val, Val),
     BoolNeg(Val),
+    BoolAnd(Val, Val),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +145,8 @@ impl Display for CoreOp {
             Self::I32Mod(i1, i2) => write!(f, "i32mod {i1} {i2}"),
             Self::I32Eq(i1, i2) => write!(f, "i32eq {i1} {i2}"),
             Self::I32Lt(i1, i2) => write!(f, "i32lt {i1} {i2}"),
-            Self::BoolNeg(val) => write!(f, "boolneg {val}"),
+            Self::BoolNeg(b) => write!(f, "boolneg {b}"),
+            Self::BoolAnd(b1, b2) => write!(f, "booland {b1} {b2}"),
         }
     }
 }

@@ -56,7 +56,7 @@ func add(n1 is BigInt, n2 is BigInt) do
     let len2 = _.basic.list_len(n2->seg_list)
     let res = big_int(0)
     let carry = 0
-    while i < len1 or i < len 2 do
+    while i < len1 or i < len2 do
         let seg1 = 0
         if i < len1 mut seg1 = _.basic.list_get(n1->seg_list, i)
         let seg2 = 0
@@ -87,7 +87,7 @@ func div(n is BigInt, m is int, rem is ref) do
     let i = _.basic.list_len(n->seg_list)
     let res = big_int(0)
     mut->content rem = 0
-    while i > 0
+    while i > 0 do
         mut i = i - 1
         let seg = _.basic.list_get(n->seg_list, i) + rem->content
         run _.basic.list_insert(res->seg_list, 0, seg / m)

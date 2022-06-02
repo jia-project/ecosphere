@@ -507,6 +507,11 @@ impl Interp {
                 let res = ctx.make_bool(!b);
                 Self::finish_step(ctx.frame, Some(res));
             }
+            CoreOp::BoolAnd(v1, v2) => {
+                let (b1, b2) = (ctx.get_bool(v1), ctx.get_bool(v2));
+                let res = ctx.make_bool(b1 && b2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
         }
     }
 }
