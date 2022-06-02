@@ -345,8 +345,35 @@ impl<'a> Module<'a> {
         Instr::Br(Val::Const(ValConst::Bool(true)), label, label)
     }
 
+    // expr0 := expr1 op0 expr0 | expr1
+    // expr1 := op1 expr2 | expr1->{key} | expr2
+    // expr2 := lit_i32 | lit_str | lit_bool | ( expr0 ) | {call expr}
+    //        | spawn ... | prod ... | ...
     fn expr(&mut self) -> Val {
+        self.expr0()
+    }
+
+    fn expr0(&mut self) -> Val {
+        let mut val = self.expr1();
+        while let Some(next_val) = self.guess_binary(val) {
+            val = next_val;
+        }
+        val
+    }
+
+    fn expr1(&mut self) -> Val {
         let mut val = match self.token.as_ref().unwrap() {
+            Token::Special("not") => self.not_expr(),
+            _ => self.expr2(),
+        };
+        while let Some(next_val) = self.guess_get(val) {
+            val = next_val;
+        }
+        val
+    }
+
+    fn expr2(&mut self) -> Val {
+        match self.token.as_ref().unwrap() {
             Token::Special("(") => self.paren(),
             Token::Special("_") => {
                 let val = Val::Const(ValConst::Unit);
@@ -355,7 +382,6 @@ impl<'a> Module<'a> {
             }
             Token::Special("spawn") => self.spawn(),
             Token::Special("prod") => self.prod_expr(),
-            Token::Special("not") => self.not_expr(),
             Token::LitBool(content) => {
                 let val = Val::Const(ValConst::Bool(*content));
                 self.shift();
@@ -386,17 +412,6 @@ impl<'a> Module<'a> {
                 })
             }
             token => panic!("unexpected token {token:?}"),
-        };
-        loop {
-            if let Some(next_val) = self.guess_binary(val) {
-                val = next_val;
-                continue;
-            }
-            if let Some(next_val) = self.guess_get(val) {
-                val = next_val;
-                continue;
-            }
-            break val;
         }
     }
 
@@ -416,7 +431,7 @@ impl<'a> Module<'a> {
 
     fn not_expr(&mut self) -> Val {
         assert_eq!(self.shift(), Some(Token::Special("not")));
-        let val = self.expr();
+        let val = self.expr2();
         self.not(val)
     }
 
@@ -454,7 +469,7 @@ impl<'a> Module<'a> {
         assert_eq!(self.shift(), Some(Token::Special("(")));
         let mut arg_list = Vec::new();
         while *self.token.as_ref().unwrap() != Token::Special(")") {
-            let val = self.expr();
+            let val = self.expr0();
             // TODO morph
             arg_list.push((val, None));
             if self.token == Some(Token::Special(",")) {
@@ -500,7 +515,7 @@ impl<'a> Module<'a> {
         } else {
             unreachable!()
         };
-        let middle_expr = self.expr();
+        let middle_expr = self.expr1(); // stop before next op0
         let right_val = if self
             .token
             .as_ref()
