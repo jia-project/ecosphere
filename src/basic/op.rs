@@ -111,7 +111,7 @@ impl Op {
         func.push_instr(Instr::Op("basic.str_trace".to_string(), vec![Val::Arg(0)]));
         func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
         loader.register_func(
-            "basic.str_trace",
+            "basic.trace",
             &[Param::Genuine(Str::NAME.to_owned())],
             func.finish(),
         );
@@ -123,7 +123,7 @@ impl Op {
         ));
         func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
         loader.register_func(
-            "basic.str_push",
+            "basic.push",
             &[
                 Param::Genuine(Str::NAME.to_owned()),
                 Param::Genuine(Str::NAME.to_owned()),
@@ -135,7 +135,7 @@ impl Op {
         let i1 = func.push_instr(Instr::Op("basic.str_len".to_string(), vec![Val::Arg(0)]));
         func.push_instr(Instr::Ret(i1));
         loader.register_func(
-            "basic.str_len",
+            "basic.len",
             &[Param::Genuine(Str::NAME.to_owned())],
             func.finish(),
         );
@@ -152,10 +152,10 @@ impl Op {
         ));
         func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
         loader.register_func(
-            "basic.list_push",
+            "basic.push",
             &[
                 Param::Genuine(List::NAME.to_owned()),
-                Param::Match(MatchExpr::And(Vec::new())),
+                Param::Match(MatchExpr::Anything),
             ],
             func.finish(),
         );
@@ -164,7 +164,7 @@ impl Op {
         let i1 = func.push_instr(Instr::Op("basic.list_pop".to_string(), vec![Val::Arg(0)]));
         func.push_instr(Instr::Ret(i1));
         loader.register_func(
-            "basic.list_pop",
+            "basic.pop",
             &[Param::Genuine(List::NAME.to_owned())],
             func.finish(),
         );
@@ -176,7 +176,7 @@ impl Op {
         ));
         func.push_instr(Instr::Ret(i1));
         loader.register_func(
-            "basic.list_get",
+            "basic.get",
             &[
                 Param::Genuine(List::NAME.to_owned()),
                 Param::Genuine(I32::NAME.to_owned()),
@@ -188,7 +188,7 @@ impl Op {
         let i1 = func.push_instr(Instr::Op("basic.list_len".to_string(), vec![Val::Arg(0)]));
         func.push_instr(Instr::Ret(i1));
         loader.register_func(
-            "basic.list_len",
+            "basic.len",
             &[Param::Genuine(List::NAME.to_owned())],
             func.finish(),
         );
@@ -200,11 +200,11 @@ impl Op {
         ));
         func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
         loader.register_func(
-            "basic.list_insert",
+            "basic.insert",
             &[
                 Param::Genuine(List::NAME.to_owned()),
                 Param::Genuine(I32::NAME.to_owned()),
-                Param::Match(MatchExpr::And(Vec::new())),
+                Param::Match(MatchExpr::Anything),
             ],
             func.finish(),
         );

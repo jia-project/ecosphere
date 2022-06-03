@@ -1,6 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
-    io::Write,
+    io::{LineWriter, Write},
     iter,
     mem::replace,
     ops::Deref,
@@ -16,7 +16,7 @@ use crate::{
     interp::Interp,
     loader::Loader,
     mem::{Mem, Mutator, Obj, MEM_STAT},
-    ObjCore, Operator,
+    ObjCore, Operator, TraceOut,
 };
 
 pub struct Worker {
@@ -26,7 +26,7 @@ pub struct Worker {
     ready_queue: ReadyQueue,
     ready_signal: Arc<Condvar>,
     task_pool: TaskPool,
-    trace_out: Box<dyn Write + Send>,
+    trace_out: LineWriter<TraceOut<Box<dyn Write + Send>>>,
     wake_collect: Sender<()>,
 }
 
@@ -92,6 +92,7 @@ impl Worker {
         loader: Loader,
         make_operator: impl Fn() -> O,
         make_trace: impl Fn() -> W,
+        t0: Instant,
     ) -> (Vec<Self>, CollectWorker) {
         let mem = Arc::new(mem);
         let loader = Arc::new(loader);
@@ -114,7 +115,7 @@ impl Worker {
                 ready_queue: ready_queue.clone(),
                 ready_signal: ready_signal.clone(),
                 task_pool: task_pool.clone(),
-                trace_out: Box::new(make_trace()),
+                trace_out: LineWriter::new(TraceOut::new(Box::new(make_trace()), t0)),
                 wake_collect: wake_tx.clone(),
             })
             .take(count)
@@ -145,7 +146,7 @@ impl Worker {
             }
 
             let mut interface = WorkerInterface {
-                handle: handle.clone(),
+                handle: &handle,
                 mem: &mem,
                 is_paused: false,
                 loader: &self.loader,
@@ -278,7 +279,7 @@ impl Drop for WakeToken {
 }
 
 pub struct WorkerInterface<'a> {
-    handle: TaskHandle,
+    handle: &'a TaskHandle,
     is_paused: bool,
     pub mem: &'a Mutator<'a>,
     pub loader: &'a Loader,

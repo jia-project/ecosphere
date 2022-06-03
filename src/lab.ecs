@@ -1,22 +1,26 @@
+alias _.basic has
+    List Str list str push pop insert get len trace
+end
+
 func to_str(n is int) do
-    let digit_table = _.basic.list()
-    run _.basic.list_push(digit_table, "0")
-    run _.basic.list_push(digit_table, "1")
-    run _.basic.list_push(digit_table, "2")
-    run _.basic.list_push(digit_table, "3")
-    run _.basic.list_push(digit_table, "4")
-    run _.basic.list_push(digit_table, "5")
-    run _.basic.list_push(digit_table, "6")
-    run _.basic.list_push(digit_table, "7")
-    run _.basic.list_push(digit_table, "8")
-    run _.basic.list_push(digit_table, "9")
+    let digit_table = list()
+    run push(digit_table, "0")
+    run push(digit_table, "1")
+    run push(digit_table, "2")
+    run push(digit_table, "3")
+    run push(digit_table, "4")
+    run push(digit_table, "5")
+    run push(digit_table, "6")
+    run push(digit_table, "7")
+    run push(digit_table, "8")
+    run push(digit_table, "9")
 
     if n == 0 return "0"
     let s = ""
     while n != 0 do
         let old_s = s
-        mut s = _.basic.str(_.basic.list_get(digit_table, n % 10))
-        run _.basic.str_push(s, old_s)
+        mut s = str(get(digit_table, n % 10))
+        run push(s, old_s)
         mut n = n / 10
     end
     return s
@@ -36,48 +40,48 @@ func fib(n is int) do
 end
 
 prod BigInt has
-    digit_list is _.basic.List
+    digit_list is List
 end
 
 func digit_mask() return 0x8000  ; 15 bits
 
 func big_int(n is int) do
-    let digit_list = _.basic.list()
+    let digit_list = list()
     if n == 0 return prod BigInt do mut digit_list = digit_list end
-    run _.basic.list_push(digit_list, n % digit_mask())
+    run push(digit_list, n % digit_mask())
     mut n = n / digit_mask()
-    if n != 0 run _.basic.list_push(digit_list, n)
+    if n != 0 run push(digit_list, n)
     return prod BigInt do mut digit_list = digit_list end
 end
 
 func add(n1 is BigInt, n2 is BigInt) do
-    let len1 = _.basic.list_len(n1->digit_list)
-    let len2 = _.basic.list_len(n2->digit_list)
-    let res = _.basic.list()
+    let len1 = len(n1->digit_list)
+    let len2 = len(n2->digit_list)
+    let res = list()
     let carry = 0
     let i = 0
     while i < len1 or i < len2 do
         let digit1 = 0
-        if i < len1 mut digit1 = _.basic.list_get(n1->digit_list, i)
+        if i < len1 mut digit1 = get(n1->digit_list, i)
         let digit2 = 0
-        if i < len2 mut digit2 = _.basic.list_get(n2->digit_list, i)
+        if i < len2 mut digit2 = get(n2->digit_list, i)
         let digit = digit1 + digit2 + carry
-        run _.basic.list_push(res, digit % digit_mask())
+        run push(res, digit % digit_mask())
         mut carry = digit / digit_mask()
         mut i = i + 1
     end
-    if carry != 0 run _.basic.list_push(res, carry)
+    if carry != 0 run push(res, carry)
     return prod BigInt do mut digit_list = res end
 end
 
 func eq(n1 is int, n2 is int) return n1 == n2
 func eq(n1 is BigInt, n2 is BigInt) return eq(n1->digit_list, n2->digit_list)
-func eq(l1 is _.basic.List, l2 is _.basic.List) do
-    let len = _.basic.list_len(l1)
-    if _.basic.list_len(l2) != len return false
+func eq(l1 is List, l2 is List) do
+    let len = len(l1)
+    if len(l2) != len return false
     let i = 0
     while i < len do
-        if not eq(_.basic.list_get(l1, i), _.basic.list_get(l2, i)) return false
+        if not eq(get(l1, i), get(l2, i)) return false
         mut i = i + 1
     end
     return true
@@ -85,14 +89,14 @@ end
 
 ; TODO negative number
 func lt(n1 is BigInt, n2 is BigInt) do
-    let len = _.basic.list_len(n1->digit_list)
-    let len2 = _.basic.list_len(n2->digit_list)
+    let len = len(n1->digit_list)
+    let len2 = len(n2->digit_list)
     if len != len2 return len < len2
     let i = len
     while i > 0 do
         mut i = i - 1
-        let digit1 = _.basic.list_get(n1->digit_list, i)
-        let digit2 = _.basic.list_get(n2->digit_list, i)
+        let digit1 = get(n1->digit_list, i)
+        let digit2 = get(n2->digit_list, i)
         if digit1 != digit2 return digit1 < digit2
     end
     return false
@@ -101,16 +105,15 @@ end
 func div(n is BigInt, m is int, rem is ref) do
     ; assert 0 < m < digit_mask()
     mut->content rem = 0
-    let res = _.basic.list()
-    let i = _.basic.list_len(n->digit_list)
+    let res = list()
+    let i = len(n->digit_list)
     while i > 0 do
         mut i = i - 1
-        let digit = _.basic.list_get(n->digit_list, i) 
-            + rem->content * digit_mask()
+        let digit = get(n->digit_list, i) + rem->content * digit_mask()
         mut->content rem = digit % m
         mut digit = digit / m
-        if digit != 0 or _.basic.list_len(res) != 0
-            run _.basic.list_insert(res, 0, digit)
+        if digit != 0 or len(res) != 0
+            run insert(res, 0, digit)
     end
     return prod BigInt do mut digit_list = res end
 end
@@ -126,27 +129,25 @@ func to_str(n is BigInt) do
         let prev_s = s
         mut s = ""
         if not eq(n, big_int(0))
-            while _.basic.str_len(s) + _.basic.str_len(rem) < 4
-                run _.basic.str_push(s, "0")
-        run _.basic.str_push(s, rem)
-        run _.basic.str_push(s, prev_s)
+            while len(s) + len(rem) < 4 run push(s, "0")
+        run push(s, rem)
+        run push(s, prev_s)
     end
     return s
 end
 
-func to_str(l is _.basic.List) do
+func to_str(l is List) do
     let s = "["
     let i = 0
-    while i < _.basic.list_len(l) do
-        run _.basic.str_push(s, to_str(_.basic.list_get(l, i)))
-        if i < _.basic.list_len(l) - 1 run _.basic.str_push(s, ", ")
-        else run _.basic.str_push(s, "]")
+    while i < len(l) do
+        run push(s, to_str(get(l, i)))
+        if i < len(l) - 1 run push(s, ", ") else run push(s, "]")
         mut i = i + 1
     end
     return s
 end
 
 func main() do
-    run _.basic.str_trace(to_str(fib(1000)))
+    run trace(to_str(fib(1000)))
     return _
 end

@@ -7,6 +7,7 @@ use crate::{
     instr::{CoreOp, FuncBuilder, Instr, InstrCall, LabelId, Val, ValConst},
     loader::{Loader, MatchExpr, Param},
     mem::Mem,
+    OwnedName,
 };
 
 use super::obj::Str;
@@ -44,9 +45,9 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     let special1 = ["mut->", "->", "==", "!="];
     match s.split_whitespace().next().unwrap() {
         // special that must separated with next token
-        special @ ("prod" | "sum" | "func" | "tag" | "do" | "end" | "if" | "else" | "while"
-        | "break" | "continue" | "return" | "let" | "mut" | "run" | "is" | "has"
-        | "spawn" | "wait" | "and" | "or" | "not" | "_") => {
+        special @ ("prod" | "sum" | "func" | "tag" | "alias" | "do" | "end" | "if" | "else"
+        | "while" | "break" | "continue" | "return" | "let" | "mut" | "run" | "is"
+        | "has" | "spawn" | "wait" | "and" | "or" | "not" | "_") => {
             *s = s.strip_prefix(special).unwrap();
             Some(Token::Special(special))
         }
@@ -132,6 +133,7 @@ pub struct Module<'a> {
     token: Option<Token<'a>>,
     label_break: Option<LabelId>,
     label_continue: Option<LabelId>,
+    alias_table: HashMap<&'a str, OwnedName>,
 }
 
 impl<'a> Module<'a> {
@@ -146,6 +148,13 @@ impl<'a> Module<'a> {
             token: None,
             label_break: None,
             label_continue: None,
+            alias_table: [
+                ("unit", "intrinsic.Unit".to_owned()),
+                ("ref", "intrinsic.Ref".to_owned()),
+                ("int", "intrinsic.I32".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -161,6 +170,7 @@ impl<'a> Module<'a> {
                 Token::Special("prod") => self.prod(),
                 Token::Special("sum") => todo!(),
                 Token::Special("tag") => todo!(),
+                Token::Special("alias") => self.alias(),
                 _ => panic!("unexpected token {token:?}"),
             }
         }
@@ -178,7 +188,7 @@ impl<'a> Module<'a> {
             self.builder
                 .push_instr(Instr::Store(val, Val::Arg(param_list.len())));
             self.insert_name(name, val);
-            let mut param = Param::Match(MatchExpr::And(Vec::new()));
+            let mut param = Param::Match(MatchExpr::Anything);
             if self.token == Some(Token::Special("is")) {
                 self.shift();
                 let name = self.shift().unwrap().into_name();
@@ -216,6 +226,25 @@ impl<'a> Module<'a> {
         }
         self.shift().unwrap();
         self.loader.register_prod(&name, &key_list);
+    }
+
+    fn alias(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("alias")));
+        let name = self.shift().unwrap().into_name();
+        if self.token != Some(Token::Special("has")) {
+            let target = self.canonical_name(name);
+            self.alias_table
+                .insert(name.rsplit(".").next().unwrap(), target);
+            return;
+        }
+        self.shift().unwrap();
+        let namespace = self.canonical_name(name);
+        while *self.token.as_ref().unwrap() != Token::Special("end") {
+            let name = self.shift().unwrap().into_name();
+            self.alias_table
+                .insert(name, [&namespace, ".", name].concat());
+        }
+        self.shift().unwrap();
     }
 
     fn do_block(&mut self) {
@@ -599,12 +628,10 @@ impl<'a> Module<'a> {
         panic!("cannot resolve name {name}");
     }
 
-    fn canonical_name(&self, name: &str) -> String {
+    fn canonical_name(&self, name: &str) -> OwnedName {
         match name {
-            "unit" => "intrinsic.Unit".to_string(),
-            "ref" => "intrinsic.Ref".to_string(),
-            "int" => "intrinsic.I32".to_string(),
             name if name.starts_with("_.") => name.strip_prefix("_.").unwrap().to_string(),
+            name if self.alias_table.contains_key(name) => self.alias_table[name].clone(),
             name => [self.path, ".", name].concat(),
         }
     }

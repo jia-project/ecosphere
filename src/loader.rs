@@ -14,7 +14,7 @@ pub struct Loader {
     tag_table: HashMap<OwnedName, TagId>,
     prod_table: HashMap<TagId, HashMap<String, usize>>,
     sum_table: HashMap<TagId, HashMap<String, u32>>,
-    func_table: HashMap<OwnedName, DispatchList>,
+    func_table: HashMap<(OwnedName, usize), DispatchList>,
 }
 type DispatchList = Vec<(Vec<Param>, Arc<Func>)>;
 
@@ -27,6 +27,8 @@ pub enum Param {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MatchExpr {
     Has(OwnedName),
+    Anything, // eventually should be And([]), make it specific before match
+    // dispatch is implemented
     And(Vec<MatchExpr>),
 }
 
@@ -62,7 +64,7 @@ impl Loader {
         // println!("{id}{param_list:?}");
         // println!("{func}");
         self.func_table
-            .entry(id.to_owned())
+            .entry((id.to_owned(), param_list.len()))
             .or_default()
             .push((param_list.to_vec(), Arc::new(func)));
     }
@@ -76,30 +78,49 @@ pub enum CallArg {
 
 impl Loader {
     pub fn dispatch_call(&self, id: &Name, arg_list: &[CallArg]) -> Arc<Func> {
-        let candicate_list = &self.func_table[id];
-        for (param_list, func) in candicate_list {
+        let candidate_list =
+            if let Some(candidate_list) = self.func_table.get(&(id.to_owned(), arg_list.len())) {
+                candidate_list
+            } else {
+                panic!("no function for dispatch {id}/{}", arg_list.len());
+            };
+        let mut genuine_candidate = None;
+        let mut anything_candidate = None;
+        for (param_list, func) in candidate_list {
             if param_list.len() != arg_list.len() {
                 continue;
             }
             let mut genuine_dispatch = true;
+            let mut anything_dispatch = true;
             for (param, arg) in param_list.iter().zip(arg_list.iter()) {
                 match (param, arg) {
-                    (Param::Match(MatchExpr::And(expr_list)), _) if expr_list.is_empty() => {
-                        // TODO remove this ad-hoc patch
+                    (Param::Match(MatchExpr::Anything), _) => {
+                        genuine_dispatch = false;
                     }
                     (Param::Genuine(name), CallArg::Genuine(tag))
                         if self.query_tag(name) == *tag => {}
                     _ => {
                         genuine_dispatch = false;
+                        anything_dispatch = false;
                         // TODO check match dispatch
                     }
                 }
             }
             if genuine_dispatch {
-                return func.clone();
+                let prev = genuine_candidate.replace(func);
+                assert!(prev.is_none());
+            } else if anything_dispatch && genuine_candidate.is_none() {
+                let prev = anything_candidate.replace(func);
+                assert!(prev.is_none());
             }
         }
-        panic!("dispatch failed func {id}");
+        if let Some(func) = genuine_candidate {
+            func.clone()
+        } else if let Some(func) = anything_candidate {
+            func.clone()
+        } else {
+            panic!("dispatch failed for function {id}/{}", arg_list.len());
+        }
     }
 
     pub fn register_prod(&mut self, name: &Name, key_list: &[&str]) {

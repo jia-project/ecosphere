@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use ecosphere::{basic, loader::Loader, mem::Mem, worker::Worker, TraceOut};
+use ecosphere::{basic, loader::Loader, mem::Mem, worker::Worker};
 
 fn main() {
     let mem = Mem::default();
@@ -22,7 +22,8 @@ fn main() {
         // can antually have the per-line sync with it
         // outer line writer: to trigger `TraceOut` once per line, so we will
         // not have multiple timestamp on one line
-        || LineWriter::new(TraceOut::new(LineWriter::new(SeqStdout), t0)),
+        || LineWriter::new(SeqStdout),
+        t0,
     );
     let collect = spawn(move || collect.run_loop());
     let _ = worker_list[0].spawn_main("lab.main");
