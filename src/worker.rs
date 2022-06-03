@@ -7,8 +7,9 @@ use std::{
     sync::{
         atomic::Ordering::SeqCst,
         mpsc::{channel, Receiver, Sender},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
+    time::Instant,
 };
 
 use crate::{
@@ -23,6 +24,7 @@ pub struct Worker {
     loader: Arc<Loader>,
     operator: Box<dyn Operator + Send>,
     ready_queue: ReadyQueue,
+    ready_signal: Arc<Condvar>,
     task_pool: TaskPool,
     trace_out: Box<dyn Write + Send>,
     wake_collect: Sender<()>,
@@ -94,6 +96,7 @@ impl Worker {
         let mem = Arc::new(mem);
         let loader = Arc::new(loader);
         let ready_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let ready_signal = Arc::new(Condvar::new());
         let task_pool = Arc::new(Mutex::new(HashSet::new()));
         let (wake_tx, wake_rx) = channel();
         let collect_worker = CollectWorker {
@@ -109,6 +112,7 @@ impl Worker {
                 loader: loader.clone(),
                 operator: Box::new(make_operator()),
                 ready_queue: ready_queue.clone(),
+                ready_signal: ready_signal.clone(),
                 task_pool: task_pool.clone(),
                 trace_out: Box::new(make_trace()),
                 wake_collect: wake_tx.clone(),
@@ -142,11 +146,12 @@ impl Worker {
 
             let mut interface = WorkerInterface {
                 handle: handle.clone(),
-                ready_queue: self.ready_queue.clone(),
-                task_pool: self.task_pool.clone(),
                 mem: &mem,
-                loader: &self.loader,
                 is_paused: false,
+                loader: &self.loader,
+                task_pool: &self.task_pool,
+                ready_queue: &self.ready_queue,
+                ready_signal: &self.ready_signal,
                 trace_out: &mut self.trace_out,
             };
             task.interp.step(&mut interface, &mut *self.operator);
@@ -186,15 +191,18 @@ impl Worker {
         }
     }
 
-    pub fn run_loop(&mut self) -> bool {
+    pub fn run_loop(&mut self) {
         loop {
-            if let Some(ready) = {
-                let mut ready_queue = self.ready_queue.lock().unwrap();
-                ready_queue.pop_front()
-            } {
+            let mut ready_queue = self.ready_queue.lock().unwrap();
+            if let Some(ready) = ready_queue.pop_front() {
+                drop(ready_queue);
                 self.drive_task(ready);
+            } else if self.task_pool.lock().unwrap().is_empty() {
+                self.ready_signal.notify_all();
+                return;
             } else {
-                return self.task_pool.lock().unwrap().is_empty();
+                // a little bit weird...
+                drop(self.ready_signal.wait(ready_queue).unwrap());
             }
         }
     }
@@ -202,8 +210,8 @@ impl Worker {
     fn spawn_internal(
         interp: Interp,
         mem: &Mutator<'_>,
-        task_pool: &TaskPool,
         ready_queue: &ReadyQueue,
+        task_pool: &TaskPool,
     ) -> TaskHandle {
         let task = TaskHandle {
             addr: TaskAddr(mem.make(Task { interp })),
@@ -220,8 +228,8 @@ impl Worker {
         let status = Self::spawn_internal(
             interp,
             &self.mem.mutator(),
-            &self.task_pool,
             &self.ready_queue,
+            &self.task_pool,
         )
         .status;
         move || match *status.lock().unwrap() {
@@ -236,6 +244,7 @@ impl Worker {
 pub struct WakeToken {
     handle: TaskHandle,
     ready_queue: ReadyQueue,
+    ready_signal: Arc<Condvar>,
     resolved: bool,
 }
 
@@ -256,6 +265,7 @@ impl WakeToken {
             .lock()
             .unwrap()
             .push_back(self.handle.clone());
+        self.ready_signal.notify_one();
         self.resolved = true;
         true
     }
@@ -269,11 +279,12 @@ impl Drop for WakeToken {
 
 pub struct WorkerInterface<'a> {
     handle: TaskHandle,
-    ready_queue: ReadyQueue,
-    task_pool: TaskPool,
     is_paused: bool,
     pub mem: &'a Mutator<'a>,
     pub loader: &'a Loader,
+    ready_queue: &'a ReadyQueue,
+    ready_signal: &'a Arc<Condvar>,
+    task_pool: &'a TaskPool,
     pub trace_out: &'a mut dyn Write,
 }
 
@@ -282,8 +293,8 @@ impl WorkerInterface<'_> {
         self.mem.make(Worker::spawn_internal(
             interp,
             &self.mem,
-            &self.task_pool,
-            &self.ready_queue,
+            self.ready_queue,
+            self.task_pool,
         ))
     }
 
@@ -293,6 +304,7 @@ impl WorkerInterface<'_> {
         WakeToken {
             handle: self.handle.clone(),
             ready_queue: self.ready_queue.clone(),
+            ready_signal: self.ready_signal.clone(),
             resolved: false,
         }
     }
@@ -327,6 +339,8 @@ impl WorkerInterface<'_> {
                 };
             let res = self.task_pool.lock().unwrap().remove(&handle.addr);
             assert!(res);
+            // assert task pool is not empty
+            // there should be at least the current running task still there
             for notify in notify_list {
                 notify.resolve(&self.mem, None);
             }
@@ -348,7 +362,7 @@ impl CollectWorker {
                 continue;
             }
             let mut collector = self.mem.collector();
-            writeln!(self.trace_out, "[collector] start").unwrap();
+            let collect_start = Instant::now();
             let mut preload_list = Vec::new();
             self.loader.trace(|obj| preload_list.push(obj));
 
@@ -358,7 +372,7 @@ impl CollectWorker {
                         .lock()
                         .unwrap()
                         .iter()
-                        .map(|TaskAddr(task)| *task)
+                        .map(|&TaskAddr(task)| task)
                         // simply chaining is safe because preload object should never
                         // duplicate with runtime task object
                         .chain(preload_list),
@@ -366,8 +380,9 @@ impl CollectWorker {
             };
             writeln!(
                 self.trace_out,
-                "[collector] exit capacity {:.2}MiB",
-                cap as f32 / (1 << 20) as f32
+                "[collector] finish in {:8?} next threshold {:.2}MiB",
+                Instant::now() - collect_start,
+                cap as f32 / (1 << 20) as f32 * Mem::COLLECT_THRESHOLD
             )
             .unwrap();
         }

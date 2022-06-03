@@ -10,7 +10,7 @@ fn main() {
     let mem = Mem::default();
     let mut loader = Loader::default();
     basic::Op::load(&mut loader);
-    basic::parse::Module::new("testbed", include_str!("lab.ecs"), &mut loader, &mem).load();
+    basic::parse::Module::new("lab", include_str!("lab.ecs"), &mut loader, &mem).load();
 
     let t0 = Instant::now();
     let (worker_list, collect) = Worker::new_group(
@@ -25,16 +25,10 @@ fn main() {
         || LineWriter::new(TraceOut::new(LineWriter::new(SeqStdout), t0)),
     );
     let collect = spawn(move || collect.run_loop());
-    let _ = worker_list[0].spawn_main("testbed.main");
+    let _ = worker_list[0].spawn_main("lab.main");
     let worker_list: Vec<_> = worker_list
         .into_iter()
-        .map(|mut worker| {
-            spawn(move || {
-                while !worker.run_loop() {
-                    // TODO park
-                }
-            })
-        })
+        .map(|mut worker| spawn(move || worker.run_loop()))
         .collect();
     for worker in worker_list {
         worker.join().unwrap();
