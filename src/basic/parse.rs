@@ -169,7 +169,7 @@ impl<'a> Module<'a> {
             match token {
                 Token::Special("func") => self.func(),
                 Token::Special("prod") => self.prod(),
-                Token::Special("sum") => todo!(),
+                Token::Special("sum") => self.sum(),
                 Token::Special("tag") => todo!(),
                 Token::Special("alias") => self.alias(),
                 _ => panic!("unexpected token {token:?}"),
@@ -227,6 +227,25 @@ impl<'a> Module<'a> {
         }
         self.shift().unwrap();
         self.loader.register_prod(&name, &key_list);
+    }
+
+    // identical to prod actually
+    fn sum(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("sum")));
+        let name = self.shift().unwrap().into_name();
+        let name = self.canonical_name(name);
+        assert_eq!(self.shift(), Some(Token::Special("has")));
+        let mut key_list = Vec::new();
+        while *self.token.as_ref().unwrap() != Token::Special("end") {
+            key_list.push(self.shift().unwrap().into_name());
+            if self.token == Some(Token::Special("is")) {
+                self.shift().unwrap();
+                // TODO collect this type message
+                assert!(matches!(self.shift().unwrap(), Token::Name(..)));
+            }
+        }
+        self.shift().unwrap();
+        self.loader.register_sum(&name, &key_list);
     }
 
     fn alias(&mut self) {
@@ -376,10 +395,12 @@ impl<'a> Module<'a> {
         Instr::Br(Val::Const(ValConst::Bool(true)), label, label)
     }
 
+    // use a precedence similar to Rust
     // expr0 := expr1 op0 expr0 | expr1
-    // expr1 := op1 expr2 | expr1->{key} | expr2
+    // expr1 := op1 expr2 | expr1->{key} | expr1 is {key} | expr1 as {key} | expr2
     // expr2 := lit_i32 | lit_str | lit_bool | ( expr0 ) | {call expr}
-    //        | spawn ... | prod ... | ...
+    //        | spawn ... | prod ... | sum ...
+
     fn expr(&mut self) -> Val {
         self.expr0()
     }
@@ -397,7 +418,7 @@ impl<'a> Module<'a> {
             Token::Special("not") => self.not_expr(),
             _ => self.expr2(),
         };
-        while let Some(next_val) = self.guess_get(val) {
+        while let Some(next_val) = self.guess_postfix(val) {
             val = next_val;
         }
         val
@@ -413,6 +434,7 @@ impl<'a> Module<'a> {
             }
             Token::Special("spawn") => self.spawn(),
             Token::Special("prod") => self.prod_expr(),
+            Token::Special("sum") => self.sum_expr(),
             Token::LitBool(content) => {
                 let val = Val::Const(ValConst::Bool(*content));
                 self.shift();
@@ -488,6 +510,16 @@ impl<'a> Module<'a> {
         prod
     }
 
+    fn sum_expr(&mut self) -> Val {
+        assert_eq!(self.shift(), Some(Token::Special("sum")));
+        let name = self.shift().unwrap().into_name();
+        let (name, key) = name.rsplit_once('.').unwrap();
+        let name = self.canonical_name(name);
+        let expr = self.expr();
+        self.builder
+            .push_instr(Instr::CoreOp(CoreOp::NewSum(name, key.to_string(), expr)))
+    }
+
     fn guess_call(&mut self, name: &str) -> Option<Val> {
         if self.token != Some(Token::Special("(")) {
             return None;
@@ -526,7 +558,8 @@ impl<'a> Module<'a> {
             &["*", "/", "%"] as &[_],
             &["+", "-"],
             &["==", "!=", ">", "<", ">=", "<="],
-            &["and", "or"],
+            &["and"],
+            &["or"],
         ];
         let token_level = |token: &Token| {
             for (i, layer) in tower.iter().enumerate() {
@@ -551,7 +584,12 @@ impl<'a> Module<'a> {
             .token
             .as_ref()
             .and_then(token_level)
-            .map(|right_level| right_level < level)
+            .map(|right_level| {
+                if right_level == level {
+                    assert_ne!(level, 2); // require explicit paren
+                }
+                right_level < level
+            })
             .unwrap_or(false)
         {
             self.guess_binary(middle_expr).unwrap()
@@ -604,16 +642,20 @@ impl<'a> Module<'a> {
         }
     }
 
-    fn guess_get(&mut self, prod: Val) -> Option<Val> {
-        if self.token != Some(Token::Special("->")) {
-            return None;
+    fn guess_postfix(&mut self, val: Val) -> Option<Val> {
+        if let Some(Token::Special(op)) = self.token {
+            if op == "->" || op == "is" || op == "as" {
+                self.shift().unwrap();
+                let key = self.shift().unwrap().into_name().to_string();
+                return Some(self.builder.push_instr(Instr::CoreOp(match op {
+                    "->" => CoreOp::Get(val, key),
+                    "is" => CoreOp::Is(val, key),
+                    "as" => CoreOp::As(val, key),
+                    _ => unreachable!(),
+                })));
+            }
         }
-        self.shift().unwrap();
-        let key = self.shift().unwrap().into_name();
-        Some(
-            self.builder
-                .push_instr(Instr::CoreOp(CoreOp::Get(prod, key.to_string()))),
-        )
+        None
     }
 
     fn insert_name(&mut self, name: &'a str, val: Val) {
