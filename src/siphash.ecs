@@ -1,0 +1,30 @@
+alias _.basic has
+    List Str list str push pop insert get len trace
+end
+
+prod SipHash has
+    v0 is BigInt
+    v1 is BigInt
+    v2 is BigInt
+    v3 is BigInt
+end
+
+func u64_mask() do
+    let mask = BigInt(0xff)
+    run shl(mask, 28)
+    mut mask = bitor(mask, BigInt(0xfffffff))
+    run shl(mask, 28)
+    return bitor(mask, BigInt(0xfffffff))
+end
+
+func sip_round(h is SipHash) do
+    mut->v0 h = add(h->v0, h->v1)
+    mut->v2 h = add(h->v2, h->v3)
+    run shl(h->v1, 13)
+    mut->v1 h = bitand(h->v1, u64_mask())
+    run shl(h->v3, 16)
+    mut->v3 h = bitand(h->v3, u64_mask())
+    mut->v1 h = xor(h->v0, h->v1)
+    mut->v3 h = xor(h->v2, h->v3)
+    ; TODO
+end

@@ -43,12 +43,12 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     let name_pat = |c: char| c.is_alphabetic() || c == '_' || c == '.';
     let name_pat_head = |c| name_pat(c) || c == ':';
     let name_pat_tail = |c| name_pat(c) || c.is_numeric();
-    let special1 = ["mut->", "->", "==", "!="];
+    let special1 = ["mut->", "->", "==", "!=", "<<", ">>", ">=", "<="];
     match s.split_whitespace().next().unwrap() {
         // special that must separated with next token
         special @ ("prod" | "sum" | "func" | "tag" | "alias" | "do" | "end" | "if" | "else"
         | "while" | "break" | "continue" | "return" | "let" | "mut" | "run" | "is"
-        | "has" | "spawn" | "wait" | "and" | "or" | "not" | "_") => {
+        | "as" | "has" | "spawn" | "wait" | "and" | "or" | "not" | "_") => {
             *s = s.strip_prefix(special).unwrap();
             Some(Token::Special(special))
         }
@@ -70,7 +70,11 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
             *s = s.strip_prefix(special).unwrap();
             Some(Token::Special(special))
         }
-        special if special.starts_with(['=', '+', '-', '*', '/', '%', ',', '(', ')', '<', '>']) => {
+        special
+            if special.starts_with([
+                '=', '+', '-', '*', '/', '%', ',', '(', ')', '<', '>', '^', '&', '|',
+            ]) =>
+        {
             let (special, next_s) = s.split_at(1);
             *s = next_s;
             Some(Token::Special(special))

@@ -10,6 +10,8 @@ fn main() {
     let mem = Mem::default();
     let mut loader = Loader::default();
     basic::Op::load(&mut loader);
+    basic::parse::Module::new("lab", include_str!("bigint.ecs"), &mut loader, &mem).load();
+    basic::parse::Module::new("lab", include_str!("siphash.ecs"), &mut loader, &mem).load();
     basic::parse::Module::new("lab", include_str!("lab.ecs"), &mut loader, &mem).load();
 
     let t0 = Instant::now();

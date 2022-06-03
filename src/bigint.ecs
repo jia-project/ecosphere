@@ -1,0 +1,174 @@
+alias _.basic has
+    List Str list str push pop insert get len trace
+end
+
+prod BigInt has
+    digit_list is List
+    ; digit_list[num_digit..] always all 0 digits
+    num_digit is Int
+end
+
+func digit_shift() return 15
+func digit_mask() return (1 << digit_shift()) - 1
+
+func big_int(n is Int, min_len is Int) do
+    let digit_list = list()
+    if n == 0 return prod BigInt do 
+        mut digit_list = digit_list 
+        mut num_digit = 0
+    end
+    run push(digit_list, n & digit_mask())
+    mut n = n >> digit_shift()
+    if n != 0 run push(digit_list, n)
+    let num_digit = len(digit_list)
+
+    while len(digit_list) < min_len run push(digit_list, 0)
+
+    return prod BigInt do 
+        mut digit_list = digit_list 
+        mut num_digit = num_digit
+    end
+end
+
+func big_int(n is Int) return big_int(n, 0)
+
+func add(n1 is BigInt, n2 is BigInt) do
+    let len1 = len(n1->digit_list)
+    let len2 = len(n2->digit_list)
+    let res = list()
+    let res_digit = 0
+    let carry = 0
+    
+    let i = 0
+    while i < len1 or i < len2 do
+        let digit1 = 0
+        if i < len1 mut digit1 = get(n1->digit_list, i)
+        let digit2 = 0
+        if i < len2 mut digit2 = get(n2->digit_list, i)
+        
+        let digit = digit1 + digit2 + carry
+        run push(res, digit & digit_mask())
+        mut carry = digit >> digit_shift()
+        
+        mut i = i + 1
+        if digit != 0 mut res_digit = i
+    end
+    if carry != 0 run push(res, carry)
+    return prod BigInt do mut digit_list = res mut num_digit = res_digit end
+end
+
+; TODO negative number
+func ord(n1 is BigInt, n2 is BigInt) do
+    let i = n1->num_digit
+    if i < n2->num_digit return sum Ord.Lt _ 
+    if i > n2->num_digit return sum Ord.Gt _
+    while i > 0 do
+        mut i = i - 1
+        let digit1 = get(n1->digit_list, i)
+        let digit2 = get(n2->digit_list, i)
+        if digit1 < digit2 return sum Ord.Lt _
+        if digit1 > digit2 return sum Ord.Gt _
+    end
+    return sum Ord.Eq _
+end 
+
+func eq(n1 is BigInt, n2 is BigInt) return ord(n1, n2) is Eq
+
+func div(n is BigInt, m is Int, rem is Ref) do
+    ; assert 0 < m < digit_mask()
+    mut->content rem = 0
+    let res = list()
+
+    let i = n->num_digit
+    while i > 0 do
+        mut i = i - 1
+        let digit = get(n->digit_list, i) | rem->content << digit_shift()
+        mut->content rem = digit % m
+        mut digit = digit / m
+        if digit != 0 or len(res) != 0 run insert(res, 0, digit)
+    end
+    return prod BigInt do mut digit_list = res mut num_digit = len(res) end
+end
+
+func to_str(n is BigInt) do
+    if eq(n, big_int(0)) return "0"
+    let s = ""
+    while not eq(n, big_int(0)) do   
+        let rem = prod Ref
+        mut n = div(n, 10000, rem)
+        let rem = to_str(rem->content)
+
+        let prev_s = s
+        mut s = ""
+        if not eq(n, big_int(0))
+            while len(s) + len(rem) < 4 run push(s, "0")
+        run push(s, rem)
+        run push(s, prev_s)
+    end
+    return s
+end
+
+func xor(n1 is BigInt, n2 is BigInt) do
+    let i = 0
+    let res = list()
+    while i < n1->num_digit or i < n2->num_digit do
+        let digit1 = 0
+        if i < n1->num_digit mut digit1 = get(n1->digit_list, i)
+        let digit2 = 0
+        if i < n2->num_digit mut digit2 = get(n2->digit_list, i)
+        run push(res, digit1 ^ digit2)
+    end
+    return prod BigInt do 
+        mut digit_list = res 
+        mut num_digit = len(res) 
+    end
+end
+
+func shl(n is BigInt, d is Int) do
+    if d == 0 return _
+    if d >= 15 do
+        run shl(n, d % 15)
+        let i = 0
+        let num_push = d / 15
+        while i < num_push do
+            run insert(n, 0, 0)
+            mut i = i + 1
+        end
+        mut->num_digit n = n->num_digit + num_push
+        return _
+    end
+
+    let mask = (1 << d) - 1
+    let carry = 0
+    let i = 0
+    while i < n->num_digit do
+        let digit = get(n->digit_list, i)
+        run set(n->digit_list, i, (digit & mask) << d | carry)
+        mut carry = digit >> d
+        mut i = i + 1
+    end
+    if carry != 0 do
+        run push(n->digit_list, carry)
+        mut->num_digit n = n->num_digit + 1
+    end
+    return _
+end
+
+func bitand(n1 is BigInt, n2 is BigInt) do
+    let len = n1->num_digit
+    if len > n2->num_digit mut len = n2->num_digit
+    let res = list()
+    let num_digit = 0
+    
+    let i = 0
+    while i < len do
+        let digit = get(n1->digit_list, i) & get(n2->digit_list, i)
+        run push(res, digit)
+        mut i = i + 1
+        if digit != 0 mut num_digit = i
+    end
+    return prod BigInt do
+        mut digit_list = res
+        mut num_digit = num_digit
+    end
+end
