@@ -34,7 +34,7 @@ pub struct CollectWorker {
     mem: Arc<Mem>,
     task_pool: TaskPool,
     loader: Arc<Loader>,
-    trace_out: Box<dyn Write + Send>,
+    trace_out: LineWriter<TraceOut<Box<dyn Write + Send>>>,
     wake: Receiver<()>,
 }
 
@@ -104,7 +104,7 @@ impl Worker {
             mem: mem.clone(),
             task_pool: task_pool.clone(),
             loader: loader.clone(),
-            trace_out: Box::new(make_trace()),
+            trace_out: LineWriter::new(TraceOut::new(Box::new(make_trace()), t0)),
             wake: wake_rx,
         };
         (

@@ -2,7 +2,7 @@ alias _.basic has
     List Str list str push pop insert get len trace
 end
 
-func to_str(n is int) do
+func to_str(n is Int) do
     let digit_table = list()
     run push(digit_table, "0")
     run push(digit_table, "1")
@@ -26,7 +26,7 @@ func to_str(n is int) do
     return s
 end
 
-func fib(n is int) do
+func fib(n is Int) do
     let a = big_int(1)
     let b = big_int(0)
     let i = 1
@@ -45,7 +45,7 @@ end
 
 func digit_mask() return 0x8000  ; 15 bits
 
-func big_int(n is int) do
+func big_int(n is Int) do
     let digit_list = list()
     if n == 0 return prod BigInt do mut digit_list = digit_list end
     run push(digit_list, n % digit_mask())
@@ -74,7 +74,7 @@ func add(n1 is BigInt, n2 is BigInt) do
     return prod BigInt do mut digit_list = res end
 end
 
-func eq(n1 is int, n2 is int) return n1 == n2
+func eq(n1 is Int, n2 is Int) return n1 == n2
 func eq(n1 is BigInt, n2 is BigInt) return eq(n1->digit_list, n2->digit_list)
 func eq(l1 is List, l2 is List) do
     let len = len(l1)
@@ -102,7 +102,7 @@ func lt(n1 is BigInt, n2 is BigInt) do
     return false
 end
 
-func div(n is BigInt, m is int, rem is ref) do
+func div(n is BigInt, m is Int, rem is Ref) do
     ; assert 0 < m < digit_mask()
     mut->content rem = 0
     let res = list()
@@ -122,7 +122,7 @@ func to_str(n is BigInt) do
     if eq(n, big_int(0)) return "0"
     let s = ""
     while not eq(n, big_int(0)) do   
-        let rem = prod ref
+        let rem = prod Ref
         mut n = div(n, 10000, rem)
         let rem = to_str(rem->content)
 

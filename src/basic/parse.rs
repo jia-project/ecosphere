@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     instr::{CoreOp, FuncBuilder, Instr, InstrCall, LabelId, Val, ValConst},
+    interp::I32,
     loader::{Loader, MatchExpr, Param},
     mem::Mem,
     OwnedName,
@@ -149,9 +150,9 @@ impl<'a> Module<'a> {
             label_break: None,
             label_continue: None,
             alias_table: [
-                ("unit", "intrinsic.Unit".to_owned()),
-                ("ref", "intrinsic.Ref".to_owned()),
-                ("int", "intrinsic.I32".to_owned()),
+                ("Unit", "intrinsic.Unit".to_owned()),
+                ("Ref", "intrinsic.Ref".to_owned()),
+                ("Int", I32::NAME.to_owned()),
             ]
             .into_iter()
             .collect(),
