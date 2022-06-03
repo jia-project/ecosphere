@@ -2,7 +2,7 @@ use crate::{
     instr::{FuncBuilder, Instr, Val, ValConst},
     interp::{FrameObj, OpCtx, I32},
     loader::{Loader, MatchExpr, Param},
-    Operator,
+    Name, Operator,
 };
 
 use super::obj::{List, Str};
@@ -94,119 +94,63 @@ unsafe impl Operator for Op {
 }
 
 impl Op {
+    fn wrap(loader: &mut Loader, op: &str, name: &Name, param_list: &[Param], val_op: bool) {
+        let mut func = FuncBuilder::default();
+        let i1 = func.push_instr(Instr::Op(
+            "basic.".to_string() + op,
+            (0..param_list.len()).map(|i| Val::Arg(i)).collect(),
+        ));
+        func.push_instr(Instr::Ret(if val_op {
+            i1
+        } else {
+            Val::Const(ValConst::Unit)
+        }));
+        loader.register_func(&("basic.".to_string() + name), param_list, func.finish());
+    }
+
     pub fn load(loader: &mut Loader) {
         loader.make_tag(List::NAME);
         loader.make_tag(Str::NAME);
 
-        let mut func = FuncBuilder::default();
-        let i1 = func.push_instr(Instr::Op("basic.str_copy".to_string(), vec![Val::Arg(0)]));
-        func.push_instr(Instr::Ret(i1));
-        loader.register_func(
-            "basic.str",
-            &[Param::Genuine(Str::NAME.to_owned())],
-            func.finish(),
+        let param_str = || Param::Genuine(Str::NAME.to_owned());
+        let param_i32 = || Param::Genuine(I32::NAME.to_owned());
+        let param_list = || Param::Genuine(List::NAME.to_owned());
+        let param_anything = || Param::Match(MatchExpr::Anything);
+
+        Self::wrap(loader, "str_copy", "str", &[param_str()], true);
+        Self::wrap(loader, "str_trace", "trace", &[param_str()], false);
+        Self::wrap(
+            loader,
+            "str_push",
+            "push",
+            &[param_str(), param_str()],
+            false,
         );
+        Self::wrap(loader, "str_len", "len", &[param_str()], true);
 
-        let mut func = FuncBuilder::default();
-        func.push_instr(Instr::Op("basic.str_trace".to_string(), vec![Val::Arg(0)]));
-        func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
-        loader.register_func(
-            "basic.trace",
-            &[Param::Genuine(Str::NAME.to_owned())],
-            func.finish(),
+        Self::wrap(loader, "list_new", "list", &[], true);
+        Self::wrap(
+            loader,
+            "list_push",
+            "push",
+            &[param_list(), param_anything()],
+            false,
         );
-
-        let mut func = FuncBuilder::default();
-        func.push_instr(Instr::Op(
-            "basic.str_push".to_string(),
-            vec![Val::Arg(0), Val::Arg(1)],
-        ));
-        func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
-        loader.register_func(
-            "basic.push",
-            &[
-                Param::Genuine(Str::NAME.to_owned()),
-                Param::Genuine(Str::NAME.to_owned()),
-            ],
-            func.finish(),
+        Self::wrap(loader, "list_pop", "pop", &[param_list()], true);
+        Self::wrap(
+            loader,
+            "list_get",
+            "get",
+            &[param_list(), param_i32()],
+            true,
         );
-
-        let mut func = FuncBuilder::default();
-        let i1 = func.push_instr(Instr::Op("basic.str_len".to_string(), vec![Val::Arg(0)]));
-        func.push_instr(Instr::Ret(i1));
-        loader.register_func(
-            "basic.len",
-            &[Param::Genuine(Str::NAME.to_owned())],
-            func.finish(),
-        );
-
-        let mut func = FuncBuilder::default();
-        let i1 = func.push_instr(Instr::Op("basic.list_new".to_string(), vec![]));
-        func.push_instr(Instr::Ret(i1));
-        loader.register_func("basic.list", &[], func.finish());
-
-        let mut func = FuncBuilder::default();
-        func.push_instr(Instr::Op(
-            "basic.list_push".to_string(),
-            vec![Val::Arg(0), Val::Arg(1)],
-        ));
-        func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
-        loader.register_func(
-            "basic.push",
-            &[
-                Param::Genuine(List::NAME.to_owned()),
-                Param::Match(MatchExpr::Anything),
-            ],
-            func.finish(),
-        );
-
-        let mut func = FuncBuilder::default();
-        let i1 = func.push_instr(Instr::Op("basic.list_pop".to_string(), vec![Val::Arg(0)]));
-        func.push_instr(Instr::Ret(i1));
-        loader.register_func(
-            "basic.pop",
-            &[Param::Genuine(List::NAME.to_owned())],
-            func.finish(),
-        );
-
-        let mut func = FuncBuilder::default();
-        let i1 = func.push_instr(Instr::Op(
-            "basic.list_get".to_string(),
-            vec![Val::Arg(0), Val::Arg(1)],
-        ));
-        func.push_instr(Instr::Ret(i1));
-        loader.register_func(
-            "basic.get",
-            &[
-                Param::Genuine(List::NAME.to_owned()),
-                Param::Genuine(I32::NAME.to_owned()),
-            ],
-            func.finish(),
-        );
-
-        let mut func = FuncBuilder::default();
-        let i1 = func.push_instr(Instr::Op("basic.list_len".to_string(), vec![Val::Arg(0)]));
-        func.push_instr(Instr::Ret(i1));
-        loader.register_func(
-            "basic.len",
-            &[Param::Genuine(List::NAME.to_owned())],
-            func.finish(),
-        );
-
-        let mut func = FuncBuilder::default();
-        func.push_instr(Instr::Op(
-            "basic.list_insert".to_string(),
-            vec![Val::Arg(0), Val::Arg(1), Val::Arg(2)],
-        ));
-        func.push_instr(Instr::Ret(Val::Const(ValConst::Unit)));
-        loader.register_func(
-            "basic.insert",
-            &[
-                Param::Genuine(List::NAME.to_owned()),
-                Param::Genuine(I32::NAME.to_owned()),
-                Param::Match(MatchExpr::Anything),
-            ],
-            func.finish(),
+        Self::wrap(loader, "list_len", "len", &[param_list()], true);
+        Self::wrap(
+            loader,
+            "list_insert",
+            "insert",
+            &[param_list(), param_i32(), param_anything()],
+            false,
         );
     }
 }
