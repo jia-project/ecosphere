@@ -295,15 +295,17 @@ impl<'a> Module<'a> {
             Token::Special("while") => self.while_stmt(),
             Token::Special("return") => self.return_stmt(),
             Token::Special("break") => {
+                self.shift().unwrap();
                 self.builder
                     .push_instr(Self::jmp(self.label_break.unwrap()));
             }
             Token::Special("continue") => {
+                self.shift().unwrap();
                 self.builder
                     .push_instr(Self::jmp(self.label_continue.unwrap()));
             }
             Token::Special("run") => {
-                self.shift();
+                self.shift().unwrap();
                 self.expr(); // limit to call expr?
             }
             Token::Special("wait") => self.wait(),
@@ -402,8 +404,9 @@ impl<'a> Module<'a> {
     // use a precedence similar to Rust
     // expr0 := expr1 op0 expr0 | expr1
     // expr1 := op1 expr1 | expr1 [->|is|as] {key} | expr2
-    // expr2 := lit_i32 | lit_str | lit_bool | ( expr0 ) | {call expr}
-    //        | spawn ... | prod ... | sum ...
+    // expr2 := lit_i32 | lit_str | lit_bool | {name}
+    //        | {call expr} | spawn ... | prod ... | sum ...
+    //        | ( expr0 )
 
     fn expr(&mut self) -> Val {
         self.expr0()
@@ -471,7 +474,7 @@ impl<'a> Module<'a> {
 
     fn paren(&mut self) -> Val {
         assert_eq!(self.shift(), Some(Token::Special("(")));
-        let val = self.expr();
+        let val = self.expr0();
         assert_eq!(self.shift(), Some(Token::Special(")")));
         val
     }

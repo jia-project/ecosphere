@@ -111,12 +111,16 @@ end
 func xor(n1 is BigInt, n2 is BigInt) do
     let i = 0
     let res = list()
+    let res_digit = 0
     while i < n1->num_digit or i < n2->num_digit do
         let digit1 = 0
         if i < n1->num_digit mut digit1 = get(n1->digit_list, i)
         let digit2 = 0
         if i < n2->num_digit mut digit2 = get(n2->digit_list, i)
-        run push(res, digit1 ^ digit2)
+        let digit = digit1 ^ digit2
+        run push(res, digit)
+        mut i = i + 1
+        if digit != 0 mut res_digit = i
     end
     return prod BigInt do 
         mut digit_list = res 
@@ -124,51 +128,59 @@ func xor(n1 is BigInt, n2 is BigInt) do
     end
 end
 
-func shl(n is BigInt, d is Int) do
-    if d == 0 return _
-    if d >= 15 do
-        run shl(n, d % 15)
-        let i = 0
-        let num_push = d / 15
-        while i < num_push do
-            run insert(n, 0, 0)
-            mut i = i + 1
-        end
-        mut->num_digit n = n->num_digit + num_push
-        return _
-    end
-
-    let mask = (1 << d) - 1
+func shr(n is BigInt, d is Int) do
+    if d == 0 return n
+    let index_offset = d / 15
+    if index_offset >= n->num_digit return big_int(0)
+    let digit_offset = d % 15
+    let mask = (1 << digit_offset) - 1
+    let res = list()
     let carry = 0
-    let i = 0
-    while i < n->num_digit do
-        let digit = get(n->digit_list, i)
-        run set(n->digit_list, i, (digit & mask) << d | carry)
-        mut carry = digit >> d
-        mut i = i + 1
+
+    let i = n->num_digit
+    while i > index_offset do
+        mut i = i - 1
+        let digit = get(n->digit_list, i) >> d | carry << 15 - d
+        if digit != 0 or len(res) != 0 run insert(res, 0, digit)
+        mut carry = digit & mask
     end
-    if carry != 0 do
-        run push(n->digit_list, carry)
-        mut->num_digit n = n->num_digit + 1
-    end
-    return _
+    return prod BigInt do mut digit_list = res mut num_digit = len(res) end
 end
 
 func bitand(n1 is BigInt, n2 is BigInt) do
     let len = n1->num_digit
     if len > n2->num_digit mut len = n2->num_digit
     let res = list()
-    let num_digit = 0
+    let res_digit = 0
     
     let i = 0
     while i < len do
         let digit = get(n1->digit_list, i) & get(n2->digit_list, i)
         run push(res, digit)
         mut i = i + 1
-        if digit != 0 mut num_digit = i
+        if digit != 0 mut res_digit = i
     end
     return prod BigInt do
         mut digit_list = res
-        mut num_digit = num_digit
+        mut num_digit = res_digit
+    end
+end
+
+func bitor(n1 is BigInt, n2 is BigInt) do
+    let len = n1->num_digit
+    if len < n2->num_digit mut len = n2->num_digit
+    let res = list()
+    let res_digit = 0
+
+    let i = 0
+    while i < len do
+        let digit = get(n1->digit_list, i) | get(n2->digit_list, i)
+        run push(res, digit)
+        mut i = i + 1
+        if digit != 0 mut res_digit = i
+    end
+    return prod BigInt do
+        mut digit_list = res
+        mut num_digit = res_digit
     end
 end

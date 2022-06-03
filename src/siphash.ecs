@@ -20,11 +20,17 @@ end
 func sip_round(h is SipHash) do
     mut->v0 h = add(h->v0, h->v1)
     mut->v2 h = add(h->v2, h->v3)
-    run shl(h->v1, 13)
-    mut->v1 h = bitand(h->v1, u64_mask())
-    run shl(h->v3, 16)
-    mut->v3 h = bitand(h->v3, u64_mask())
+    mut->v1 h = u64_rot(h->v1, 13)
+    mut->v3 h = u64_rot(h->v3, 16)
     mut->v1 h = xor(h->v0, h->v1)
     mut->v3 h = xor(h->v2, h->v3)
-    ; TODO
+    mut->v0 h = u64_rot(h->v0, 32)
+    mut->v2 h = add(h->v1, h->v2)
+    mut->v3 h = add(h->v0, h->v3)
+    mut->v1 h = u64_rot(h->v1, 17)
+    mut->v3 h = u64_rot(h->v3, 21)
+    mut->v1 h = xor(h->v1, h->v2)
+    mut->v3 h = xor(h->v0, h->v3)
+    mut->v2 h = u64_rot(h->v2, 32)
+    return _
 end
