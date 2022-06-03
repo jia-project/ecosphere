@@ -397,7 +397,7 @@ impl<'a> Module<'a> {
 
     // use a precedence similar to Rust
     // expr0 := expr1 op0 expr0 | expr1
-    // expr1 := op1 expr2 | expr1->{key} | expr1 is {key} | expr1 as {key} | expr2
+    // expr1 := op1 expr1 | expr1 [->|is|as] {key} | expr2
     // expr2 := lit_i32 | lit_str | lit_bool | ( expr0 ) | {call expr}
     //        | spawn ... | prod ... | sum ...
 
@@ -414,10 +414,7 @@ impl<'a> Module<'a> {
     }
 
     fn expr1(&mut self) -> Val {
-        let mut val = match self.token.as_ref().unwrap() {
-            Token::Special("not") => self.not_expr(),
-            _ => self.expr2(),
-        };
+        let mut val = self.expr1_prefix();
         while let Some(next_val) = self.guess_postfix(val) {
             val = next_val;
         }
@@ -482,10 +479,15 @@ impl<'a> Module<'a> {
         self.builder.push_instr(Instr::Spawn(instr_call))
     }
 
-    fn not_expr(&mut self) -> Val {
-        assert_eq!(self.shift(), Some(Token::Special("not")));
-        let val = self.expr2();
-        self.not(val)
+    fn expr1_prefix(&mut self) -> Val {
+        if let Some(Token::Special(op)) = self.token {
+            if op == "not" || op == "-" {
+                self.shift().unwrap();
+                let val = self.expr1();
+                return self.unary(op, val);
+            }
+        }
+        self.expr2()
     }
 
     fn prod_expr(&mut self) -> Val {
@@ -557,6 +559,10 @@ impl<'a> Module<'a> {
         let tower = [
             &["*", "/", "%"] as &[_],
             &["+", "-"],
+            &["<<", ">>"],
+            &["&"],
+            &["^"],
+            &["|"],
             &["==", "!=", ">", "<", ">=", "<="],
             &["and"],
             &["or"],
@@ -586,7 +592,7 @@ impl<'a> Module<'a> {
             .and_then(token_level)
             .map(|right_level| {
                 if right_level == level {
-                    assert_ne!(level, 2); // require explicit paren
+                    assert_ne!(level, 6); // require explicit paren
                 }
                 right_level < level
             })
@@ -599,17 +605,43 @@ impl<'a> Module<'a> {
         Some(self.binary(op, val, right_val))
     }
 
-    fn not(&mut self, val: Val) -> Val {
-        self.builder.push_instr(Instr::CoreOp(CoreOp::BoolNeg(val)))
+    fn unary(&mut self, op: &str, val: Val) -> Val {
+        self.builder.push_instr(Instr::CoreOp(match op {
+            "not" => CoreOp::BoolNeg(val),
+            "-" => CoreOp::I32Neg(val),
+            "~" => CoreOp::I32Inv(val),
+            _ => unreachable!(),
+        }))
     }
 
     fn binary(&mut self, op: &str, v1: Val, v2: Val) -> Val {
         match op {
             "or" => {
-                let not_v1 = self.not(v1);
-                let not_v2 = self.not(v2);
+                let not_v1 = self.unary("not", v1);
+                let not_v2 = self.unary("not", v2);
                 let not_val = self.binary("and", not_v1, not_v2);
-                self.not(not_val)
+                self.unary("not", not_val)
+            }
+            "|" => {
+                let inv_v1 = self.unary("~", v1);
+                let inv_v2 = self.unary("~", v2);
+                let inv_val = self.binary("&", inv_v1, inv_v2);
+                self.unary("~", inv_val)
+            }
+            "^" => {
+                let v3 = self.binary("&", v1, v2);
+                let v4 = self.unary("~", v3);
+                let v5 = self.binary("|", v1, v2);
+                self.binary("&", v4, v5)
+            }
+            "%" => {
+                let v3 = self.binary("/", v1, v2);
+                let v4 = self.binary("*", v3, v2);
+                self.binary("-", v1, v4)
+            }
+            "-" => {
+                let v3 = self.unary("-", v2);
+                self.binary("+", v1, v3)
             }
             "<=" => {
                 let v3 = self.binary("<", v1, v2);
@@ -618,24 +650,25 @@ impl<'a> Module<'a> {
             }
             ">" => {
                 let v3 = self.binary("<=", v1, v2);
-                self.not(v3)
+                self.unary("not", v3)
             }
             "!=" => {
                 let v3 = self.binary("==", v1, v2);
-                self.not(v3)
+                self.unary("not", v3)
             }
             ">=" => {
                 let v3 = self.binary("<", v1, v2);
-                self.not(v3)
+                self.unary("not", v3)
             }
             op => self.builder.push_instr(Instr::CoreOp(match op {
                 "+" => CoreOp::I32Add(v1, v2),
-                "-" => CoreOp::I32Sub(v1, v2),
                 "*" => CoreOp::I32Mul(v1, v2),
                 "/" => CoreOp::I32Div(v1, v2),
-                "%" => CoreOp::I32Mod(v1, v2),
                 "<" => CoreOp::I32Lt(v1, v2),
                 "==" => CoreOp::I32Eq(v1, v2),
+                "&" => CoreOp::I32And(v1, v2),
+                "<<" => CoreOp::I32Shl(v1, v2),
+                ">>" => CoreOp::I32Shr(v1, v2),
                 "and" => CoreOp::BoolAnd(v1, v2),
                 _ => unreachable!(),
             })),

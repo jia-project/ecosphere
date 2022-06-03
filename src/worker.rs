@@ -30,6 +30,19 @@ pub struct Worker {
     wake_collect: Sender<()>,
 }
 
+pub struct WorkerInterface<'a> {
+    handle: &'a TaskHandle,
+    is_paused: bool,
+    pub mem: &'a Mutator<'a>,
+    // cannot just capture a `&'a mut Worker` for the following fields
+    // because that will capture worker's operator as well
+    pub loader: &'a Loader,
+    ready_queue: &'a ReadyQueue,
+    ready_signal: &'a Arc<Condvar>,
+    task_pool: &'a TaskPool,
+    pub trace_out: &'a mut dyn Write,
+}
+
 pub struct CollectWorker {
     mem: Arc<Mem>,
     task_pool: TaskPool,
@@ -276,17 +289,6 @@ impl Drop for WakeToken {
     fn drop(&mut self) {
         assert!(self.resolved);
     }
-}
-
-pub struct WorkerInterface<'a> {
-    handle: &'a TaskHandle,
-    is_paused: bool,
-    pub mem: &'a Mutator<'a>,
-    pub loader: &'a Loader,
-    ready_queue: &'a ReadyQueue,
-    ready_signal: &'a Arc<Condvar>,
-    task_pool: &'a TaskPool,
-    pub trace_out: &'a mut dyn Write,
 }
 
 impl WorkerInterface<'_> {

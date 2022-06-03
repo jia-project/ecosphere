@@ -472,9 +472,9 @@ impl Interp {
                 let res = ctx.make_i32(i1 + i2);
                 Self::finish_step(ctx.frame, Some(res));
             }
-            CoreOp::I32Sub(v1, v2) => {
-                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
-                let res = ctx.make_i32(i1 - i2);
+            CoreOp::I32Neg(val) => {
+                let i = ctx.get_i32(val);
+                let res = ctx.make_i32(-i);
                 Self::finish_step(ctx.frame, Some(res));
             }
             CoreOp::I32Mul(v1, v2) => {
@@ -487,11 +487,6 @@ impl Interp {
                 let res = ctx.make_i32(i1 / i2);
                 Self::finish_step(ctx.frame, Some(res));
             }
-            CoreOp::I32Mod(v1, v2) => {
-                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
-                let res = ctx.make_i32(i1 % i2);
-                Self::finish_step(ctx.frame, Some(res));
-            }
             CoreOp::I32Eq(v1, v2) => {
                 let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
                 let res = ctx.make_bool(i1 == i2);
@@ -500,6 +495,26 @@ impl Interp {
             CoreOp::I32Lt(v1, v2) => {
                 let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
                 let res = ctx.make_bool(i1 < i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32And(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_i32(i1 & i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Shl(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_i32(i1 << i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Shr(v1, v2) => {
+                let (i1, i2) = (ctx.get_i32(v1), ctx.get_i32(v2));
+                let res = ctx.make_i32(i1 >> i2);
+                Self::finish_step(ctx.frame, Some(res));
+            }
+            CoreOp::I32Inv(val) => {
+                let i = ctx.get_i32(val);
+                let res = ctx.make_i32(!i);
                 Self::finish_step(ctx.frame, Some(res));
             }
             CoreOp::BoolNeg(val) => {
