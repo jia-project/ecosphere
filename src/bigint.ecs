@@ -8,7 +8,7 @@ prod BigInt has
     num_digit is Int
 end
 
-func digit_shift() return 15
+func digit_shift() return 24
 func digit_mask() return (1 << digit_shift()) - 1
 
 func big_int(n is Int, min_len is Int) do
@@ -75,7 +75,7 @@ end
 func eq(n1 is BigInt, n2 is BigInt) return ord(n1, n2) is Eq
 
 func div(n is BigInt, m is Int, rem is Ref) do
-    ; assert 0 < m < digit_mask()
+    ; assert 0 < m <= 1 << (31 - digit_shift())
     mut->content rem = 0
     let res = list()
 
@@ -95,20 +95,26 @@ func to_str(n is BigInt) do
     let s = ""
     while not eq(n, big_int(0)) do   
         let rem = prod Ref
-        mut n = div(n, 10000, rem)
+        mut n = div(n, 100, rem)
         let rem = to_str(rem->content)
 
         let prev_s = s
         mut s = ""
         if not eq(n, big_int(0))
-            while len(s) + len(rem) < 4 run push(s, "0")
+            while len(s) + len(rem) < 2 run push(s, "0")
         run push(s, rem)
         run push(s, prev_s)
     end
     return s
 end
 
-func xor(n1 is BigInt, n2 is BigInt) do
+sum Bitwise has
+    And is Unit
+    Or is Unit
+    Xor is Unit
+end
+
+func bitwise(op is Bitwise, n1 is BigInt, n2 is BigInt) do
     let i = 0
     let res = list()
     let res_digit = 0
@@ -117,7 +123,12 @@ func xor(n1 is BigInt, n2 is BigInt) do
         if i < n1->num_digit mut digit1 = get(n1->digit_list, i)
         let digit2 = 0
         if i < n2->num_digit mut digit2 = get(n2->digit_list, i)
-        let digit = digit1 ^ digit2
+        let digit
+        if op match
+            And _ mut digit = digit1 & digit2
+            Or _ mut digit = digit1 | digit2
+            Xor _ mut digit = digit1 ^ digit2
+        end
         run push(res, digit)
         mut i = i + 1
         if digit != 0 mut res_digit = i
@@ -130,9 +141,9 @@ end
 
 func shr(n is BigInt, d is Int) do
     if d == 0 return n
-    let index_offset = d / 15
+    let index_offset = d / digit_shift()
     if index_offset >= n->num_digit return big_int(0)
-    let digit_offset = d % 15
+    let digit_offset = d % digit_shift()
     let mask = (1 << digit_offset) - 1
     let res = list()
     let carry = 0
@@ -140,47 +151,9 @@ func shr(n is BigInt, d is Int) do
     let i = n->num_digit
     while i > index_offset do
         mut i = i - 1
-        let digit = get(n->digit_list, i) >> d | carry << 15 - d
+        let digit = get(n->digit_list, i) >> d | carry << digit_shift() - d
         if digit != 0 or len(res) != 0 run insert(res, 0, digit)
         mut carry = digit & mask
     end
     return prod BigInt do mut digit_list = res mut num_digit = len(res) end
-end
-
-func bitand(n1 is BigInt, n2 is BigInt) do
-    let len = n1->num_digit
-    if len > n2->num_digit mut len = n2->num_digit
-    let res = list()
-    let res_digit = 0
-    
-    let i = 0
-    while i < len do
-        let digit = get(n1->digit_list, i) & get(n2->digit_list, i)
-        run push(res, digit)
-        mut i = i + 1
-        if digit != 0 mut res_digit = i
-    end
-    return prod BigInt do
-        mut digit_list = res
-        mut num_digit = res_digit
-    end
-end
-
-func bitor(n1 is BigInt, n2 is BigInt) do
-    let len = n1->num_digit
-    if len < n2->num_digit mut len = n2->num_digit
-    let res = list()
-    let res_digit = 0
-
-    let i = 0
-    while i < len do
-        let digit = get(n1->digit_list, i) | get(n2->digit_list, i)
-        run push(res, digit)
-        mut i = i + 1
-        if digit != 0 mut res_digit = i
-    end
-    return prod BigInt do
-        mut digit_list = res
-        mut num_digit = res_digit
-    end
 end

@@ -47,8 +47,8 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     match s.split_whitespace().next().unwrap() {
         // special that must separated with next token
         special @ ("prod" | "sum" | "func" | "tag" | "alias" | "do" | "end" | "if" | "else"
-        | "while" | "break" | "continue" | "return" | "let" | "mut" | "run" | "is"
-        | "as" | "has" | "spawn" | "wait" | "and" | "or" | "not" | "_") => {
+        | "while" | "break" | "continue" | "return" | "match" | "let" | "mut"
+        | "run" | "is" | "as" | "has" | "spawn" | "wait" | "and" | "or" | "not") => {
             *s = s.strip_prefix(special).unwrap();
             Some(Token::Special(special))
         }
@@ -78,6 +78,20 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
             let (special, next_s) = s.split_at(1);
             *s = next_s;
             Some(Token::Special(special))
+        }
+        special
+            if special.starts_with('_')
+            // ...only when underscore is not leading a name
+            // do I use underscore too much?
+            // or should I simply inject a name resolving rule, instead of 
+            // making underscore special?
+                && !special
+                    .strip_prefix('_')
+                    .unwrap()
+                    .starts_with(name_pat_tail) =>
+        {
+            *s = s.strip_prefix('_').unwrap();
+            Some(Token::Special("_"))
         }
 
         lit_i32 if lit_i32.starts_with(char::is_numeric) => {
@@ -167,6 +181,11 @@ impl<'a> Module<'a> {
         replace(&mut self.token, next_token(&mut self.source))
     }
 
+    // notice this assert not EOF
+    fn not_end(&self) -> bool {
+        *self.token.as_ref().unwrap() != Token::Special("end")
+    }
+
     pub fn load(mut self) {
         self.shift();
         while let Some(token) = &self.token {
@@ -221,7 +240,7 @@ impl<'a> Module<'a> {
         let name = self.canonical_name(name);
         assert_eq!(self.shift(), Some(Token::Special("has")));
         let mut key_list = Vec::new();
-        while *self.token.as_ref().unwrap() != Token::Special("end") {
+        while self.not_end() {
             key_list.push(self.shift().unwrap().into_name());
             if self.token == Some(Token::Special("is")) {
                 self.shift().unwrap();
@@ -240,7 +259,7 @@ impl<'a> Module<'a> {
         let name = self.canonical_name(name);
         assert_eq!(self.shift(), Some(Token::Special("has")));
         let mut key_list = Vec::new();
-        while *self.token.as_ref().unwrap() != Token::Special("end") {
+        while self.not_end() {
             key_list.push(self.shift().unwrap().into_name());
             if self.token == Some(Token::Special("is")) {
                 self.shift().unwrap();
@@ -263,7 +282,7 @@ impl<'a> Module<'a> {
         }
         self.shift().unwrap();
         let namespace = self.canonical_name(name);
-        while *self.token.as_ref().unwrap() != Token::Special("end") {
+        while self.not_end() {
             let name = self.shift().unwrap().into_name();
             self.alias_table
                 .insert(name, [&namespace, ".", name].concat());
@@ -275,7 +294,7 @@ impl<'a> Module<'a> {
         if self.token == Some(Token::Special("do")) {
             self.shift();
             self.name_table.push(HashMap::new());
-            while *self.token.as_ref().unwrap() != Token::Special("end") {
+            while self.not_end() {
                 self.stmt();
             }
             self.shift();
@@ -322,7 +341,8 @@ impl<'a> Module<'a> {
             let expr_val = self.expr();
             self.builder.push_instr(Instr::Store(val, expr_val));
         }
-        // only insert name after expr is evaluated, so as Rust's name shadowing
+        // only insert(override) name after expr is evaluated, so as Rust's name
+        // shadowing
         self.insert_name(name, val);
     }
 
@@ -347,22 +367,69 @@ impl<'a> Module<'a> {
 
     fn if_stmt(&mut self) {
         assert_eq!(self.shift(), Some(Token::Special("if")));
-        let label_true = self.builder.push_block();
-        let label_false = self.builder.push_block();
-        let label_merge = self.builder.push_block();
         let expr = self.expr();
+        if self.token == Some(Token::Special("match")) {
+            self.if_match(expr);
+            return;
+        }
+        let label_then = self.builder.push_block();
+        let label_else = self.builder.push_block();
+        let label_end = self.builder.push_block();
         self.builder
-            .push_instr(Instr::Br(expr, label_true, label_false));
-        self.builder.with_block(label_true);
+            .push_instr(Instr::Br(expr, label_then, label_else));
+        self.builder.with_block(label_then);
         self.do_block();
-        self.builder.push_instr(Self::jmp(label_merge));
-        self.builder.with_block(label_false);
+        self.builder.push_instr(Self::jmp(label_end));
+        self.builder.with_block(label_else);
         if self.token == Some(Token::Special("else")) {
             self.shift().unwrap();
             self.do_block();
         }
-        self.builder.push_instr(Self::jmp(label_merge));
-        self.builder.with_block(label_merge);
+        self.builder.push_instr(Self::jmp(label_end));
+        self.builder.with_block(label_end);
+    }
+
+    // currently for single match (similar to if let in Rust), a double end
+    // pattern may be required:
+    // if ... match ... do
+    //     ...
+    // end end
+    // first one close do block, second one close match list
+    // consider specialize it if myself made mistake on it too often
+    fn if_match(&mut self, sum: Val) {
+        assert_eq!(self.shift(), Some(Token::Special("match")));
+        let mut label_next = self.builder.push_block();
+        let label_end = self.builder.push_block();
+        while self.not_end() {
+            // TODO add wildcard case
+            let key = self.shift().unwrap().into_name();
+            let is_val = self
+                .builder
+                .push_instr(Instr::CoreOp(CoreOp::Is(sum, key.to_string())));
+            let label_then = label_next;
+            label_next = self.builder.push_block();
+            self.builder
+                .push_instr(Instr::Br(is_val, label_then, label_next));
+            self.builder.with_block(label_then);
+            match self.shift().unwrap() {
+                Token::Special("_") => self.do_block(), // skip name binding
+                Token::Name(name) => {
+                    let name_val = self
+                        .builder
+                        .push_instr(Instr::CoreOp(CoreOp::As(sum, key.to_string())));
+                    self.name_table.push(HashMap::new());
+                    self.insert_name(name, name_val);
+                    self.do_block();
+                    self.name_table.pop().unwrap();
+                }
+                token => panic!("unexpected token: {token:?}"),
+            }
+            self.builder.push_instr(Self::jmp(label_end));
+        }
+        self.shift().unwrap();
+        self.builder.with_block(label_next);
+        self.builder.push_instr(Self::jmp(label_end));
+        self.builder.with_block(label_end);
     }
 
     fn while_stmt(&mut self) {
@@ -506,7 +573,7 @@ impl<'a> Module<'a> {
             .push_instr(Instr::CoreOp(CoreOp::NewProd(name)));
         if self.token == Some(Token::Special("do")) {
             self.shift().unwrap();
-            while *self.token.as_ref().unwrap() != Token::Special("end") {
+            while self.not_end() {
                 assert_eq!(self.shift(), Some(Token::Special("mut")));
                 let key = self.shift().unwrap().into_name();
                 assert_eq!(self.shift(), Some(Token::Special("=")));
@@ -563,6 +630,7 @@ impl<'a> Module<'a> {
         } else {
             return None;
         };
+        // simply copied from Rust reference
         let tower = [
             &["*", "/", "%"] as &[_],
             &["+", "-"],

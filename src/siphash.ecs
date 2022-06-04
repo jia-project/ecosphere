@@ -9,28 +9,60 @@ prod SipHash has
     v3 is BigInt
 end
 
-func u64_mask() do
-    let mask = BigInt(0xff)
-    run shl(mask, 28)
-    mut mask = bitor(mask, BigInt(0xfffffff))
-    run shl(mask, 28)
-    return bitor(mask, BigInt(0xfffffff))
+; n1 high 16 bits, n2 middle 24 bits, n3 low 24 bits
+; here we depends on BigInt internal structure, not very modular
+func siphash.u64(n1 is Int, n2 is Int, n3 is Int) do
+    ; assert digit_offset() == 24
+    let digit_list = list()
+    run push(digit_list, n3)
+    run push(digit_list, n2)
+    run push(digit_list, n1)
+    let num_digit = 3
+    if n1 == 0 do 
+        mut num_digit = 2
+        if n2 == 0 do 
+            mut num_digit = 1
+            if n3 == 0 mut num_digit = 0
+        end
+    end
+    return prod BigInt do
+        mut digit_list = digit_list
+        mut num_digit = num_digit
+    end
 end
 
+func u64_mask() return siphash.u64(0xffff, 0xffffff, 0xffffff)
+
+; u64 add with overflow
+func siphash.add(n1 is BigInt, n2 is BigInt) 
+    return bitwise(sum Bitwise.And _, add(n1, n2), u64_mask())
+
+; u64 left rotation
+func siphash.rot(n is BigInt, d is Int) do
+    if d >= 64 return siphash.rot(n, d % 64)
+    let mask = shr(u64_mask(), d)
+    let high = bitwise(sum Bitwise.And _, n, mask)
+    let low = bitwise(sum Bitwise.Xor _, n, high)
+    return bitwise(sum Bitwise.Or _, shl(high, d), shr(low, 64 - d))
+end
+
+func siphash.xor(n1 is BigInt, n2 is BigInt) 
+    return bitwise(sum Bitwise.Xor _, n1, n2)
+
 func sip_round(h is SipHash) do
-    mut->v0 h = add(h->v0, h->v1)
-    mut->v2 h = add(h->v2, h->v3)
-    mut->v1 h = u64_rot(h->v1, 13)
-    mut->v3 h = u64_rot(h->v3, 16)
-    mut->v1 h = xor(h->v0, h->v1)
-    mut->v3 h = xor(h->v2, h->v3)
-    mut->v0 h = u64_rot(h->v0, 32)
-    mut->v2 h = add(h->v1, h->v2)
-    mut->v3 h = add(h->v0, h->v3)
-    mut->v1 h = u64_rot(h->v1, 17)
-    mut->v3 h = u64_rot(h->v3, 21)
-    mut->v1 h = xor(h->v1, h->v2)
-    mut->v3 h = xor(h->v0, h->v3)
-    mut->v2 h = u64_rot(h->v2, 32)
+    mut->v0 h = siphash.add(h->v0, h->v1)
+    mut->v2 h = siphash.add(h->v2, h->v3)
+    mut->v1 h = siphash.rot(h->v1, 13)
+    mut->v3 h = siphash.rot(h->v3, 16)
+    mut->v1 h = siphash.xor(h->v0, h->v1)
+    mut->v3 h = siphash.xor(h->v2, h->v3)
+    mut->v0 h = siphash.rot(h->v0, 32)
+    mut->v2 h = siphash.add(h->v1, h->v2)
+    mut->v3 h = siphash.add(h->v0, h->v3)
+    mut->v1 h = siphash.rot(h->v1, 17)
+    mut->v3 h = siphash.rot(h->v3, 21)
+    mut->v1 h = siphash.xor(h->v1, h->v2)
+    mut->v3 h = siphash.xor(h->v0, h->v3)
+    mut->v2 h = siphash.rot(h->v2, 32)
     return _
 end
