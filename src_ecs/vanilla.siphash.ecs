@@ -93,7 +93,6 @@ func sip_round(h is State) do
     return _
 end
 
-
 func reset(h is SipHash) do
     mut->len h = 0
     mut->tail_len h = 0

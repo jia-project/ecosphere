@@ -781,10 +781,15 @@ impl<'a> Module<'a> {
     }
 
     fn canonical_name(&self, name: &str) -> OwnedName {
-        match name {
-            name if name.starts_with("_.") => name.strip_prefix("_.").unwrap().to_string(),
-            name if self.alias_table.contains_key(name) => self.alias_table[name].clone(),
-            name => [self.path, ".", name].concat(),
+        if name.starts_with("_.") {
+            return name.strip_prefix("_.").unwrap().to_string();
         }
+        for (alias, replace) in &self.alias_table {
+            if let Some(tail) = name.strip_prefix(alias) {
+                return replace.clone() + tail;
+            }
+        }
+
+        return [self.path, ".", name].concat();
     }
 }

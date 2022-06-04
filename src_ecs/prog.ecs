@@ -1,6 +1,8 @@
 alias _.basic has push trace end
 alias _.vanilla has add to_str end
-alias _.vanilla.bigint has big_int Bitwise bitwise end
+alias _.vanilla.bigint.big_int
+alias _.vanilla.siphash
+alias _.vanilla.siphash.SipHash
 
 func fib(n is Int) do
     let a = big_int(1)
@@ -16,9 +18,12 @@ func fib(n is Int) do
 end
 
 func main() do
-    let s = "2047 & 11 = "
-    let res = bitwise(sum Bitwise.And _, big_int(2047), big_int(10))
-    run push(s, to_str(res))
-    run trace(s)
+    let h = prod SipHash do
+        mut k0 = big_int(0)
+        mut k1 = big_int(0)
+    end
+    run siphash.write(h, "")
+    let hash = siphash.finish(h)
+    run trace(to_str(hash))
     return _
 end
