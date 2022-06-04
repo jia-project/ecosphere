@@ -120,7 +120,7 @@ impl Interp {
         // outside of basic module
         loader.register_prod("intrinsic.Unit", &[]);
         loader.register_prod("intrinsic.Ref", &["content"]);
-        loader.register_sum("intrinsic.Option", &["Some", "None"]);
+        loader.register_sum("intrinsic.Result", &["Ok", "Err"]);
         loader.make_tag(I32::NAME);
     }
 

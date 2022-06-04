@@ -69,7 +69,20 @@ func to_str(l is List) do
     return s
 end
 
+func list(l is List) do
+    let res = list()
+    let i = 0
+    while i < len(l) do
+        run push(res, get(l, i))
+        mut i = i + 1
+    end
+    return res
+end
+
 func main() do
-    run trace(to_str(fib(1000)))
+    let s = "2047 & 11 = "
+    let res = bitwise(sum Bitwise.And _, big_int(2047), big_int(10))
+    run push(s, to_str(res))
+    run trace(s)
     return _
 end

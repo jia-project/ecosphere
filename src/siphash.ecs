@@ -3,6 +3,17 @@ alias _.basic has
 end
 
 prod SipHash has
+    k0 is BigInt
+    k1 is BigInt
+
+    state is siphash.State
+    
+    tail is BigInt
+    tail_len is Int
+    len is Int
+end
+
+prod siphash.State has
     v0 is BigInt
     v1 is BigInt
     v2 is BigInt
@@ -31,6 +42,22 @@ func siphash.u64(n1 is Int, n2 is Int, n3 is Int) do
     end
 end
 
+; TODO msg has :as_byte
+func load_byte(msg, pos is Int, len is Int) do
+    let n1 = 0
+    let n2 = 0
+    let n3 = 0
+    if len > 0 mut n3 = n3 | as_byte.get(pos + 0) << 0
+    if len > 1 mut n3 = n3 | as_byte.get(pos + 1) << 8
+    if len > 2 mut n3 = n3 | as_byte.get(pos + 2) << 16
+    if len > 3 mut n2 = n2 | as_byte.get(pos + 3) << 0
+    if len > 4 mut n2 = n2 | as_byte.get(pos + 4) << 8
+    if len > 5 mut n2 = n2 | as_byte.get(pos + 5) << 16
+    if len > 6 mut n1 = n1 | as_byte.get(pos + 6) << 0
+    if len > 7 mut n1 = n1 | as_byte.get(pos + 7) << 8
+    return siphash.u64(n1, n2, n3)
+end
+
 func u64_mask() return siphash.u64(0xffff, 0xffffff, 0xffffff)
 
 ; u64 add with overflow
@@ -49,7 +76,7 @@ end
 func siphash.xor(n1 is BigInt, n2 is BigInt) 
     return bitwise(sum Bitwise.Xor _, n1, n2)
 
-func sip_round(h is SipHash) do
+func sip_round(h is siphash.State) do
     mut->v0 h = siphash.add(h->v0, h->v1)
     mut->v2 h = siphash.add(h->v2, h->v3)
     mut->v1 h = siphash.rot(h->v1, 13)
@@ -65,4 +92,74 @@ func sip_round(h is SipHash) do
     mut->v3 h = siphash.xor(h->v0, h->v3)
     mut->v2 h = siphash.rot(h->v2, 32)
     return _
+end
+
+
+func reset(h is SipHash) do
+    mut->len h = 0
+    mut->tail_len h = 0
+    mut->v0 h->state = siphash.xor(h->k0, siphash.u64(0x736f, 0x6d6570, 0x736575))
+    mut->v1 h->state = siphash.xor(h->k1, siphash.u64(0x646f, 0x72616e, 0x646f6d))
+    mut->v2 h->state = siphash.xor(h->k0, siphash.u64(0x6c79, 0x67656e, 0x657261))
+    mut->v3 h->state = siphash.xor(h->k1, siphash.u64(0x7465, 0x646279, 0x746573))
+    return _
+end
+
+; TODO msg has :as_byte
+func write(h is SipHash, msg) do
+    let len = as_byte.len(msg)
+    mut->len h = h->len + len
+    let needed = 0
+    if h->tail_len != 0 do
+        mut needed = 8 - h->tail_len
+        if len < needed do
+            mut->tail h = shl(load_byte(msg, 0, len), h->tail_len * 8)
+            return _
+        end 
+        else do
+            mut->tail h = shl(load_byte(msg, 0, needed), h->tail_len * 8)
+            mut->v3 h->state = siphash.xor(h->state->v3, h->tail)
+            run sip_round(h->state)
+            mut->v0 h->state = siphash.xor(h->state->v0, h->tail)
+            mut->tail_len h = 0
+        end
+    end
+    mut len = len - needed
+    let left = len % 8
+
+    let i = needed
+    while i < len - left do
+        let mi = load_byte(msg, i, 8)
+        mut->v3 h->state = siphash.xor(h->state->v3, mi)
+        run sip_round(h->state)
+        mut->v0 h->state = siphash.xor(h->state->v0, mi)
+        mut i = i + 8
+    end
+
+    mut->tail h = load_byte(msg, i, left)
+    mut->tail_len h = left
+    return _
+end
+
+func finish(h is SipHash) do
+    let state = prod siphash.State do
+        mut v0 = big_int(h->state->v0)
+        mut v1 = big_int(h->state->v1)
+        mut v2 = big_int(h->state->v2)
+        mut v3 = big_int(h->state->v3)
+    end
+
+    let b = bitwise(sum Bigwise.Or _, shl(big_int(h->len & 0xff), 56), h->tail)
+    mut->v3 state = siphash.xor(state->v3, b)
+    run sip_round(state)
+    mut->v0 state = siphash.xor(state->v0, b)
+
+    mut->v2 state = siphash.xor(state->v2, big_int(0xff))
+    run sip_round(state)
+    run sip_round(state)
+    run sip_round(state)
+
+    return siphash.xor(siphash.xor(
+        siphash.xor(state->v0, state->v1), 
+        state->v2), state->v3)
 end

@@ -32,6 +32,11 @@ end
 
 func big_int(n is Int) return big_int(n, 0)
 
+func big_int(n is BigInt) return prod BigInt do
+    mut digit_list = list(n->digit_list)
+    mut num_digit = n->num_digit
+end
+
 func add(n1 is BigInt, n2 is BigInt) do
     let len1 = len(n1->digit_list)
     let len2 = len(n2->digit_list)
@@ -155,5 +160,29 @@ func shr(n is BigInt, d is Int) do
         if digit != 0 or len(res) != 0 run insert(res, 0, digit)
         mut carry = digit & mask
     end
+    return prod BigInt do mut digit_list = res mut num_digit = len(res) end
+end
+
+func shl(n is BigInt, d is Int) do
+    if d == 0 return n
+    if n->num_digit == 0 return big_int(0)
+    let index_offset = d / digit_shift()
+    let digit_offset = d % digit_shift()
+    let mask = (1 << digit_shift() - digit_offset) - 1
+    let res = list()
+    while index_offset > 0 do
+        mut index_offset = index_offset - 1
+        run push(res, 0)
+    end
+
+    let carry = 0
+    let i = 0
+    while i < n->num_digit do
+        let digit = get(n->digit_list, i)
+        run push(res, (digit & mask) << d | carry)
+        mut carry = (digit ^ digit & mask) >> digit_shift() - d
+        mut i = i + 1
+    end
+    if carry != 0 run push(res, carry)
     return prod BigInt do mut digit_list = res mut num_digit = len(res) end
 end

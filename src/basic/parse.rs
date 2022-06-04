@@ -203,6 +203,7 @@ impl<'a> Module<'a> {
     fn func(&mut self) {
         assert_eq!(self.shift(), Some(Token::Special("func")));
         let func_id = self.shift().unwrap().into_name();
+        dbg!(func_id);
         assert_eq!(self.shift(), Some(Token::Special("(")));
         self.name_table.push(HashMap::new());
         let mut param_list = Vec::new();
