@@ -1,6 +1,5 @@
-alias _.basic has
-    List Str list str push pop insert get len trace
-end
+alias _.basic has List list Str str push pop insert get len trace end
+alias _.vanilla has add Ord ord eq to_str end
 
 prod BigInt has
     digit_list is List
@@ -11,7 +10,7 @@ end
 func digit_shift() return 24
 func digit_mask() return (1 << digit_shift()) - 1
 
-func big_int(n is Int, min_len is Int) do
+func big_int(n is Int) do
     let digit_list = list()
     if n == 0 return prod BigInt do 
         mut digit_list = digit_list 
@@ -20,17 +19,12 @@ func big_int(n is Int, min_len is Int) do
     run push(digit_list, n & digit_mask())
     mut n = n >> digit_shift()
     if n != 0 run push(digit_list, n)
-    let num_digit = len(digit_list)
-
-    while len(digit_list) < min_len run push(digit_list, 0)
 
     return prod BigInt do 
         mut digit_list = digit_list 
-        mut num_digit = num_digit
+        mut num_digit = len(digit_list)
     end
 end
-
-func big_int(n is Int) return big_int(n, 0)
 
 func big_int(n is BigInt) return prod BigInt do
     mut digit_list = list(n->digit_list)

@@ -10,9 +10,34 @@ fn main() {
     let mem = Mem::default();
     let mut loader = Loader::default();
     basic::Op::load(&mut loader);
-    basic::parse::Module::new("lab", include_str!("bigint.ecs"), &mut loader, &mem).load();
-    basic::parse::Module::new("lab", include_str!("siphash.ecs"), &mut loader, &mem).load();
-    basic::parse::Module::new("lab", include_str!("lab.ecs"), &mut loader, &mem).load();
+    basic::parse::Module::new(
+        "vanilla",
+        include_str!("../src_ecs/vanilla.ecs"),
+        &mut loader,
+        &mem,
+    )
+    .load();
+    basic::parse::Module::new(
+        "vanilla.bigint",
+        include_str!("../src_ecs/vanilla.bigint.ecs"),
+        &mut loader,
+        &mem,
+    )
+    .load();
+    basic::parse::Module::new(
+        "vanilla.siphash",
+        include_str!("../src_ecs/vanilla.siphash.ecs"),
+        &mut loader,
+        &mem,
+    )
+    .load();
+    basic::parse::Module::new(
+        "prog",
+        include_str!("../src_ecs/prog.ecs"),
+        &mut loader,
+        &mem,
+    )
+    .load();
 
     let t0 = Instant::now();
     let (worker_list, collect) = Worker::new_group(
@@ -20,15 +45,13 @@ fn main() {
         mem,
         loader,
         || basic::Op::new(),
-        // inner line writer: to trigger `SeqStdout` only once per line, so we
-        // can antually have the per-line sync with it
-        // outer line writer: to trigger `TraceOut` once per line, so we will
-        // not have multiple timestamp on one line
+        // line writer to trigger `SeqStdout` only once per line, so we can
+        // actually have the per-line sync with it
         || LineWriter::new(SeqStdout),
         t0,
     );
     let collect = spawn(move || collect.run_loop());
-    let _ = worker_list[0].spawn_main("lab.main");
+    let _ = worker_list[0].spawn_main("prog.main");
     let worker_list: Vec<_> = worker_list
         .into_iter()
         .map(|mut worker| spawn(move || worker.run_loop()))

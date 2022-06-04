@@ -203,7 +203,8 @@ impl<'a> Module<'a> {
     fn func(&mut self) {
         assert_eq!(self.shift(), Some(Token::Special("func")));
         let func_id = self.shift().unwrap().into_name();
-        dbg!(func_id);
+        let func_id = self.canonical_name(func_id);
+        dbg!(&func_id);
         assert_eq!(self.shift(), Some(Token::Special("(")));
         self.name_table.push(HashMap::new());
         let mut param_list = Vec::new();
@@ -231,7 +232,6 @@ impl<'a> Module<'a> {
         self.do_block();
         self.name_table.pop().unwrap();
         let func = take(&mut self.builder).finish();
-        let func_id = self.canonical_name(func_id);
         self.loader.register_func(&func_id, &param_list, func);
     }
 

@@ -1,0 +1,24 @@
+alias _.basic has push trace end
+alias _.vanilla has add to_str end
+alias _.vanilla.bigint has big_int Bitwise bitwise end
+
+func fib(n is Int) do
+    let a = big_int(1)
+    let b = big_int(0)
+    let i = 1
+    while i < n do
+        let t = a
+        mut a = add(a, b)
+        mut b = t
+        mut i = i + 1
+    end
+    return a
+end
+
+func main() do
+    let s = "2047 & 11 = "
+    let res = bitwise(sum Bitwise.And _, big_int(2047), big_int(10))
+    run push(s, to_str(res))
+    run trace(s)
+    return _
+end

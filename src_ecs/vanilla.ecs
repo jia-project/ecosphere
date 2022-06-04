@@ -1,6 +1,4 @@
-alias _.basic has
-    List Str list str push pop insert get len trace
-end
+alias _.basic has List list Str str push pop insert get len trace end
 
 func to_str(n is Int) do
     let digit_table = list()
@@ -24,19 +22,6 @@ func to_str(n is Int) do
         mut n = n / 10
     end
     return s
-end
-
-func fib(n is Int) do
-    let a = big_int(1)
-    let b = big_int(0)
-    let i = 1
-    while i < n do
-        let t = a
-        mut a = add(a, b)
-        mut b = t
-        mut i = i + 1
-    end
-    return a
 end
 
 func eq(n1 is Int, n2 is Int) return n1 == n2
@@ -69,7 +54,7 @@ func to_str(l is List) do
     return s
 end
 
-func list(l is List) do
+func _.basic.list(l is List) do
     let res = list()
     let i = 0
     while i < len(l) do
@@ -77,12 +62,4 @@ func list(l is List) do
         mut i = i + 1
     end
     return res
-end
-
-func main() do
-    let s = "2047 & 11 = "
-    let res = bitwise(sum Bitwise.And _, big_int(2047), big_int(10))
-    run push(s, to_str(res))
-    run trace(s)
-    return _
 end
