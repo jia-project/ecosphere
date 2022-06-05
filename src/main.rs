@@ -1,6 +1,7 @@
 use std::{
-    collections::HashSet,
+    collections::{hash_map::DefaultHasher, HashSet},
     fs::read_to_string,
+    hash::{Hash, Hasher},
     io::{stdout, LineWriter, Write},
     path::Path,
     thread::spawn,
@@ -50,6 +51,10 @@ fn main() {
         worker.join().unwrap();
     }
     collect.join().unwrap();
+
+    let mut h = DefaultHasher::new();
+    "Hello, world!".hash(&mut h);
+    println!("expected hash {:#x}", h.finish());
 }
 
 struct SeqStdout;

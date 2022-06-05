@@ -1,0 +1,16 @@
+load _.vanilla.siphash
+
+alias _.basic has Str len as_byte end
+alias _.vanilla.hash
+alias _.vanilla.siphash
+alias _.vanilla.siphash.SipHash
+
+prod StrTerm has end
+func as_byte.len(sh is StrTerm) return 1
+func as_byte.get(sh is StrTerm, i is Int) return 0xff
+
+func hash(s is Str, h is SipHash) do
+    run siphash.write(h, s)
+    run siphash.write(h, prod StrTerm)
+    return _
+end

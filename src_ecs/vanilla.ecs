@@ -1,5 +1,6 @@
 load u64
 load siphash
+load hash
 
 alias _.basic has List list Str str push pop insert get len trace end
 

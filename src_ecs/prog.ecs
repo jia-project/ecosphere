@@ -1,9 +1,7 @@
 load _.vanilla
 
 alias _.basic has push trace end
-alias _.vanilla has add to_str end
-alias _.vanilla.siphash
-alias _.vanilla.u64
+alias _.vanilla has siphash hash u64 add to_str end
 
 func fib(n is Int) do
     let a = u64.new(0, 0, 0, 1)
@@ -21,7 +19,7 @@ end
 func main() do
     let h = siphash.new(u64.new(0, 0, 0, 0), u64.new(0, 0, 0, 0))
     run siphash.reset(h)
-    run siphash.write(h, "Hello, world!")
+    run hash("Hello, world!", h)
     run trace(to_str(siphash.finish(h)))
     return _
 end
