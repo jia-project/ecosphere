@@ -150,7 +150,8 @@ func shr(n is BigInt, d is Int) do
     let i = n->num_digit
     while i > index_offset do
         mut i = i - 1
-        let digit = get(n->digit_list, i) >> d | carry << digit_shift() - d
+        let digit = get(n->digit_list, i) >> digit_offset
+            | carry << digit_shift() - digit_offset
         if digit != 0 or len(res) != 0 run insert(res, 0, digit)
         mut carry = digit & mask
     end
@@ -173,8 +174,8 @@ func shl(n is BigInt, d is Int) do
     let i = 0
     while i < n->num_digit do
         let digit = get(n->digit_list, i)
-        run push(res, (digit & mask) << d | carry)
-        mut carry = (digit ^ digit & mask) >> digit_shift() - d
+        run push(res, (digit & mask) << digit_offset | carry)
+        mut carry = (digit ^ digit & mask) >> digit_shift() - digit_offset
         mut i = i + 1
     end
     if carry != 0 run push(res, carry)

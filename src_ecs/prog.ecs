@@ -18,10 +18,8 @@ func fib(n is Int) do
 end
 
 func main() do
-    let h = prod SipHash do
-        mut k0 = big_int(0)
-        mut k1 = big_int(0)
-    end
+    let h = siphash.new(big_int(0), big_int(0))
+    run siphash.reset(h)
     run siphash.write(h, "")
     let hash = siphash.finish(h)
     run trace(to_str(hash))

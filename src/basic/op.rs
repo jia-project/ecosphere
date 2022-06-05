@@ -47,6 +47,23 @@ unsafe impl Operator for Op {
                 };
                 Some(context.make_i32(len as _))
             }
+            "basic.str_as_byte_len" => {
+                let len = {
+                    let s = unsafe { context.read(val[0]) };
+                    let Str(s) = s.downcast_ref().unwrap();
+                    s.as_bytes().len()
+                };
+                Some(context.make_i32(len as _))
+            }
+            "basic.str_as_byte_get" => {
+                let byte = {
+                    let s = unsafe { context.read(val[0]) };
+                    let Str(s) = s.downcast_ref().unwrap();
+                    let i = unsafe { context.get_i32(val[1]) };
+                    s.as_bytes()[i as usize]
+                };
+                Some(context.make_i32(byte as _))
+            }
 
             "basic.list_new" => Some(context.make(List(Vec::new()))),
             "basic.list_push" => {
@@ -127,6 +144,20 @@ impl Op {
             false,
         );
         Self::wrap(loader, "str_len", "len", &[param_str()], true);
+        Self::wrap(
+            loader,
+            "str_as_byte_len",
+            "as_byte.len",
+            &[param_str()],
+            true,
+        );
+        Self::wrap(
+            loader,
+            "str_as_byte_get",
+            "as_byte.get",
+            &[param_str(), param_i32()],
+            true,
+        );
 
         Self::wrap(loader, "list_new", "list", &[], true);
         Self::wrap(

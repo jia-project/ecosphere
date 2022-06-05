@@ -1,4 +1,6 @@
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::Hasher,
     io::{stdout, LineWriter, Write},
     thread::spawn,
     time::Instant,
@@ -60,6 +62,10 @@ fn main() {
         worker.join().unwrap();
     }
     collect.join().unwrap();
+
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&[]);
+    println!("expected hash: {}", hasher.finish());
 }
 
 struct SeqStdout;
