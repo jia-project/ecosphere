@@ -45,22 +45,6 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
     let name_pat_tail = |c| name_pat(c) || c.is_numeric();
     let special1 = ["mut->", "->", "==", "!=", "<<", ">>", ">=", "<="];
     match s.split_whitespace().next().unwrap() {
-        // special that must separated with next token
-        special @ ("prod" | "sum" | "func" | "tag" | "alias" | "do" | "end" | "if" | "else"
-        | "while" | "break" | "continue" | "return" | "match" | "let" | "mut"
-        | "run" | "is" | "as" | "has" | "spawn" | "wait" | "and" | "or" | "not") => {
-            *s = s.strip_prefix(special).unwrap();
-            Some(Token::Special(special))
-        }
-        "true" => {
-            *s = s.strip_prefix("true").unwrap();
-            Some(Token::LitBool(true))
-        }
-        "false" => {
-            *s = s.strip_prefix("false").unwrap();
-            Some(Token::LitBool(false))
-        }
-        // special that allow to connect next token
         // match longest possible
         special if special1.iter().any(|&s| special.starts_with(s)) => {
             let &special = special1
@@ -79,19 +63,19 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
             *s = next_s;
             Some(Token::Special(special))
         }
-        special
-            if special.starts_with('_')
-            // ...only when underscore is not leading a name
-            // do I use underscore too much?
-            // or should I simply inject a name resolving rule, instead of 
-            // making underscore special?
-                && !special
-                    .strip_prefix('_')
-                    .unwrap()
-                    .starts_with(name_pat_tail) =>
-        {
-            *s = s.strip_prefix('_').unwrap();
-            Some(Token::Special("_"))
+        // name and name-like specials
+        name if name.starts_with(name_pat_head) => {
+            let name = name.split(|c: char| !name_pat_tail(c)).next().unwrap();
+            *s = s.strip_prefix(name).unwrap();
+            Some(match name {
+                special @ ("prod" | "sum" | "func" | "tag" | "alias" | "do" | "end" | "if"
+                | "else" | "while" | "break" | "continue" | "return" | "match"
+                | "let" | "mut" | "run" | "is" | "as" | "has" | "spawn" | "wait"
+                | "and" | "or" | "not" | "_") => Token::Special(special),
+                "true" => Token::LitBool(true),
+                "false" => Token::LitBool(false),
+                _ => Token::Name(name),
+            })
         }
 
         lit_i32 if lit_i32.starts_with(char::is_numeric) => {
@@ -129,11 +113,7 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
             *s = next_s;
             Some(Token::LitStr(lit_str))
         }
-        name if name.starts_with(name_pat_head) => {
-            let name = name.split(|c: char| !name_pat_tail(c)).next().unwrap();
-            *s = s.strip_prefix(name).unwrap();
-            Some(Token::Name(name))
-        }
+
         _ => panic!(
             "not a token {:.10}{}",
             s,

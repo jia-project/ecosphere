@@ -1,0 +1,93 @@
+alias _.basic.list
+alias _.basic.get
+alias _.basic.push
+alias _.vanilla.add
+alias _.vanilla.to_str
+
+; using 3 Int instead of 2, prevent any potention issue with signing bits
+prod U64 has
+    h is Int  ; high 21 bits
+    m is Int  ; middle 21 bits
+    l is Int  ; low 22 bits
+end
+
+func u64(w3 is Int, w2 is Int, w1 is Int, w0 is Int) return prod U64 do
+    ; w3 all 16 bits + w2 high 5 bits
+    mut h = w3 << 5 | w2 >> 11
+    ; w2 low 11 bits + w1 high 10 bits
+    mut m = (w2 & 0x7ff) << 10 | w1 >> 6
+    ; w1 low 6 bits + w0 all 16 bits
+    mut l = (w1 & 0x3f) << 16 | w0
+end
+
+func add(u is U64, v is U64) do
+    let h = u->h + v->h
+    let m = u->m + v->m
+    let l = u->l + v->l
+    if l >> 22 == 1 mut m = m + 1
+    if m >> 21 == 1 mut h = h + 1
+    return prod U64 do
+        mut l = l & 0x3fffff
+        mut m = m & 0x1fffff
+        mut h = h & 0x1fffff
+    end
+end
+
+func xor(u is U64, v is U64) return prod U64 do
+    mut l = u->l ^ v->l
+    mut m = u->m ^ v->m
+    mut h = u->h ^ v->h
+end
+
+func mask(b is Int) return (1 << b) - 1
+
+func rotl(u is U64, b is Int) do
+    if b >= 21 return rotl(prod U64 do
+        mut l = (u->l & 0x1) << 21 | u->h
+        mut m = u->l >> 1
+        mut h = u->m
+    end, b - 21)
+    return prod U64 do
+        mut l = u->h >> (21 - b) | (u->l & mask(22 - b)) << b
+        mut m = u->l >> (22 - b) | (u->m & mask(21 - b)) << b
+        mut h = u->m >> (21 - b) | (u->h & mask(21 - b)) << b
+    end
+end
+
+func to_str(u is U64) do
+    let digit_table = list()
+    run push(digit_table, "0")
+    run push(digit_table, "1")
+    run push(digit_table, "2")
+    run push(digit_table, "3")
+    run push(digit_table, "4")
+    run push(digit_table, "5")
+    run push(digit_table, "6")
+    run push(digit_table, "7")
+    run push(digit_table, "8")
+    run push(digit_table, "9")
+    run push(digit_table, "a")
+    run push(digit_table, "b")
+    run push(digit_table, "c")
+    run push(digit_table, "d")
+    run push(digit_table, "e")
+    run push(digit_table, "f")
+    let s = "0x"
+    run push(s, get(digit_table, u->h >> 17))
+    run push(s, get(digit_table, u->h >> 13 & 0xf))
+    run push(s, get(digit_table, u->h >> 9 & 0xf))
+    run push(s, get(digit_table, u->h >> 5 & 0xf))
+    run push(s, get(digit_table, u->h >> 1 & 0xf))
+    run push(s, get(digit_table, (u->h & 0x1) << 3 | u->m >> 18))
+    run push(s, get(digit_table, u->m >> 14 & 0xf))
+    run push(s, get(digit_table, u->m >> 10 & 0xf))
+    run push(s, get(digit_table, u->m >> 6 & 0xf))
+    run push(s, get(digit_table, u->m >> 2 & 0xf))
+    run push(s, get(digit_table, (u->m & 0x3) << 2 | u->l >> 20))
+    run push(s, get(digit_table, u->l >> 16 & 0xf))
+    run push(s, get(digit_table, u->l >> 12 & 0xf))
+    run push(s, get(digit_table, u->l >> 8 & 0xf))
+    run push(s, get(digit_table, u->l >> 4 & 0xf))
+    run push(s, get(digit_table, u->l & 0xf))
+    return s
+end

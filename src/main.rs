@@ -20,8 +20,8 @@ fn main() {
     )
     .load();
     basic::parse::Module::new(
-        "vanilla.bigint",
-        include_str!("../src_ecs/vanilla.bigint.ecs"),
+        "vanilla.u64",
+        include_str!("../src_ecs/vanilla.u64.ecs"),
         &mut loader,
         &mem,
     )
@@ -65,7 +65,7 @@ fn main() {
 
     let mut hasher = DefaultHasher::new();
     hasher.write(&[]);
-    println!("expected hash: {}", hasher.finish());
+    println!("expected hash {:#x}", hasher.finish());
 }
 
 struct SeqStdout;
