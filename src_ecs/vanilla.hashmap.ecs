@@ -1,7 +1,7 @@
 load _.vanilla.siphash
 load _.vanilla.hash
 
-alias _.basic has List list push end
+alias _.basic has List list push random_state end
 alias _.vanilla has hash eq siphash end
 alias _.vanilla.siphash.SipHash
 
@@ -18,11 +18,13 @@ func index_empty() return -1
 func new() do
     let index_list = list()
     let i = 0 while i < 8 run push(index_list, index_empty()) mut i = i + 1
+    let hasher = siphash.new()
+    run random_state.config(hasher)
     return prod HashMap do
         mut index_list = index_list
         mut entry_list = list()
         mut num_used = 0
-        mut hasher = siphash.new()  ; TODO
+        mut hasher = hasher
     end
 end
 

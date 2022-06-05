@@ -88,6 +88,14 @@ unsafe impl Operator for Op {
                 let i = unsafe { context.get_i32(val[1]) };
                 Some(FrameObj::Addr(l[i as usize]))
             }
+            "basic.list_set" => {
+                let i = unsafe { context.get_i32(val[1]) };
+                let addr = context.make_addr(val[2]);
+                let mut l = unsafe { context.write(val[0]) };
+                let List(l) = l.downcast_mut().unwrap();
+                l[i as usize] = addr;
+                None
+            }
             "basic.list_len" => {
                 let len = {
                     let l = unsafe { context.read(val[0]) };
@@ -174,6 +182,13 @@ impl Op {
             "get",
             &[param_list(), param_i32()],
             true,
+        );
+        Self::wrap(
+            loader,
+            "list_set",
+            "set",
+            &[param_list(), param_i32(), param_anything()],
+            false,
         );
         Self::wrap(loader, "list_len", "len", &[param_list()], true);
         Self::wrap(
