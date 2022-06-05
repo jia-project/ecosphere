@@ -64,7 +64,7 @@ fn main() {
     collect.join().unwrap();
 
     let mut hasher = DefaultHasher::new();
-    hasher.write(&[]);
+    hasher.write("".as_bytes());
     println!("expected hash {:#x}", hasher.finish());
 }
 

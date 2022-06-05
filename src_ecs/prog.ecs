@@ -1,12 +1,13 @@
 alias _.basic has push trace end
 alias _.vanilla has add to_str end
-alias _.vanilla.u64 has U64 u64 rotl end
+alias _.vanilla.u64
+alias _.vanilla.u64 has U64 rotl end
 alias _.vanilla.siphash
 alias _.vanilla.siphash.SipHash
 
 func fib(n is Int) do
-    let a = u64(0, 0, 0, 1)
-    let b = u64(0, 0, 0, 0)
+    let a = u64.new(0, 0, 0, 1)
+    let b = u64.new(0, 0, 0, 0)
     let i = 1
     while i < n do
         let t = a
@@ -18,7 +19,8 @@ func fib(n is Int) do
 end
 
 func main() do
-    run trace(to_str(fib(1000)))
-    run trace(to_str(rotl(u64(1, 1, 1, 1), 48)))
+    let h = siphash.new(u64.new(0, 0, 0, 0), u64.new(0, 0, 0, 0))
+    run siphash.reset(h)
+    run trace(to_str(siphash.finish(h)))
     return _
 end

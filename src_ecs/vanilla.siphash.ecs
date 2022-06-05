@@ -1,114 +1,75 @@
 alias _.basic has List Str list str push pop insert get len trace as_byte end
-alias _.vanilla
-alias _.vanilla.bigint has BigInt big_int Bitwise bitwise shl shr end
+alias _.vanilla.u64
+alias _.vanilla.u64.U64
+alias _.vanilla.add
 
 prod SipHash has
-    k0 is BigInt
-    k1 is BigInt
+    k0 is U64
+    k1 is U64
 
     state is State
     
-    tail is BigInt
+    tail is U64
     tail_len is Int
     len is Int
 end
 
 prod State has
-    v0 is BigInt
-    v1 is BigInt
-    v2 is BigInt
-    v3 is BigInt
-end
-
-; n1 high 16 bits, n2 middle 24 bits, n3 low 24 bits
-; here we depends on BigInt internal structure, not very modular
-func u64(n1 is Int, n2 is Int, n3 is Int) do
-    ; assert digit_offset() == 24
-    let digit_list = list()
-    run push(digit_list, n3)
-    run push(digit_list, n2)
-    run push(digit_list, n1)
-    let num_digit = 3
-    if n1 == 0 do 
-        mut num_digit = 2
-        if n2 == 0 do 
-            mut num_digit = 1
-            if n3 == 0 mut num_digit = 0
-        end
-    end
-    return prod BigInt do
-        mut digit_list = digit_list
-        mut num_digit = num_digit
-    end
+    v0 is U64
+    v1 is U64
+    v2 is U64
+    v3 is U64
 end
 
 ; TODO msg has :as_byte
 func load_byte(msg, pos is Int, len is Int) do
-    let n1 = 0
-    let n2 = 0
-    let n3 = 0
-    if len > 0 mut n3 = n3 | as_byte.get(msg, pos + 0) << 0
-    if len > 1 mut n3 = n3 | as_byte.get(msg, pos + 1) << 8
-    if len > 2 mut n3 = n3 | as_byte.get(msg, pos + 2) << 16
-    if len > 3 mut n2 = n2 | as_byte.get(msg, pos + 3) << 0
-    if len > 4 mut n2 = n2 | as_byte.get(msg, pos + 4) << 8
-    if len > 5 mut n2 = n2 | as_byte.get(msg, pos + 5) << 16
-    if len > 6 mut n1 = n1 | as_byte.get(msg, pos + 6) << 0
-    if len > 7 mut n1 = n1 | as_byte.get(msg, pos + 7) << 8
-    return u64(n1, n2, n3)
+    let w3 = 0
+    let w2 = 0
+    let w1 = 0
+    let w0 = 0
+    if len > 0 mut w0 = w0 | as_byte.get(msg, pos + 0)
+    if len > 1 mut w0 = w0 | as_byte.get(msg, pos + 1) << 8
+    if len > 2 mut w1 = w1 | as_byte.get(msg, pos + 2)
+    if len > 3 mut w1 = w1 | as_byte.get(msg, pos + 3) << 8
+    if len > 4 mut w2 = w2 | as_byte.get(msg, pos + 4)
+    if len > 5 mut w2 = w2 | as_byte.get(msg, pos + 5) << 8
+    if len > 6 mut w3 = w3 | as_byte.get(msg, pos + 6)
+    if len > 7 mut w3 = w3 | as_byte.get(msg, pos + 7) << 8
+    return u64.new(w3, w2, w1, w0)
 end
-
-func u64_mask() return u64(0xffff, 0xffffff, 0xffffff)
-
-; u64 add with wrapping
-func add(n1 is BigInt, n2 is BigInt) 
-    return bitwise(sum Bitwise.And _, vanilla.add(n1, n2), u64_mask())
-
-; u64 left rotation
-func rot(n is BigInt, d is Int) do
-    if d >= 64 return rot(n, d % 64)
-    let mask = shr(u64_mask(), d)
-    let high = bitwise(sum Bitwise.And _, n, mask)
-    let low = bitwise(sum Bitwise.Xor _, n, high)
-    return bitwise(sum Bitwise.Or _, shl(high, d), shr(low, 64 - d))
-end
-
-func xor(n1 is BigInt, n2 is BigInt) 
-    return bitwise(sum Bitwise.Xor _, n1, n2)
 
 func sip_round(h is State) do
     mut->v0 h = add(h->v0, h->v1)
+    mut->v1 h = u64.rotl(h->v1, 13)
+    mut->v1 h = u64.xor(h->v1, h->v0)
+    mut->v0 h = u64.rotl(h->v0, 32)
     mut->v2 h = add(h->v2, h->v3)
-    mut->v1 h = rot(h->v1, 13)
-    mut->v3 h = rot(h->v3, 16)
-    mut->v1 h = xor(h->v0, h->v1)
-    mut->v3 h = xor(h->v2, h->v3)
-    mut->v0 h = rot(h->v0, 32)
-    mut->v2 h = add(h->v1, h->v2)
-    mut->v3 h = add(h->v0, h->v3)
-    mut->v1 h = rot(h->v1, 17)
-    mut->v3 h = rot(h->v3, 21)
-    mut->v1 h = xor(h->v1, h->v2)
-    mut->v3 h = xor(h->v0, h->v3)
-    mut->v2 h = rot(h->v2, 32)
+    mut->v3 h = u64.rotl(h->v3, 16)
+    mut->v3 h = u64.xor(h->v3, h->v2)
+    mut->v0 h = add(h->v0, h->v3)
+    mut->v3 h = u64.rotl(h->v3, 21)
+    mut->v3 h = u64.xor(h->v3, h->v0)
+    mut->v2 h = add(h->v2, h->v1)
+    mut->v1 h = u64.rotl(h->v1, 17)
+    mut->v1 h = u64.xor(h->v1, h->v2)
+    mut->v2 h = u64.rotl(h->v2, 32)
     return _
 end
 
-func new(k0 is BigInt, k1 is BigInt) return prod SipHash do
-    mut tail = 0
+func new(k0 is U64, k1 is U64) return prod SipHash do
     mut state = prod State
+    mut tail = u64.new(0, 0, 0, 0)
     mut k0 = k0
     mut k1 = k1
 end
 
 func reset(h is SipHash) do
     mut->len h = 0
-    mut->tail h = 0
     mut->tail_len h = 0
-    mut->v0 h->state = xor(h->k0, u64(0x736f, 0x6d6570, 0x736575))
-    mut->v1 h->state = xor(h->k1, u64(0x646f, 0x72616e, 0x646f6d))
-    mut->v2 h->state = xor(h->k0, u64(0x6c79, 0x67656e, 0x657261))
-    mut->v3 h->state = xor(h->k1, u64(0x7465, 0x646279, 0x746573))
+    mut->v0 h->state = u64.xor(h->k0, u64.new(0x736f, 0x6d65, 0x7073, 0x6575))
+    mut->v1 h->state = u64.xor(h->k1, u64.new(0x646f, 0x7261, 0x6e64, 0x6f6d))
+    mut->v2 h->state = u64.xor(h->k0, u64.new(0x6c79, 0x6765, 0x6e65, 0x7261))
+    mut->v3 h->state = u64.xor(h->k1, u64.new(0x7465, 0x6462, 0x7974, 0x6573))
     return _
 end
 
@@ -120,14 +81,14 @@ func write(h is SipHash, msg) do
     if h->tail_len != 0 do
         mut needed = 8 - h->tail_len
         if len < needed do
-            mut->tail h = shl(load_byte(msg, 0, len), h->tail_len * 8)
+            mut->tail h = u64.shl(load_byte(msg, 0, len), h->tail_len * 8)
             return _
         end 
         else do
-            mut->tail h = shl(load_byte(msg, 0, needed), h->tail_len * 8)
-            mut->v3 h->state = xor(h->state->v3, h->tail)
+            mut->tail h = u64.shl(load_byte(msg, 0, needed), h->tail_len * 8)
+            mut->v3 h->state = u64.xor(h->state->v3, h->tail)
             run sip_round(h->state)
-            mut->v0 h->state = xor(h->state->v0, h->tail)
+            mut->v0 h->state = u64.xor(h->state->v0, h->tail)
             mut->tail_len h = 0
         end
     end
@@ -137,9 +98,9 @@ func write(h is SipHash, msg) do
     let i = needed
     while i < len - left do
         let mi = load_byte(msg, i, 8)
-        mut->v3 h->state = xor(h->state->v3, mi)
+        mut->v3 h->state = u64.xor(h->state->v3, mi)
         run sip_round(h->state)
-        mut->v0 h->state = xor(h->state->v0, mi)
+        mut->v0 h->state = u64.xor(h->state->v0, mi)
         mut i = i + 8
     end
 
@@ -150,21 +111,22 @@ end
 
 func finish(h is SipHash) do
     let state = prod State do
-        mut v0 = big_int(h->state->v0)
-        mut v1 = big_int(h->state->v1)
-        mut v2 = big_int(h->state->v2)
-        mut v3 = big_int(h->state->v3)
+        mut v0 = u64.new(h->state->v0)
+        mut v1 = u64.new(h->state->v1)
+        mut v2 = u64.new(h->state->v2)
+        mut v3 = u64.new(h->state->v3)
     end
 
-    let b = bitwise(sum Bitwise.Or _, shl(big_int(h->len & 0xff), 56), h->tail)
-    mut->v3 state = xor(state->v3, b)
+    ; b = tail | (len & 0xff) << 56
+    let b = add(h->tail, u64.new(h->len & 0xff << 8, 0, 0, 0))
+    mut->v3 state = u64.xor(state->v3, b)
     run sip_round(state)
-    mut->v0 state = xor(state->v0, b)
+    mut->v0 state = u64.xor(state->v0, b)
 
-    mut->v2 state = xor(state->v2, big_int(0xff))
+    mut->v2 state = u64.xor(state->v2, u64.new(0, 0, 0, 0xff))
     run sip_round(state)
     run sip_round(state)
     run sip_round(state)
 
-    return xor(xor(xor(state->v0, state->v1), state->v2), state->v3)
+    return u64.xor(u64.xor(u64.xor(state->v0, state->v1), state->v2), state->v3)
 end

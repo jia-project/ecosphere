@@ -11,13 +11,19 @@ prod U64 has
     l is Int  ; low 22 bits
 end
 
-func u64(w3 is Int, w2 is Int, w1 is Int, w0 is Int) return prod U64 do
+func new(w3 is Int, w2 is Int, w1 is Int, w0 is Int) return prod U64 do
     ; w3 all 16 bits + w2 high 5 bits
     mut h = w3 << 5 | w2 >> 11
     ; w2 low 11 bits + w1 high 10 bits
     mut m = (w2 & 0x7ff) << 10 | w1 >> 6
     ; w1 low 6 bits + w0 all 16 bits
     mut l = (w1 & 0x3f) << 16 | w0
+end
+
+func new(u is U64) return prod U64 do
+    mut h = u->h
+    mut m = u->m
+    mut l = u->l
 end
 
 func add(u is U64, v is U64) do
