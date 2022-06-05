@@ -1,0 +1,80 @@
+load _.vanilla.siphash
+load _.vanilla.hash
+
+alias _.basic has List list push end
+alias _.vanilla has hash eq siphash end
+alias _.vanilla.siphash.SipHash
+
+prod HashMap has
+    index_list is List
+    entry_list is List
+    num_used is Int
+    hasher is SipHash
+end
+prod Entry has key value end
+
+func index_empty() return -1
+
+func new() do
+    let index_list = list()
+    let i = 0 while i < 8 run push(index_list, index_empty()) mut i = i + 1
+    return prod HashMap do
+        mut index_list = index_list
+        mut entry_list = list()
+        mut num_used = 0
+        mut hasher = siphash.new()  ; TODO
+    end
+end
+
+func insert(m is HashMap, key, value) do
+    if m->num_used == usable(m) run grow(m)
+    let index_gen = index_gen(m, key)
+    while true do 
+        let i = next(index_gen)
+        let entry_i = get(m->index_list, i)
+        if entry_i == index_empty() do 
+            run set(m->index_list, i, len(m->entry_list))
+            run push(m->entry_list, prod Entry do
+                mut key = key
+                mut value = value
+            end)
+            mut->num_used m = m->num_used + 1
+            return _
+        end
+        if eq(key, get(m->entry_list, entry_i)->key) do
+            mut->value get(m->entry_list, entry_i) = value
+            return _
+        end
+    end
+end
+
+func usable(m is HashMap) return len(m->index_list) * 2 / 3
+; here original Python code is m->num_used * 3, which should be equivalent
+; try this more clear version to make sure len(m->index_list) is always valid
+func growth(m is HashMap) return len(m->index_list) << 1
+
+prod IndexGen has
+    j is Int
+    perturb is U64
+    mask is Int 
+end
+
+func index_gen(m is HashMap, key) do
+    run siphash.reset(m->hasher)
+    run hash(key, m->hasher)
+    let hash = siphash.finish(m->hasher)
+    let mask = len(m->index_list) - 1
+    return prod IndexGen do
+        mut j = u64.and_int(hash, mask)
+        mut perturb = hash
+        mut mask = mask
+    end
+end
+
+func next(gen is IndexGen) do
+    let i = gen->j
+    mut->perturb gen = u64.shr(gen->perturb, 5)
+    mut->j gen = 5 * gen->j + 1 + u64.and_int(gen->perturb, gen->mask)
+        & gen->mask
+    return i
+end
