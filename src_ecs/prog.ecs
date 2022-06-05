@@ -1,9 +1,9 @@
+load _.vanilla
+
 alias _.basic has push trace end
 alias _.vanilla has add to_str end
-alias _.vanilla.u64
-alias _.vanilla.u64 has U64 rotl end
 alias _.vanilla.siphash
-alias _.vanilla.siphash.SipHash
+alias _.vanilla.u64
 
 func fib(n is Int) do
     let a = u64.new(0, 0, 0, 1)

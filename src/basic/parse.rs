@@ -68,10 +68,10 @@ fn next_token<'a>(s: &mut &'a str) -> Option<Token<'a>> {
             let name = name.split(|c: char| !name_pat_tail(c)).next().unwrap();
             *s = s.strip_prefix(name).unwrap();
             Some(match name {
-                special @ ("prod" | "sum" | "func" | "tag" | "alias" | "do" | "end" | "if"
-                | "else" | "while" | "break" | "continue" | "return" | "match"
-                | "let" | "mut" | "run" | "is" | "as" | "has" | "spawn" | "wait"
-                | "and" | "or" | "not" | "_") => Token::Special(special),
+                special @ ("prod" | "sum" | "func" | "tag" | "alias" | "load" | "do" | "end"
+                | "if" | "else" | "while" | "break" | "continue" | "return"
+                | "match" | "let" | "mut" | "run" | "is" | "as" | "has" | "spawn"
+                | "wait" | "and" | "or" | "not" | "_") => Token::Special(special),
                 "true" => Token::LitBool(true),
                 "false" => Token::LitBool(false),
                 _ => Token::Name(name),
@@ -133,6 +133,7 @@ pub struct Module<'a> {
     label_break: Option<LabelId>,
     label_continue: Option<LabelId>,
     alias_table: HashMap<&'a str, OwnedName>,
+    pub load_list: Vec<OwnedName>,
 }
 
 impl<'a> Module<'a> {
@@ -154,6 +155,7 @@ impl<'a> Module<'a> {
             ]
             .into_iter()
             .collect(),
+            load_list: Vec::new(),
         }
     }
 
@@ -166,7 +168,7 @@ impl<'a> Module<'a> {
         *self.token.as_ref().unwrap() != Token::Special("end")
     }
 
-    pub fn load(mut self) {
+    pub fn load(&mut self) {
         self.shift();
         while let Some(token) = &self.token {
             match token {
@@ -175,6 +177,7 @@ impl<'a> Module<'a> {
                 Token::Special("sum") => self.sum(),
                 Token::Special("tag") => todo!(),
                 Token::Special("alias") => self.alias(),
+                Token::Special("load") => self.load_decl(),
                 _ => panic!("unexpected token {token:?}"),
             }
         }
@@ -269,6 +272,13 @@ impl<'a> Module<'a> {
                 .insert(name, [&namespace, ".", name].concat());
         }
         self.shift().unwrap();
+    }
+
+    fn load_decl(&mut self) {
+        assert_eq!(self.shift(), Some(Token::Special("load")));
+        let name = self.shift().unwrap().into_name();
+        let name = self.canonical_name(name);
+        self.load_list.push(name);
     }
 
     fn do_block(&mut self) {

@@ -1,7 +1,8 @@
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::Hasher,
+    collections::HashSet,
+    fs::read_to_string,
     io::{stdout, LineWriter, Write},
+    path::Path,
     thread::spawn,
     time::Instant,
 };
@@ -12,34 +13,20 @@ fn main() {
     let mem = Mem::default();
     let mut loader = Loader::default();
     basic::Op::load(&mut loader);
-    basic::parse::Module::new(
-        "vanilla",
-        include_str!("../src_ecs/vanilla.ecs"),
-        &mut loader,
-        &mem,
-    )
-    .load();
-    basic::parse::Module::new(
-        "vanilla.u64",
-        include_str!("../src_ecs/vanilla.u64.ecs"),
-        &mut loader,
-        &mem,
-    )
-    .load();
-    basic::parse::Module::new(
-        "vanilla.siphash",
-        include_str!("../src_ecs/vanilla.siphash.ecs"),
-        &mut loader,
-        &mem,
-    )
-    .load();
-    basic::parse::Module::new(
-        "prog",
-        include_str!("../src_ecs/prog.ecs"),
-        &mut loader,
-        &mem,
-    )
-    .load();
+
+    let mut load_buffer = vec!["prog".to_string()];
+    let mut loading_set: HashSet<_> = load_buffer.iter().cloned().collect();
+    while let Some(module) = load_buffer.pop() {
+        let source = read_to_string(Path::new(&format!("src_ecs/{module}.ecs"))).unwrap();
+        let mut module = basic::parse::Module::new(&module, &source, &mut loader, &mem);
+        module.load();
+        for module in module.load_list {
+            if !loading_set.contains(&module) {
+                loading_set.insert(module.clone());
+                load_buffer.push(module);
+            }
+        }
+    }
 
     let t0 = Instant::now();
     let (worker_list, collect) = Worker::new_group(
@@ -58,14 +45,11 @@ fn main() {
         .into_iter()
         .map(|mut worker| spawn(move || worker.run_loop()))
         .collect();
+
     for worker in worker_list {
         worker.join().unwrap();
     }
     collect.join().unwrap();
-
-    let mut hasher = DefaultHasher::new();
-    hasher.write("Hello, world!".as_bytes());
-    println!("expected hash {:#x}", hasher.finish());
 }
 
 struct SeqStdout;

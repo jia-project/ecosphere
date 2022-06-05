@@ -137,7 +137,7 @@ impl Worker {
         )
     }
 
-    fn drive_task(&mut self, handle: TaskHandle) {
+    fn advance(&mut self, handle: TaskHandle) {
         let res = loop {
             let mem = self.mem.mutator();
             // we don't have to keep this lock, because we are holding a mutator
@@ -210,7 +210,7 @@ impl Worker {
             let mut ready_queue = self.ready_queue.lock().unwrap();
             if let Some(ready) = ready_queue.pop_front() {
                 drop(ready_queue);
-                self.drive_task(ready);
+                self.advance(ready);
             } else if self.task_pool.lock().unwrap().is_empty() {
                 self.ready_signal.notify_all();
                 return;

@@ -1,3 +1,5 @@
+load _.vanilla.u64
+
 alias _.basic has List Str list str push pop insert get len trace as_byte end
 alias _.vanilla.u64
 alias _.vanilla.u64.U64
