@@ -21,6 +21,7 @@ end
 func main() do
     let h = siphash.new(u64.new(0, 0, 0, 0), u64.new(0, 0, 0, 0))
     run siphash.reset(h)
+    run siphash.write(h, "Hello, world!")
     run trace(to_str(siphash.finish(h)))
     return _
 end

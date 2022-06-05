@@ -81,11 +81,15 @@ func write(h is SipHash, msg) do
     if h->tail_len != 0 do
         mut needed = 8 - h->tail_len
         if len < needed do
-            mut->tail h = u64.shl(load_byte(msg, 0, len), h->tail_len * 8)
+            ; using add as bitwise or, assert no carry
+            ; using rotl as shl, assert no wrapping back
+            mut->tail h = 
+                add(h->tail, u64.rotl(load_byte(msg, 0, len), h->tail_len * 8))
             return _
         end 
         else do
-            mut->tail h = u64.shl(load_byte(msg, 0, needed), h->tail_len * 8)
+            mut->tail h = 
+                add(h->tail, u64.rotl(load_byte(msg, 0, needed), h->tail_len * 8))
             mut->v3 h->state = u64.xor(h->state->v3, h->tail)
             run sip_round(h->state)
             mut->v0 h->state = u64.xor(h->state->v0, h->tail)
@@ -118,7 +122,7 @@ func finish(h is SipHash) do
     end
 
     ; b = tail | (len & 0xff) << 56
-    let b = add(h->tail, u64.new(h->len & 0xff << 8, 0, 0, 0))
+    let b = add(h->tail, u64.new((h->len & 0xff) << 8, 0, 0, 0))
     mut->v3 state = u64.xor(state->v3, b)
     run sip_round(state)
     mut->v0 state = u64.xor(state->v0, b)
