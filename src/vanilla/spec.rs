@@ -7,6 +7,7 @@ pub enum Token<'a> {
     Special(&'a str),
     Name(&'a str),
     LitInt(i32),
+    LitStr(String), // could be escaped
 }
 
 pub struct Context<'a> {
@@ -29,15 +30,22 @@ impl<'a> Context<'a> {
             return None;
         }
         let specials = [
-            "fn", "if", "then", "else", "while", "break", "continue", "return", "struct", "enum",
-            "end", "and", "or", "(", ")", ",", ";", "not", "+", "-", "*", "/", "true", "false",
-            "nil",
+            "fn", "if", "then", "else", "while", "break", "continue", "return", "let", "mut",
+            "struct", "enum", "end", "and", "or", "(", ")", ",", ";", "not", "+", "-", "*", "/",
+            "%", "==", "!=", "=", "true", "false", "nil",
         ];
         for special in specials {
             if let Some(input) = self.input.strip_prefix(special) {
                 self.input = input.trim_start();
                 return Some(Token::Special(special));
             }
+        }
+        if self.input.starts_with("\"") {
+            // TODO escape
+            let n = self.input[1..].find("\"").unwrap() + 1;
+            let s = String::from(&self.input[1..n]);
+            self.input = self.input[n + 1..].trim_start();
+            return Some(Token::LitStr(s));
         }
         if self.input.starts_with(char::is_numeric) {
             let n = self
@@ -50,7 +58,7 @@ impl<'a> Context<'a> {
         }
         let input = self.input.trim_start_matches(char::is_alphanumeric);
         let name = &self.input[..self.input.len() - input.len()];
-        assert!(!name.is_empty());
+        assert!(!name.is_empty(), "{:?}", &self.input[..32]);
         self.input = input.trim_start();
         Some(Token::Name(name))
     }
@@ -174,7 +182,30 @@ impl<'a> Context<'a> {
                 assert_eq!(self.shift(), Token::Special(";"));
                 Stmt::Continue
             }
+            Token::Special("while") => self.parse_while(),
             Token::Special("if") => self.parse_if(),
+            Token::Special("let") => {
+                self.shift();
+                let name = if let Token::Name(name) = self.shift() {
+                    name
+                } else {
+                    panic!()
+                };
+                assert_eq!(self.shift(), Token::Special(";"));
+                Stmt::AllocName(String::from(name))
+            }
+            Token::Special("mut") => {
+                self.shift();
+                let name = if let Token::Name(name) = self.shift() {
+                    name
+                } else {
+                    panic!()
+                };
+                assert_eq!(self.shift(), Token::Special("="));
+                let expr = self.parse_expr();
+                assert_eq!(self.shift(), Token::Special(";"));
+                Stmt::Mutate(String::from(name), expr)
+            }
             _ => {
                 let stmt = Stmt::Expr(self.parse_expr());
                 assert_eq!(self.shift(), Token::Special(";"));
@@ -196,6 +227,14 @@ impl<'a> Context<'a> {
         Stmt::IfElse(expr, then_scope, else_scope)
     }
 
+    fn parse_while(&mut self) -> Stmt<ExprOp> {
+        assert_eq!(self.shift(), Token::Special("while"));
+        let expr = self.parse_expr();
+        assert_eq!(self.shift(), Token::Special("then"));
+        let scope = self.parse_scope(false);
+        Stmt::While(expr, scope)
+    }
+
     fn parse_expr(&mut self) -> Expr<ExprOp> {
         self.parse_infix0()
     }
@@ -203,6 +242,7 @@ impl<'a> Context<'a> {
     fn parse_single_expr(&mut self) -> Expr<ExprOp> {
         match self.shift() {
             Token::LitInt(lit) => Expr::Op(ExprOp::IntNew(lit), vec![]),
+            Token::LitStr(lit) => Expr::Op(ExprOp::StrNew(lit), vec![]),
             Token::Special("(") => {
                 let expr = self.parse_expr();
                 assert_eq!(self.shift(), Token::Special(")"));
@@ -232,32 +272,62 @@ impl<'a> Context<'a> {
         &mut self,
         ops: &[(&str, &str)],
         nested: impl Fn(&mut Self) -> Expr<ExprOp>,
+        compose: impl Fn(&str, Expr<ExprOp>, Expr<ExprOp>) -> Expr<ExprOp>,
     ) -> Expr<ExprOp> {
         let mut expr = nested(self);
-        while let Some(&(_, op)) = ops
+        while let Some(&(_, name)) = ops
             .iter()
             .find(|(op, _)| self.token() == &Token::Special(op))
         {
             self.shift();
-            let latter_expr = self.parse_single_expr();
-            expr = Expr::Call(String::from(op), vec![expr, latter_expr]);
+            let latter_expr = nested(self);
+            expr = compose(name, expr, latter_expr);
         }
         expr
     }
 
+    fn infix_call(name: &str, expr1: Expr<ExprOp>, expr2: Expr<ExprOp>) -> Expr<ExprOp> {
+        Expr::Call(String::from(name), vec![expr1, expr2])
+    }
+
     fn parse_infix0(&mut self) -> Expr<ExprOp> {
-        self.parse_infix(&[("+", "add"), ("-", "sub")], Self::parse_infix1)
+        self.parse_infix(
+            &[("==", "eq"), ("!=", "ne")],
+            Self::parse_infix1,
+            |name, expr1, expr2| {
+                if name == "ne" {
+                    Expr::Call(
+                        String::from("not"),
+                        vec![Expr::Call(String::from("eq"), vec![expr1, expr2])],
+                    )
+                } else {
+                    Self::infix_call(name, expr1, expr2)
+                }
+            },
+        )
     }
 
     fn parse_infix1(&mut self) -> Expr<ExprOp> {
-        self.parse_infix(&[("*", "mul"), ("/", "div")], Self::parse_prefix)
+        self.parse_infix(
+            &[("+", "add"), ("-", "sub")],
+            Self::parse_infix2,
+            Self::infix_call,
+        )
+    }
+
+    fn parse_infix2(&mut self) -> Expr<ExprOp> {
+        self.parse_infix(
+            &[("*", "mul"), ("/", "div"), ("%", "rem")],
+            Self::parse_prefix,
+            Self::infix_call,
+        )
     }
 
     fn parse_prefix(&mut self) -> Expr<ExprOp> {
         match self.token() {
             Token::Special("not") => {
                 self.shift();
-                Expr::Op(ExprOp::BoolNot, vec![self.parse_prefix()])
+                Expr::Call(String::from("not"), vec![self.parse_prefix()])
             }
             _ => self.parse_single_expr(),
         }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::replace};
 
 use crate::{Entity, EvalOp, Expr, Loader, Mem, Stmt};
 
@@ -23,7 +23,11 @@ enum FrameControl {
     Return(*mut Entity),
 }
 
-impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
+impl<'a, O, T> Context<'a, T, Expr<O>>
+where
+    O: std::fmt::Debug,
+    T: EvalOp<O>,
+{
     pub fn new(mem: &'a mut Mem, loader: &'a Loader<Expr<O>>, op_context: &'a mut T) -> Self {
         Self {
             mem,
@@ -34,16 +38,19 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
     }
 
     pub fn eval_call(&mut self, name: &str, args: &[*mut Entity]) -> *mut Entity {
-        let (names, expr) = self
-            .loader
-            .dispatch(
-                name,
-                &args
+        let arg_types = args
+            .iter()
+            .map(|&arg| unsafe { &*arg }.core.ty())
+            .collect::<Vec<_>>();
+        let (names, expr) = self.loader.dispatch(name, &arg_types).unwrap_or_else(|| {
+            panic!(
+                "no dispatch for {name}({:?})",
+                arg_types
                     .iter()
-                    .map(|&arg| unsafe { &*arg }.core.ty())
-                    .collect::<Vec<_>>(),
+                    .map(|&ty| self.loader.type_repr(ty))
+                    .collect::<Vec<_>>()
             )
-            .unwrap();
+        });
         let scope = names
             .iter()
             .zip(args)
@@ -54,8 +61,11 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
             control: FrameControl::Run,
         });
         let entity = self.eval_expr(expr);
-        self.frames.pop();
-        entity
+        if let FrameControl::Return(entity) = self.frames.pop().unwrap().control {
+            entity
+        } else {
+            entity
+        }
     }
 
     fn eval_expr(&mut self, expr: &Expr<O>) -> *mut Entity {
@@ -70,10 +80,10 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
             }
             Expr::Scope(scope) => {
                 for stmt in scope {
-                    self.eval_stmt(stmt);
                     if self.frames.last().unwrap().control != FrameControl::Run {
                         break;
                     }
+                    self.eval_stmt(stmt);
                 }
                 self.op_context.alloc_nil(self.mem)
             }
@@ -130,7 +140,24 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
                 }
             }
             Stmt::While(expr, then_expr) => {
-                todo!()
+                while {
+                    let entity = self.eval_expr(expr);
+                    unsafe { self.op_context.is_truthy(entity) }
+                } {
+                    self.eval_expr(then_expr);
+                    match replace(
+                        &mut self.frames.last_mut().unwrap().control,
+                        FrameControl::Run,
+                    ) {
+                        FrameControl::Run => {}
+                        FrameControl::Break => break,
+                        FrameControl::Continue => continue,
+                        control @ FrameControl::Return(..) => {
+                            self.frames.last_mut().unwrap().control = control;
+                            return;
+                        }
+                    }
+                }
             }
             Stmt::Break => self.frames.last_mut().unwrap().control = FrameControl::Break,
             Stmt::Continue => self.frames.last_mut().unwrap().control = FrameControl::Continue,

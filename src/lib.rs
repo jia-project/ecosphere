@@ -12,9 +12,22 @@ pub struct Entity {
     core: Box<dyn EntityModel>,
 }
 
-pub trait EntityModel: Any {
+pub trait EntityModel: EntityCast {
     fn ty(&self) -> u32;
     fn mark(&self, marker: &mut MemMarker<'_>);
+}
+
+pub trait EntityCast {
+    fn any_ref(&self) -> &dyn Any;
+    fn any_mut(&mut self) -> &mut dyn Any;
+}
+impl<T: Any> EntityCast for T {
+    fn any_ref(&self) -> &dyn Any {
+        self
+    }
+    fn any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 pub struct Mem {
@@ -40,7 +53,7 @@ impl MemMarker<'_> {
 }
 
 impl Mem {
-    pub fn alloc(&mut self, raw: impl EntityModel) -> *mut Entity {
+    pub fn alloc(&mut self, raw: impl EntityModel + 'static) -> *mut Entity {
         let entity = Entity {
             linked: self.linked,
             core: Box::new(raw),
