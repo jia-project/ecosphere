@@ -3,7 +3,7 @@ use cosphere::{
     vm, Loader, Mem,
 };
 
-const INPUT: &'static str = r#"
+const INPUT: &str = r#"
 fn main()
     trace(42);
     return nil;

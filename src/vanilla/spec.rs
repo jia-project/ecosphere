@@ -1,6 +1,4 @@
-use std::mem::size_of;
-
-use crate::{mark_product, Expr, FnSpec, Loader, Stmt, TypeMeta};
+use crate::{Expr, FnSpec, Loader, Stmt};
 
 use super::op::ExprOp;
 
@@ -94,12 +92,7 @@ impl<'a> Context<'a> {
                 _ => panic!(),
             }
         }
-        let ty = TypeMeta {
-            repr: String::from(name), //
-            size: elements.len() * size_of::<usize>(),
-            mark_fn: mark_product,
-        };
-        let ty = self.loader.register_type(ty);
+        let ty = self.loader.register_type(0, String::from(name));
         self.loader.register_op(
             String::from(name),
             vec![],

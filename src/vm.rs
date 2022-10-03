@@ -40,7 +40,7 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
                 name,
                 &args
                     .iter()
-                    .map(|&arg| unsafe { &*arg }.ty)
+                    .map(|&arg| unsafe { &*arg }.core.ty())
                     .collect::<Vec<_>>(),
             )
             .unwrap();
@@ -60,7 +60,14 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
 
     fn eval_expr(&mut self, expr: &Expr<O>) -> *mut Entity {
         match expr {
-            Expr::Name(name) => self.frames.last().unwrap().scopes.last().unwrap()[name],
+            Expr::Name(name) => {
+                for scope in self.frames.last_mut().unwrap().scopes.iter().rev() {
+                    if let Some(&slot) = scope.get(name) {
+                        return slot;
+                    }
+                }
+                panic!();
+            }
             Expr::Scope(scope) => {
                 for stmt in scope {
                     self.eval_stmt(stmt);
@@ -68,14 +75,14 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
                         break;
                     }
                 }
-                self.op_context.alloc_nil(&mut self.mem)
+                self.op_context.alloc_nil(self.mem)
             }
             Expr::Op(op, args) => {
                 let args = args
                     .iter()
                     .map(|arg| self.eval_expr(arg))
                     .collect::<Vec<_>>();
-                unsafe { self.op_context.eval(op, &args, &mut self.mem, &self.loader) }
+                unsafe { self.op_context.eval(op, &args, self.mem, self.loader) }
             }
             Expr::Call(name, args) => {
                 let args = args
@@ -93,7 +100,7 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
                 self.eval_expr(expr);
             }
             Stmt::AllocName(name) => {
-                let nil = self.op_context.alloc_nil(&mut self.mem);
+                let nil = self.op_context.alloc_nil(self.mem);
                 self.frames
                     .last_mut()
                     .unwrap()
@@ -104,19 +111,19 @@ impl<'a, O, T: EvalOp<O>> Context<'a, T, Expr<O>> {
             }
             Stmt::Mutate(name, expr) => {
                 let entity = self.eval_expr(expr);
-                *self
-                    .frames
-                    .last_mut()
-                    .unwrap()
-                    .scopes
-                    .last_mut()
-                    .unwrap()
-                    .get_mut(name)
-                    .unwrap() = entity;
+                let mut mutated = false;
+                for scope in self.frames.last_mut().unwrap().scopes.iter_mut().rev() {
+                    if let Some(slot) = scope.get_mut(name) {
+                        *slot = entity;
+                        mutated = true;
+                        break;
+                    }
+                }
+                assert!(mutated);
             }
             Stmt::IfElse(expr, then_expr, else_expr) => {
                 let entity = self.eval_expr(expr);
-                if unsafe { &*entity }.raw[0] != 0 {
+                if unsafe { self.op_context.is_truthy(entity) } {
                     self.eval_expr(then_expr);
                 } else {
                     self.eval_expr(else_expr);

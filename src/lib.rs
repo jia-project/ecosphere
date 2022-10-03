@@ -1,16 +1,20 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use std::{
+    any::Any,
     collections::{HashMap, HashSet},
     fmt::Debug,
-    mem::size_of,
     ptr::null_mut,
 };
 
 pub struct Entity {
-    pub ty: u32,
     linked: *mut Entity,
-    pub raw: Vec<u8>,
+    core: Box<dyn EntityModel>,
+}
+
+pub trait EntityModel: Any {
+    fn ty(&self) -> u32;
+    fn mark(&self, marker: &mut MemMarker<'_>);
 }
 
 pub struct Mem {
@@ -36,11 +40,10 @@ impl MemMarker<'_> {
 }
 
 impl Mem {
-    pub fn alloc(&mut self, ty: u32, raw: Vec<u8>) -> *mut Entity {
+    pub fn alloc(&mut self, raw: impl EntityModel) -> *mut Entity {
         let entity = Entity {
-            ty,
             linked: self.linked,
-            raw,
+            core: Box::new(raw),
         };
         self.linked = Box::leak(Box::new(entity));
         self.linked
@@ -80,23 +83,14 @@ pub unsafe trait EvalOp<Op> {
         loader: &Loader<Expr<Op>>,
     ) -> *mut Entity;
     fn alloc_nil(&self, mem: &mut Mem) -> *mut Entity;
-}
-
-pub fn op_target<O>(op: O, args_len: usize) -> (Vec<String>, Expr<O>) {
-    (
-        (0..args_len).map(|i| format!("${i}")).collect(),
-        Expr::Op(
-            op,
-            (0..args_len).map(|i| Expr::Name(format!("${i}"))).collect(),
-        ),
-    )
+    unsafe fn is_truthy(&self, entity: *mut Entity) -> bool;
 }
 
 pub struct Loader<Expr> {
     fn_specs: Vec<FnSpec<Expr>>,
     dispatch: HashMap<DispatchKey, DispatchValue<Expr>>,
-    types: Vec<TypeMeta>,
     type_names: HashMap<String, u32>,
+    type_reprs: Vec<String>,
 }
 
 impl<E> Default for Loader<E> {
@@ -104,8 +98,8 @@ impl<E> Default for Loader<E> {
         Self {
             fn_specs: Default::default(),
             dispatch: Default::default(),
-            types: Default::default(),
             type_names: Default::default(),
+            type_reprs: Default::default(),
         }
     }
 }
@@ -115,21 +109,6 @@ impl<E> Default for Loader<E> {
 pub type DispatchKey = (String, Vec<u32>, usize);
 // parameter names, function expression
 pub type DispatchValue<E> = (Vec<String>, E);
-pub struct TypeMeta {
-    pub repr: String,
-    pub size: usize,
-    pub mark_fn: MarkFn,
-}
-pub type MarkFn = unsafe fn(&Entity, &mut MemMarker<'_>);
-pub fn no_mark(_: &Entity, _: &mut MemMarker<'_>) {}
-pub unsafe fn mark_product(entity: &Entity, marker: &mut MemMarker<'_>) {
-    for p in entity.raw.chunks_exact(size_of::<usize>()) {
-        marker.mark(usize::from_ne_bytes(p.try_into().unwrap()) as _);
-    }
-}
-pub unsafe fn mark_sum(entity: &Entity, marker: &mut MemMarker<'_>) {
-    marker.mark(usize::from_ne_bytes(entity.raw[4..].try_into().unwrap()) as _);
-}
 
 #[derive(Debug, Clone)]
 pub struct FnSpec<Expr> {
@@ -141,15 +120,21 @@ pub struct FnSpec<Expr> {
 }
 
 impl<E> Loader<E> {
-    pub fn register_type(&mut self, ty: TypeMeta) -> u32 {
-        let id = self.types.len() as _;
-        self.type_names.insert(ty.repr.clone(), id);
-        self.types.push(ty);
+    pub fn register_type(&mut self, mut id: u32, name: String) -> u32 {
+        if id == 0 {
+            id = (self.type_names.len() + 1) as _;
+        }
+        self.type_names.insert(name.clone(), id);
+        if id as usize >= self.type_reprs.len() {
+            self.type_reprs
+                .resize(id as usize + 1, String::from("(invalid)"));
+        }
+        self.type_reprs[id as usize] = name;
         id
     }
 
-    pub fn get_type(&self, ty: u32) -> &TypeMeta {
-        &self.types[ty as usize]
+    pub fn type_repr(&self, ty: u32) -> &str {
+        &self.type_reprs[ty as usize]
     }
 
     pub fn register_fn(&mut self, fn_spec: FnSpec<E>) {

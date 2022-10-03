@@ -1,6 +1,6 @@
-use std::mem::size_of;
+use std::{any::Any, mem::size_of};
 
-use crate::{no_mark, Entity, EvalOp, Expr, Loader, Mem, TypeMeta};
+use crate::{Entity, EntityModel, EvalOp, Expr, Loader, Mem};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ExprOp {
@@ -11,66 +11,118 @@ pub enum ExprOp {
     IntSub,
     IntMul,
     IntDiv,
+    IntEq,
     ProductNew(u32),
     ProductGet(usize),
     ProductSet(usize),
     Trace,
+    ListNew,
+    ListPush,
+    ListGet,
 }
 
-pub struct Eval {
-    nil_type: u32,
-    result_type: u32,
-    int_type: u32,
+pub struct Eval {}
+
+struct Product(u32, Vec<*mut Entity>);
+impl EntityModel for Product {
+    fn mark(&self, marker: &mut crate::MemMarker<'_>) {
+        for &entity in &self.1 {
+            marker.mark(entity)
+        }
+    }
+    fn ty(&self) -> u32 {
+        self.0
+    }
+}
+
+struct Sum(u32, u8, *mut Entity);
+impl EntityModel for Sum {
+    fn mark(&self, marker: &mut crate::MemMarker<'_>) {
+        marker.mark(self.2);
+    }
+    fn ty(&self) -> u32 {
+        self.0
+    }
+}
+
+struct Int(i32);
+impl EntityModel for Int {
+    fn mark(&self, _marker: &mut crate::MemMarker<'_>) {}
+    fn ty(&self) -> u32 {
+        Eval::INT_TYPE
+    }
+}
+
+struct List(Vec<*mut Entity>);
+impl EntityModel for List {
+    fn mark(&self, marker: &mut crate::MemMarker<'_>) {
+        for &entity in &self.0 {
+            marker.mark(entity)
+        }
+    }
+    fn ty(&self) -> u32 {
+        Eval::LIST_TYPE
+    }
 }
 
 impl Eval {
+    pub const NIL_TYPE: u32 = 1;
+    pub const INT_TYPE: u32 = 2;
+    pub const RESULT_TYPE: u32 = 3;
+    pub const LIST_TYPE: u32 = 4;
+
     pub fn install(loader: &mut Loader<Expr<ExprOp>>) -> Self {
-        let nil_type = loader.register_type(TypeMeta {
-            repr: String::from("Nil"),
-            size: 0,
-            mark_fn: no_mark,
-        });
-        let int_type = loader.register_type(TypeMeta {
-            repr: String::from("Int"),
-            size: 4,
-            mark_fn: no_mark,
-        });
-        let result_type = loader.register_type(TypeMeta {
-            repr: String::from("Result"),
-            size: 5,
-            mark_fn: no_mark,
-        });
+        loader.register_type(Self::NIL_TYPE, String::from("Nil"));
+        loader.register_type(Self::INT_TYPE, String::from("Int"));
+        loader.register_type(Self::RESULT_TYPE, String::from("Result"));
+        loader.register_type(Self::LIST_TYPE, String::from("List"));
+
         for (name, op) in [
             ("add", ExprOp::IntAdd),
             ("sub", ExprOp::IntSub),
             ("mul", ExprOp::IntMul),
             ("div", ExprOp::IntDiv),
+            ("eq", ExprOp::IntEq),
         ] {
-            loader.register_op(String::from(name), vec![int_type, int_type], 0, op);
+            loader.register_op(
+                String::from(name),
+                vec![Self::INT_TYPE, Self::INT_TYPE],
+                0,
+                op,
+            );
         }
         loader.register_op(String::from("trace"), vec![], 1, ExprOp::Trace);
-        Self {
-            nil_type,
-            int_type,
-            result_type,
-        }
+        Self {}
     }
 
     unsafe fn load_int(&self, entity: *mut Entity) -> i32 {
         let entity = unsafe { &*entity };
-        assert_eq!(entity.ty, self.int_type);
-        i32::from_ne_bytes(entity.raw[..].try_into().unwrap())
+        assert_eq!(entity.core.ty(), Self::INT_TYPE);
+        (&entity.core as &dyn Any).downcast_ref::<Int>().unwrap().0
     }
 
     fn alloc_int(&self, val: i32, mem: &mut Mem) -> *mut Entity {
-        mem.alloc(self.int_type, val.to_ne_bytes().to_vec())
+        mem.alloc(Int(val))
+    }
+
+    fn alloc_bool(&self, val: bool, mem: &mut Mem) -> *mut Entity {
+        let nil = self.alloc_nil(mem);
+        mem.alloc(Sum(Self::RESULT_TYPE, val as _, nil))
     }
 }
 
 unsafe impl EvalOp<ExprOp> for Eval {
     fn alloc_nil(&self, mem: &mut Mem) -> *mut Entity {
         // TODO shared static entity
-        mem.alloc(self.nil_type, vec![])
+        mem.alloc(Product(Self::NIL_TYPE, Vec::new()))
+    }
+
+    unsafe fn is_truthy(&self, entity: *mut Entity) -> bool {
+        (&unsafe { &*entity }.core as &dyn Any)
+            .downcast_ref::<Sum>()
+            .unwrap()
+            .1
+            != 0
     }
 
     unsafe fn eval(
@@ -82,12 +134,15 @@ unsafe impl EvalOp<ExprOp> for Eval {
     ) -> *mut Entity {
         match op {
             ExprOp::NilNew => self.alloc_nil(mem),
+
             ExprOp::BoolNot => {
                 let a0 = unsafe { &*args[0] };
-                assert_eq!(a0.ty, self.result_type);
-                mem.alloc(self.result_type, [&[1 - a0.raw[0]], &a0.raw[1..]].concat())
+                assert_eq!(a0.core.ty(), Self::RESULT_TYPE);
+                let &Sum(ty, tag, entity) = (&a0.core as &dyn Any).downcast_ref().unwrap();
+                mem.alloc(Sum(ty, 1 - tag, entity))
             }
-            &ExprOp::IntNew(lit) => mem.alloc(self.int_type, lit.to_ne_bytes().to_vec()),
+
+            &ExprOp::IntNew(lit) => self.alloc_int(lit, mem),
             ExprOp::IntAdd => {
                 let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
                 self.alloc_int(a0 + a1, mem)
@@ -104,31 +159,48 @@ unsafe impl EvalOp<ExprOp> for Eval {
                 let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
                 self.alloc_int(a0 / a1, mem)
             }
-            &ExprOp::ProductNew(ty) => mem.alloc(
-                ty,
-                args.iter()
-                    .flat_map(|&arg| (arg as usize).to_ne_bytes())
-                    .collect(),
-            ),
-            &ExprOp::ProductGet(index) => usize::from_ne_bytes(
-                unsafe { &*args[0] }.raw
-                    [index * size_of::<usize>()..(index + 1) * size_of::<usize>()]
-                    .try_into()
-                    .unwrap(),
-            ) as _,
+            ExprOp::IntEq => {
+                let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
+                self.alloc_bool(a0 == a1, mem)
+            }
+
+            &ExprOp::ProductNew(ty) => mem.alloc(Product(ty, args.to_vec())),
+            &ExprOp::ProductGet(index) => {
+                let product: &Product = (&unsafe { &*args[0] }.core as &dyn Any)
+                    .downcast_ref()
+                    .unwrap();
+                product.1[index]
+            }
             &ExprOp::ProductSet(index) => {
-                unsafe { &mut *args[0] }.raw
-                    [index * size_of::<usize>()..(index + 1) * size_of::<usize>()]
-                    .copy_from_slice(&(args[1] as usize).to_ne_bytes());
+                let product: &mut Product = (&mut unsafe { &mut *args[0] }.core as &mut dyn Any)
+                    .downcast_mut()
+                    .unwrap();
+                product.1[index] = args[1];
                 self.alloc_nil(mem)
             }
+
             ExprOp::Trace => {
                 println!(
                     "<{} entity at {:#x?}>",
-                    loader.get_type(unsafe { &*args[0] }.ty).repr,
+                    loader.type_repr(unsafe { &*args[0] }.core.ty()),
                     args[0]
                 );
                 self.alloc_nil(mem)
+            }
+
+            ExprOp::ListNew => mem.alloc(List(Vec::new())),
+            ExprOp::ListPush => {
+                let list = &mut unsafe { &mut *args[0] }.core;
+                assert_eq!(list.ty(), Self::LIST_TYPE);
+                let list: &mut List = (list as &mut dyn Any).downcast_mut().unwrap();
+                list.0.push(args[1]);
+                self.alloc_nil(mem)
+            }
+            ExprOp::ListGet => {
+                let list = &unsafe { &*args[0] }.core;
+                assert_eq!(list.ty(), Self::LIST_TYPE);
+                let list: &List = (list as &dyn Any).downcast_ref().unwrap();
+                list.0[unsafe { self.load_int(args[1]) } as usize] // TODO reverse index?
             }
         }
     }
