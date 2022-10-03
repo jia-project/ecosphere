@@ -5,14 +5,15 @@ use crate::{Entity, EntityModel, EvalOp, Expr, Loader, Mem};
 #[derive(Debug, Clone)]
 pub enum ExprOp {
     NilNew,
-    ResultNot,
+    ResultNeg,
     IntNew(i32),
+    IntNeg,
     IntAdd,
-    IntSub,
     IntMul,
     IntDiv,
     IntRem,
     IntEq,
+    IntLt,
     ProductNew(u32),
     ProductGet(usize),
     ProductSet(usize),
@@ -20,12 +21,21 @@ pub enum ExprOp {
     ListNew,
     ListPush,
     ListGet,
+    ListLen,
     StrNew(String), // TODO static entity
     StrAdd,
 }
 
 pub struct Eval {
     ref_instant: Instant,
+}
+
+impl Default for Eval {
+    fn default() -> Self {
+        Self {
+            ref_instant: Instant::now(),
+        }
+    }
 }
 
 struct Product(u32, Vec<*mut Entity>);
@@ -85,7 +95,7 @@ impl Eval {
     pub const TYPE_LIST: u32 = 4;
     pub const TYPE_STR: u32 = 5;
 
-    pub fn install(loader: &mut Loader<Expr<ExprOp>>) -> Self {
+    pub fn install(loader: &mut Loader<Expr<ExprOp>>) {
         loader.register_type(Self::TYPE_NIL, String::from("Nil"));
         loader.register_type(Self::TYPE_INT, String::from("Int"));
         loader.register_type(Self::TYPE_RESULT, String::from("Result"));
@@ -96,15 +106,16 @@ impl Eval {
             String::from("not"),
             vec![Self::TYPE_RESULT],
             0,
-            ExprOp::ResultNot,
+            ExprOp::ResultNeg,
         );
         for (name, op) in [
+            ("neg", ExprOp::IntNeg),
             ("add", ExprOp::IntAdd),
-            ("sub", ExprOp::IntSub),
             ("mul", ExprOp::IntMul),
             ("div", ExprOp::IntDiv),
             ("rem", ExprOp::IntRem),
             ("eq", ExprOp::IntEq),
+            ("lt", ExprOp::IntLt),
         ] {
             loader.register_op(
                 String::from(name),
@@ -127,6 +138,12 @@ impl Eval {
             0,
             ExprOp::ListGet,
         );
+        loader.register_op(
+            String::from("len"),
+            vec![Self::TYPE_LIST],
+            0,
+            ExprOp::ListLen,
+        );
 
         loader.register_op(
             String::from("add"),
@@ -134,10 +151,6 @@ impl Eval {
             0,
             ExprOp::StrAdd,
         );
-
-        Self {
-            ref_instant: Instant::now(),
-        }
     }
 
     unsafe fn load_entity<T: Any>(&self, entity: *mut Entity, ty: u32) -> &T {
@@ -148,10 +161,6 @@ impl Eval {
 
     unsafe fn load_int(&self, entity: *mut Entity) -> i32 {
         unsafe { self.load_entity::<Int>(entity, Self::TYPE_INT) }.0
-    }
-
-    fn alloc_int(&self, val: i32, mem: &mut Mem) -> *mut Entity {
-        mem.alloc(Int(val))
     }
 
     fn alloc_bool(&self, val: bool, mem: &mut Mem) -> *mut Entity {
@@ -186,67 +195,72 @@ unsafe impl EvalOp<ExprOp> for Eval {
         match op {
             ExprOp::NilNew => self.alloc_nil(mem),
 
-            ExprOp::ResultNot => {
+            ExprOp::ResultNeg => {
                 let a0 = unsafe { &*args[0] };
                 assert_eq!(a0.core.ty(), Self::TYPE_RESULT);
                 let &Sum(ty, tag, entity) = a0.core.any_ref().downcast_ref().unwrap();
                 mem.alloc(Sum(ty, 1 - tag, entity))
             }
 
-            &ExprOp::IntNew(lit) => self.alloc_int(lit, mem),
+            &ExprOp::IntNew(lit) => mem.alloc(Int(lit)),
+            ExprOp::IntNeg => mem.alloc(Int(-unsafe { self.load_int(args[0]) })),
             ExprOp::IntAdd => {
                 let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
-                self.alloc_int(a0 + a1, mem)
-            }
-            ExprOp::IntSub => {
-                let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
-                self.alloc_int(a0 - a1, mem)
+                mem.alloc(Int(a0 + a1))
             }
             ExprOp::IntMul => {
                 let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
-                self.alloc_int(a0 * a1, mem)
+                mem.alloc(Int(a0 * a1))
             }
             ExprOp::IntDiv => {
                 let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
-                self.alloc_int(a0 / a1, mem)
+                mem.alloc(Int(a0 / a1))
             }
             ExprOp::IntRem => {
                 let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
-                self.alloc_int(a0 % a1, mem)
+                mem.alloc(Int(a0 % a1))
             }
             ExprOp::IntEq => {
                 let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
                 self.alloc_bool(a0 == a1, mem)
             }
+            ExprOp::IntLt => {
+                let (a0, a1) = unsafe { (self.load_int(args[0]), self.load_int(args[1])) };
+                self.alloc_bool(a0 < a1, mem)
+            }
 
             &ExprOp::ProductNew(ty) => mem.alloc(Product(ty, args.to_vec())),
             &ExprOp::ProductGet(index) => {
-                let product: &Product = unsafe { &*args[0] }.core.any_ref().downcast_ref().unwrap();
-                product.1[index]
+                unsafe { &*args[0] }
+                    .core
+                    .any_ref()
+                    .downcast_ref::<Product>()
+                    .unwrap()
+                    .1[index]
             }
             &ExprOp::ProductSet(index) => {
-                let product: &mut Product = unsafe { &mut *args[0] }
+                unsafe { &mut *args[0] }
                     .core
                     .any_mut()
-                    .downcast_mut()
-                    .unwrap();
-                product.1[index] = args[1];
+                    .downcast_mut::<Product>()
+                    .unwrap()
+                    .1[index] = args[1];
                 self.alloc_nil(mem)
             }
 
             ExprOp::Trace => {
                 let entity = &unsafe { &*args[0] }.core;
-                println!(
-                    "[{:8?}] <{} entity at {:#x?}>{}",
+                let mut log = format!(
+                    "[{:8?}] <{} entity at {:#x?}>",
                     Instant::now() - self.ref_instant,
                     loader.type_repr(entity.ty()),
-                    args[0],
-                    if entity.ty() == Self::TYPE_STR {
-                        String::from(" ") + &entity.any_ref().downcast_ref::<Str>().unwrap().0
-                    } else {
-                        String::from("")
-                    }
+                    args[0]
                 );
+                if entity.ty() == Self::TYPE_STR {
+                    log += " ";
+                    log += &entity.any_ref().downcast_ref::<Str>().unwrap().0;
+                }
+                println!("{log}");
                 self.alloc_nil(mem)
             }
 
@@ -254,15 +268,24 @@ unsafe impl EvalOp<ExprOp> for Eval {
             ExprOp::ListPush => {
                 let list = &mut unsafe { &mut *args[0] }.core;
                 assert_eq!(list.ty(), Self::TYPE_LIST);
-                let list: &mut List = list.any_mut().downcast_mut().unwrap();
-                list.0.push(args[1]);
+                list.any_mut()
+                    .downcast_mut::<List>()
+                    .unwrap()
+                    .0
+                    .push(args[1]);
                 self.alloc_nil(mem)
             }
             ExprOp::ListGet => {
                 let list = &unsafe { &*args[0] }.core;
                 assert_eq!(list.ty(), Self::TYPE_LIST);
-                let list: &List = list.any_ref().downcast_ref().unwrap();
-                list.0[unsafe { self.load_int(args[1]) } as usize] // TODO reverse index?
+                list.any_ref().downcast_ref::<List>().unwrap().0
+                    [unsafe { self.load_int(args[1]) } as usize] // TODO reverse index?
+            }
+            ExprOp::ListLen => {
+                let list = &unsafe { &*args[0] }.core;
+                assert_eq!(list.ty(), Self::TYPE_LIST);
+                let val = list.any_ref().downcast_ref::<List>().unwrap().0.len() as _;
+                mem.alloc(Int(val))
             }
 
             ExprOp::StrNew(lit) => mem.alloc(Str(lit.clone())),

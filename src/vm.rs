@@ -76,7 +76,7 @@ where
                         return slot;
                     }
                 }
-                panic!();
+                panic!("name not found: {name}");
             }
             Expr::Scope(scope) => {
                 for stmt in scope {

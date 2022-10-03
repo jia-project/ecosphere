@@ -29,26 +29,44 @@ fn str(n Int)
     return s;
 end
 
-struct Point
-    x y
-end
-
-fn str(p Point)
-    return "Point {" + str(x(p)) + ", " + str(y(p)) + "}";
+fn str(l List)
+    let s;
+    mut s = "[";
+    let sep;
+    mut sep = "";
+    let i;
+    mut i = 0;
+    let len;
+    mut len = len(l);
+    while i < len then
+        mut s = s + sep + str(get(l, i));
+        mut sep = ", ";
+        mut i = i + 1;
+    end
+    mut s = s + "]";
+    return s;
 end
 
 fn main()
-    trace(str(Point(42, 43)));
-    return nil;
+    let l;
+    mut l = List();
+    push(l, 3);
+    push(l, 14);
+    push(l, 15);
+    push(l, 92);
+    push(l, 65);
+    trace(str(l));
 end
 "#;
 
 fn main() {
     let mut loader = Loader::default();
     let mut mem = Mem::default();
-    let mut op_context = op::Eval::install(&mut loader);
+    op::Eval::install(&mut loader);
+
     spec::Context::new(INPUT, &mut loader).parse();
     loader.populate();
+
     // loader.try_it();
-    vm::Context::new(&mut mem, &loader, &mut op_context).eval_call("main", &[]);
+    vm::Context::new(&mut mem, &loader, &mut op::Eval::default()).eval_call("main", &[]);
 }

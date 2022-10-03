@@ -1,4 +1,4 @@
-use crate::{Expr, FnSpec, Loader, Stmt};
+use crate::{Expr, FnDef, Loader, Stmt};
 
 use super::op::ExprOp;
 
@@ -32,7 +32,7 @@ impl<'a> Context<'a> {
         let specials = [
             "fn", "if", "then", "else", "while", "break", "continue", "return", "let", "mut",
             "struct", "enum", "end", "and", "or", "(", ")", ",", ";", "not", "+", "-", "*", "/",
-            "%", "==", "!=", "=", "true", "false", "nil",
+            "%", "==", "!=", "<", "=", "true", "false", "nil",
         ];
         for special in specials {
             if let Some(input) = self.input.strip_prefix(special) {
@@ -40,9 +40,9 @@ impl<'a> Context<'a> {
                 return Some(Token::Special(special));
             }
         }
-        if self.input.starts_with("\"") {
+        if self.input.starts_with('"') {
             // TODO escape
-            let n = self.input[1..].find("\"").unwrap() + 1;
+            let n = self.input[1..].find('"').unwrap() + 1;
             let s = String::from(&self.input[1..n]);
             self.input = self.input[n + 1..].trim_start();
             return Some(Token::LitStr(s));
@@ -56,10 +56,14 @@ impl<'a> Context<'a> {
             self.input = self.input.strip_prefix(&n).unwrap().trim_start();
             return Some(Token::LitInt(n.parse().unwrap()));
         }
-        let input = self.input.trim_start_matches(char::is_alphanumeric);
-        let name = &self.input[..self.input.len() - input.len()];
-        assert!(!name.is_empty(), "{:?}", &self.input[..32]);
-        self.input = input.trim_start();
+        let name_len = self
+            .input
+            .chars()
+            .take_while(|&c| c.is_alphanumeric() || c == '_')
+            .count();
+        assert_ne!(name_len, 0, "name not valid: {:?}", &self.input[..32]);
+        let name = &self.input[..name_len];
+        self.input = self.input[name_len..].trim_start();
         Some(Token::Name(name))
     }
 
@@ -142,7 +146,7 @@ impl<'a> Context<'a> {
         }
         self.shift();
         let expr = self.parse_scope(false);
-        self.loader.register_fn(FnSpec {
+        self.loader.register_fn(FnDef {
             name: String::from(name),
             param_types,
             untyped_len,
@@ -292,7 +296,7 @@ impl<'a> Context<'a> {
 
     fn parse_infix0(&mut self) -> Expr<ExprOp> {
         self.parse_infix(
-            &[("==", "eq"), ("!=", "ne")],
+            &[("==", "eq"), ("!=", "ne"), ("<", "lt")],
             Self::parse_infix1,
             |name, expr1, expr2| {
                 if name == "ne" {
@@ -311,7 +315,16 @@ impl<'a> Context<'a> {
         self.parse_infix(
             &[("+", "add"), ("-", "sub")],
             Self::parse_infix2,
-            Self::infix_call,
+            |name, expr1, expr2| {
+                if name == "sub" {
+                    Expr::Call(
+                        String::from("add"),
+                        vec![expr1, Expr::Call(String::from("neg"), vec![expr2])],
+                    )
+                } else {
+                    Self::infix_call(name, expr1, expr2)
+                }
+            },
         )
     }
 

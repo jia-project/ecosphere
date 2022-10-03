@@ -62,7 +62,7 @@ impl Mem {
         self.linked
     }
 
-    pub unsafe fn sweep<E>(&self, root: *const Entity, loader: &Loader<E>) {
+    pub unsafe fn sweep<E>(&self, root: *const Entity) {
         todo!()
     }
 }
@@ -100,7 +100,7 @@ pub unsafe trait EvalOp<Op> {
 }
 
 pub struct Loader<Expr> {
-    fn_specs: Vec<FnSpec<Expr>>,
+    fn_defs: Vec<FnDef<Expr>>,
     dispatch: HashMap<DispatchKey, DispatchValue<Expr>>,
     type_names: HashMap<String, u32>,
     type_reprs: Vec<String>,
@@ -109,7 +109,7 @@ pub struct Loader<Expr> {
 impl<E> Default for Loader<E> {
     fn default() -> Self {
         Self {
-            fn_specs: Default::default(),
+            fn_defs: Default::default(),
             dispatch: Default::default(),
             type_names: Default::default(),
             type_reprs: Default::default(),
@@ -124,7 +124,7 @@ pub type DispatchKey = (String, Vec<u32>, usize);
 pub type DispatchValue<E> = (Vec<String>, E);
 
 #[derive(Debug, Clone)]
-pub struct FnSpec<Expr> {
+pub struct FnDef<Expr> {
     pub name: String,
     pub param_names: Vec<String>,
     pub param_types: Vec<String>,
@@ -137,6 +137,7 @@ impl<E> Loader<E> {
         if id == 0 {
             id = (self.type_names.len() + 1) as _;
         }
+        assert!(!self.type_names.contains_key(&name));
         self.type_names.insert(name.clone(), id);
         if id as usize >= self.type_reprs.len() {
             self.type_reprs
@@ -150,12 +151,12 @@ impl<E> Loader<E> {
         &self.type_reprs[ty as usize]
     }
 
-    pub fn register_fn(&mut self, fn_spec: FnSpec<E>) {
+    pub fn register_fn(&mut self, fn_def: FnDef<E>) {
         assert_eq!(
-            fn_spec.param_names.len(),
-            fn_spec.param_types.len() + fn_spec.untyped_len
+            fn_def.param_names.len(),
+            fn_def.param_types.len() + fn_def.untyped_len
         );
-        self.fn_specs.push(fn_spec);
+        self.fn_defs.push(fn_def);
     }
 }
 
@@ -178,17 +179,17 @@ impl<O> Loader<Expr<O>> {
 impl<E> Loader<E> {
     pub fn populate(&mut self)
     where
-        FnSpec<E>: Clone,
+        FnDef<E>: Clone,
     {
-        for fn_spec in self.fn_specs.clone() {
-            let param_types = fn_spec
+        for fn_def in self.fn_defs.clone() {
+            let param_types = fn_def
                 .param_types
                 .iter()
                 .map(|name| self.type_names[name])
                 .collect();
             self.dispatch.insert(
-                (fn_spec.name, param_types, fn_spec.untyped_len),
-                (fn_spec.param_names, fn_spec.expr),
+                (fn_def.name, param_types, fn_def.untyped_len),
+                (fn_def.param_names, fn_def.expr),
             );
         }
     }
@@ -204,15 +205,6 @@ impl<E> Loader<E> {
             }
         }
         None
-    }
-
-    pub fn try_it(&self)
-    where
-        E: Debug,
-    {
-        for (name, dispatch) in &self.dispatch {
-            println!("{name:?} => {dispatch:?}");
-        }
     }
 }
 
