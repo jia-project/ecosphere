@@ -67,24 +67,19 @@ impl Mem {
     }
 }
 
+pub type InstrId = (usize, usize);
 #[derive(Debug, Clone)]
-pub enum Stmt<Op> {
-    Expr(Expr<Op>),
-    AllocName(String),
-    Mutate(String, Expr<Op>),
-    IfElse(Expr<Op>, Expr<Op>, Expr<Op>),
-    While(Expr<Op>, Expr<Op>),
-    Break,
-    Continue,
-    Return(Expr<Op>),
+pub enum Instr<Op> {
+    Op(Op, Vec<InstrId>),
+    Call(String, Vec<InstrId>),
+    Return(InstrId),
+    Branch(InstrId, usize, usize),
 }
 
-#[derive(Debug, Clone)]
-pub enum Expr<Op> {
-    Name(String),
-    Call(String, Vec<Expr<Op>>),
-    Op(Op, Vec<Expr<Op>>),
-    Scope(Vec<Stmt<Op>>), // TODO add tail expr
+impl<O> Instr<O> {
+    pub fn goto(block_id: usize) -> Self {
+        Self::Branch(Default::default(), block_id, block_id)
+    }
 }
 
 pub unsafe trait EvalOp<Op> {
@@ -93,23 +88,25 @@ pub unsafe trait EvalOp<Op> {
         op: &Op,
         args: &[*mut Entity],
         mem: &mut Mem,
-        loader: &Loader<Expr<Op>>,
+        loader: &Loader<Op>,
     ) -> *mut Entity;
-    fn alloc_nil(&self, mem: &mut Mem) -> *mut Entity;
     unsafe fn is_truthy(&self, entity: *mut Entity) -> bool;
 }
 
-pub struct Loader<Expr> {
-    fn_defs: Vec<FnDef<Expr>>,
-    dispatch: HashMap<DispatchKey, DispatchValue<Expr>>,
+pub struct Loader<Op> {
+    fn_defs: Vec<FnDef<Op>>,
+    fn_blocks: Vec<InstrBlocks<Op>>,
+    dispatch: HashMap<DispatchKey, usize>,
     type_names: HashMap<String, u32>,
     type_reprs: Vec<String>,
 }
+pub type InstrBlocks<Op> = Vec<Vec<Instr<Op>>>;
 
 impl<E> Default for Loader<E> {
     fn default() -> Self {
         Self {
             fn_defs: Default::default(),
+            fn_blocks: Default::default(),
             dispatch: Default::default(),
             type_names: Default::default(),
             type_reprs: Default::default(),
@@ -124,15 +121,15 @@ pub type DispatchKey = (String, Vec<u32>, usize);
 pub type DispatchValue<E> = (Vec<String>, E);
 
 #[derive(Debug, Clone)]
-pub struct FnDef<Expr> {
+pub struct FnDef<Op> {
     pub name: String,
     pub param_names: Vec<String>,
     pub param_types: Vec<String>,
     pub untyped_len: usize,
-    pub expr: Expr,
+    pub blocks: Vec<Vec<Instr<Op>>>,
 }
 
-impl<E> Loader<E> {
+impl<O> Loader<O> {
     pub fn register_type(&mut self, mut id: u32, name: String) -> u32 {
         if id == 0 {
             id = (self.type_names.len() + 1) as _;
@@ -151,7 +148,7 @@ impl<E> Loader<E> {
         &self.type_reprs[ty as usize]
     }
 
-    pub fn register_fn(&mut self, fn_def: FnDef<E>) {
+    pub fn register_fn(&mut self, fn_def: FnDef<O>) {
         assert_eq!(
             fn_def.param_names.len(),
             fn_def.param_types.len() + fn_def.untyped_len
@@ -160,26 +157,25 @@ impl<E> Loader<E> {
     }
 }
 
-impl<O> Loader<Expr<O>> {
+impl<O> Loader<O> {
     pub fn register_op(&mut self, name: String, param_types: Vec<u32>, untyped_len: usize, op: O) {
         let args_len = param_types.len() + untyped_len;
-        self.dispatch.insert(
-            (name, param_types, untyped_len),
-            (
-                (0..args_len).map(|i| format!("${i}")).collect(),
-                Expr::Op(
-                    op,
-                    (0..args_len).map(|i| Expr::Name(format!("${i}"))).collect(),
-                ),
-            ),
-        );
+        self.dispatch
+            .insert((name, param_types, untyped_len), self.fn_blocks.len());
+        self.fn_blocks.push(vec![
+            vec![],
+            vec![
+                Instr::Op(op, (0..args_len).map(|i| (0, i)).collect()),
+                Instr::Return((1, 0)),
+            ],
+        ]);
     }
 }
 
-impl<E> Loader<E> {
+impl<O> Loader<O> {
     pub fn populate(&mut self)
     where
-        FnDef<E>: Clone,
+        FnDef<O>: Clone,
     {
         for fn_def in self.fn_defs.clone() {
             let param_types = fn_def
@@ -189,22 +185,43 @@ impl<E> Loader<E> {
                 .collect();
             self.dispatch.insert(
                 (fn_def.name, param_types, fn_def.untyped_len),
-                (fn_def.param_names, fn_def.expr),
+                self.fn_blocks.len(),
             );
+            self.fn_blocks.push(fn_def.blocks);
         }
     }
 
-    pub fn dispatch(&self, name: &str, arg_types: &[u32]) -> Option<(&[String], &E)> {
+    pub fn dispatch(&self, name: &str, arg_types: &[u32]) -> Option<usize> {
         for i in (0..=arg_types.len()).rev() {
-            if let Some((names, expr)) = self.dispatch.get(&(
+            if let Some(&blocks_id) = self.dispatch.get(&(
                 name.to_string(),
                 arg_types[..i].to_vec(),
                 arg_types.len() - i,
             )) {
-                return Some((&**names, expr));
+                return Some(blocks_id);
             }
         }
         None
+    }
+
+    pub fn fetch(&self, blocks_id: usize, instr_id: InstrId) -> &Instr<O> {
+        assert_ne!(instr_id.0, 0);
+        &self.fn_blocks[blocks_id][instr_id.0][instr_id.1]
+    }
+
+    pub fn dump_blocks(&self)
+    where
+        O: Debug,
+    {
+        for (dispatch, &blocks_id) in &self.dispatch {
+            println!("{dispatch:?}");
+            for (i, block) in self.fn_blocks[blocks_id].iter().enumerate() {
+                println!("{i}:");
+                for (i, instr) in block.iter().enumerate() {
+                    println!("{i:3} {instr:?}");
+                }
+            }
+        }
     }
 }
 

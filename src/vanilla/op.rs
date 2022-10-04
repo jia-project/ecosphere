@@ -1,11 +1,10 @@
 use std::{any::Any, time::Instant};
 
-use crate::{Entity, EntityModel, EvalOp, Expr, Loader, Mem};
+use crate::{Entity, EntityModel, EvalOp, Loader, Mem};
 
 #[derive(Debug, Clone)]
 pub enum ExprOp {
     NilNew,
-    ResultNeg,
     IntNew(i32),
     IntNeg,
     IntAdd,
@@ -17,10 +16,12 @@ pub enum ExprOp {
     ProductNew(u32),
     ProductGet(usize),
     ProductSet(usize),
+    SumNew(u32, u8),
     Trace,
     ListNew,
     ListPush,
     ListGet,
+    ListGetMut,
     ListLen,
     StrNew(String), // TODO static entity
     StrAdd,
@@ -90,26 +91,21 @@ impl EntityModel for Str {
 
 impl Eval {
     pub const TYPE_NIL: u32 = 1;
-    pub const TYPE_INT: u32 = 2;
+    pub const TYPE_REF: u32 = 2;
     pub const TYPE_RESULT: u32 = 3;
-    pub const TYPE_LIST: u32 = 4;
-    pub const TYPE_STR: u32 = 5;
+    pub const TYPE_INT: u32 = 4;
+    pub const TYPE_LIST: u32 = 5;
+    pub const TYPE_STR: u32 = 6;
 
-    pub fn install(loader: &mut Loader<Expr<ExprOp>>) {
+    pub fn install(loader: &mut Loader<ExprOp>) {
         loader.register_type(Self::TYPE_NIL, String::from("Nil"));
         loader.register_type(Self::TYPE_INT, String::from("Int"));
         loader.register_type(Self::TYPE_RESULT, String::from("Result"));
         loader.register_type(Self::TYPE_LIST, String::from("List"));
         loader.register_type(Self::TYPE_STR, String::from("Str"));
 
-        loader.register_op(
-            String::from("not"),
-            vec![Self::TYPE_RESULT],
-            0,
-            ExprOp::ResultNeg,
-        );
+        loader.register_op(String::from("neg"), vec![Self::TYPE_INT], 0, ExprOp::IntNeg);
         for (name, op) in [
-            ("neg", ExprOp::IntNeg),
             ("add", ExprOp::IntAdd),
             ("mul", ExprOp::IntMul),
             ("div", ExprOp::IntDiv),
@@ -139,6 +135,12 @@ impl Eval {
             ExprOp::ListGet,
         );
         loader.register_op(
+            String::from("get_mut"),
+            vec![Self::TYPE_LIST, Self::TYPE_INT],
+            1,
+            ExprOp::ListGetMut,
+        );
+        loader.register_op(
             String::from("len"),
             vec![Self::TYPE_LIST],
             0,
@@ -163,6 +165,11 @@ impl Eval {
         unsafe { self.load_entity::<Int>(entity, Self::TYPE_INT) }.0
     }
 
+    fn alloc_nil(&self, mem: &mut Mem) -> *mut Entity {
+        // TODO shared static entity
+        mem.alloc(Product(Self::TYPE_NIL, Vec::new()))
+    }
+
     fn alloc_bool(&self, val: bool, mem: &mut Mem) -> *mut Entity {
         let nil = self.alloc_nil(mem);
         mem.alloc(Sum(Self::TYPE_RESULT, val as _, nil))
@@ -170,11 +177,6 @@ impl Eval {
 }
 
 unsafe impl EvalOp<ExprOp> for Eval {
-    fn alloc_nil(&self, mem: &mut Mem) -> *mut Entity {
-        // TODO shared static entity
-        mem.alloc(Product(Self::TYPE_NIL, Vec::new()))
-    }
-
     unsafe fn is_truthy(&self, entity: *mut Entity) -> bool {
         unsafe { &*entity }
             .core
@@ -190,17 +192,10 @@ unsafe impl EvalOp<ExprOp> for Eval {
         op: &ExprOp,
         args: &[*mut Entity],
         mem: &mut Mem,
-        loader: &Loader<Expr<ExprOp>>,
+        loader: &Loader<ExprOp>,
     ) -> *mut Entity {
         match op {
             ExprOp::NilNew => self.alloc_nil(mem),
-
-            ExprOp::ResultNeg => {
-                let a0 = unsafe { &*args[0] };
-                assert_eq!(a0.core.ty(), Self::TYPE_RESULT);
-                let &Sum(ty, tag, entity) = a0.core.any_ref().downcast_ref().unwrap();
-                mem.alloc(Sum(ty, 1 - tag, entity))
-            }
 
             &ExprOp::IntNew(lit) => mem.alloc(Int(lit)),
             ExprOp::IntNeg => mem.alloc(Int(-unsafe { self.load_int(args[0]) })),
@@ -248,6 +243,8 @@ unsafe impl EvalOp<ExprOp> for Eval {
                 self.alloc_nil(mem)
             }
 
+            &ExprOp::SumNew(ty, tag) => mem.alloc(Sum(ty, tag, args[0])),
+
             ExprOp::Trace => {
                 let entity = &unsafe { &*args[0] }.core;
                 let mut log = format!(
@@ -280,6 +277,13 @@ unsafe impl EvalOp<ExprOp> for Eval {
                 assert_eq!(list.ty(), Self::TYPE_LIST);
                 list.any_ref().downcast_ref::<List>().unwrap().0
                     [unsafe { self.load_int(args[1]) } as usize] // TODO reverse index?
+            }
+            ExprOp::ListGetMut => {
+                let list = &mut unsafe { &mut *args[0] }.core;
+                assert_eq!(list.ty(), Self::TYPE_LIST);
+                list.any_mut().downcast_mut::<List>().unwrap().0
+                    [unsafe { self.load_int(args[1]) } as usize] = args[2]; // TODO reverse index?
+                self.alloc_nil(mem)
             }
             ExprOp::ListLen => {
                 let list = &unsafe { &*args[0] }.core;

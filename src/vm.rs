@@ -1,34 +1,27 @@
-use std::{collections::HashMap, mem::replace};
+use std::{collections::HashMap, ptr::null_mut};
 
-use crate::{Entity, EvalOp, Expr, Loader, Mem, Stmt};
+use crate::{Entity, EvalOp, Instr, InstrId, Loader, Mem};
 
-pub struct Context<'a, T, Expr> {
+pub struct Context<'a, T, Op> {
     op_context: &'a mut T,
-    loader: &'a Loader<Expr>,
+    loader: &'a Loader<Op>,
     mem: &'a mut Mem,
     frames: Vec<ContextFrame>,
     //
 }
 
 struct ContextFrame {
-    scopes: Vec<HashMap<String, *mut Entity>>,
-    control: FrameControl,
+    slots: HashMap<InstrId, *mut Entity>,
+    blocks_id: usize,
+    instr_id: InstrId,
 }
 
-#[derive(PartialEq, Eq)]
-enum FrameControl {
-    Run,
-    Break,
-    Continue,
-    Return(*mut Entity),
-}
-
-impl<'a, O, T> Context<'a, T, Expr<O>>
+impl<'a, O, T> Context<'a, T, O>
 where
     O: std::fmt::Debug,
     T: EvalOp<O>,
 {
-    pub fn new(mem: &'a mut Mem, loader: &'a Loader<Expr<O>>, op_context: &'a mut T) -> Self {
+    pub fn new(mem: &'a mut Mem, loader: &'a Loader<O>, op_context: &'a mut T) -> Self {
         Self {
             mem,
             loader,
@@ -37,12 +30,16 @@ where
         }
     }
 
-    pub fn eval_call(&mut self, name: &str, args: &[*mut Entity]) -> *mut Entity {
+    pub fn eval_call(&mut self, name: &str, args: &[InstrId]) {
+        let args = args
+            .iter()
+            .map(|arg| self.frames.last().unwrap().slots[arg])
+            .collect::<Vec<_>>();
         let arg_types = args
             .iter()
             .map(|&arg| unsafe { &*arg }.core.ty())
             .collect::<Vec<_>>();
-        let (names, expr) = self.loader.dispatch(name, &arg_types).unwrap_or_else(|| {
+        let blocks_id = self.loader.dispatch(name, &arg_types).unwrap_or_else(|| {
             panic!(
                 "no dispatch for {name}({:?})",
                 arg_types
@@ -51,120 +48,62 @@ where
                     .collect::<Vec<_>>()
             )
         });
-        let scope = names
+        let slots = args
             .iter()
-            .zip(args)
-            .map(|(name, entity)| (name.clone(), *entity))
+            .enumerate()
+            .map(|(i, &arg)| ((0, i), arg))
             .collect();
         self.frames.push(ContextFrame {
-            scopes: vec![scope],
-            control: FrameControl::Run,
+            slots,
+            blocks_id,
+            instr_id: (1, 0),
         });
-        let entity = self.eval_expr(expr);
-        if let FrameControl::Return(entity) = self.frames.pop().unwrap().control {
-            entity
+    }
+
+    fn eval_op(&mut self, op: &O, args: &[InstrId]) {
+        let args = args
+            .iter()
+            .map(|arg| self.frames.last().unwrap().slots[arg])
+            .collect::<Vec<_>>();
+        let entity = unsafe { self.op_context.eval(op, &args, self.mem, self.loader) };
+        let frame = self.frames.last_mut().unwrap();
+        assert_ne!(entity, null_mut());
+        frame.slots.insert(frame.instr_id, entity);
+        frame.instr_id.1 += 1;
+    }
+
+    fn eval_return(&mut self, instr: InstrId) {
+        let entity = self.frames.last().unwrap().slots[&instr];
+        self.frames.pop();
+        if let Some(frame) = self.frames.last_mut() {
+            frame.slots.insert(frame.instr_id, entity);
+            frame.instr_id.1 += 1;
+        }
+    }
+
+    fn eval_branch(&mut self, instr: InstrId, then_block: usize, else_block: usize) {
+        let frame = self.frames.last_mut().unwrap();
+        if then_block == else_block || unsafe { self.op_context.is_truthy(frame.slots[&instr]) } {
+            frame.instr_id = (then_block, 0);
         } else {
-            entity
+            frame.instr_id = (else_block, 0);
         }
     }
 
-    fn eval_expr(&mut self, expr: &Expr<O>) -> *mut Entity {
-        match expr {
-            Expr::Name(name) => {
-                for scope in self.frames.last_mut().unwrap().scopes.iter().rev() {
-                    if let Some(&slot) = scope.get(name) {
-                        return slot;
-                    }
-                }
-                panic!("name not found: {name}");
-            }
-            Expr::Scope(scope) => {
-                for stmt in scope {
-                    if self.frames.last().unwrap().control != FrameControl::Run {
-                        break;
-                    }
-                    self.eval_stmt(stmt);
-                }
-                self.op_context.alloc_nil(self.mem)
-            }
-            Expr::Op(op, args) => {
-                let args = args
-                    .iter()
-                    .map(|arg| self.eval_expr(arg))
-                    .collect::<Vec<_>>();
-                unsafe { self.op_context.eval(op, &args, self.mem, self.loader) }
-            }
-            Expr::Call(name, args) => {
-                let args = args
-                    .iter()
-                    .map(|arg| self.eval_expr(arg))
-                    .collect::<Vec<_>>();
-                self.eval_call(name, &args)
+    pub fn eval_instr(&mut self) -> bool {
+        let (blocks_id, instr_id) = {
+            let frame = self.frames.last().unwrap();
+            (frame.blocks_id, frame.instr_id)
+        };
+        let instr = self.loader.fetch(blocks_id, instr_id);
+        match instr {
+            Instr::Op(op, args) => self.eval_op(op, args),
+            Instr::Call(name, args) => self.eval_call(name, args),
+            &Instr::Return(instr) => self.eval_return(instr),
+            &Instr::Branch(instr, then_block, else_block) => {
+                self.eval_branch(instr, then_block, else_block)
             }
         }
-    }
-
-    fn eval_stmt(&mut self, stmt: &Stmt<O>) {
-        match stmt {
-            Stmt::Expr(expr) => {
-                self.eval_expr(expr);
-            }
-            Stmt::AllocName(name) => {
-                let nil = self.op_context.alloc_nil(self.mem);
-                self.frames
-                    .last_mut()
-                    .unwrap()
-                    .scopes
-                    .last_mut()
-                    .unwrap()
-                    .insert(name.clone(), nil);
-            }
-            Stmt::Mutate(name, expr) => {
-                let entity = self.eval_expr(expr);
-                let mut mutated = false;
-                for scope in self.frames.last_mut().unwrap().scopes.iter_mut().rev() {
-                    if let Some(slot) = scope.get_mut(name) {
-                        *slot = entity;
-                        mutated = true;
-                        break;
-                    }
-                }
-                assert!(mutated);
-            }
-            Stmt::IfElse(expr, then_expr, else_expr) => {
-                let entity = self.eval_expr(expr);
-                if unsafe { self.op_context.is_truthy(entity) } {
-                    self.eval_expr(then_expr);
-                } else {
-                    self.eval_expr(else_expr);
-                }
-            }
-            Stmt::While(expr, then_expr) => {
-                while {
-                    let entity = self.eval_expr(expr);
-                    unsafe { self.op_context.is_truthy(entity) }
-                } {
-                    self.eval_expr(then_expr);
-                    match replace(
-                        &mut self.frames.last_mut().unwrap().control,
-                        FrameControl::Run,
-                    ) {
-                        FrameControl::Run => {}
-                        FrameControl::Break => break,
-                        FrameControl::Continue => continue,
-                        control @ FrameControl::Return(..) => {
-                            self.frames.last_mut().unwrap().control = control;
-                            return;
-                        }
-                    }
-                }
-            }
-            Stmt::Break => self.frames.last_mut().unwrap().control = FrameControl::Break,
-            Stmt::Continue => self.frames.last_mut().unwrap().control = FrameControl::Continue,
-            Stmt::Return(expr) => {
-                let entity = self.eval_expr(expr);
-                self.frames.last_mut().unwrap().control = FrameControl::Return(entity);
-            }
-        }
+        !self.frames.is_empty()
     }
 }

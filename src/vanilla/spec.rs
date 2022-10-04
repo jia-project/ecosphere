@@ -1,4 +1,9 @@
-use crate::{Expr, FnDef, Loader, Stmt};
+use std::{
+    collections::HashMap,
+    mem::{replace, take},
+};
+
+use crate::{vanilla::op::Eval, FnDef, Instr, InstrBlocks, InstrId, Loader};
 
 use super::op::ExprOp;
 
@@ -13,15 +18,25 @@ pub enum Token<'a> {
 pub struct Context<'a> {
     input: &'a str,
     token: Option<Token<'a>>,
-    loader: &'a mut Loader<Expr<ExprOp>>,
+    loader: &'a mut Loader<ExprOp>,
+    blocks: InstrBlocks<ExprOp>,
+    block_id: usize,
+    break_id: usize,
+    continue_id: usize,
+    scopes: Vec<HashMap<String, InstrId>>,
 }
 
 impl<'a> Context<'a> {
-    pub fn new(input: &'a str, loader: &'a mut Loader<Expr<ExprOp>>) -> Self {
+    pub fn new(input: &'a str, loader: &'a mut Loader<ExprOp>) -> Self {
         Self {
             input: input.trim_start(),
             token: None,
             loader,
+            blocks: Default::default(),
+            block_id: Default::default(),
+            break_id: Default::default(),
+            continue_id: Default::default(),
+            scopes: Vec::new(),
         }
     }
 
@@ -32,7 +47,7 @@ impl<'a> Context<'a> {
         let specials = [
             "fn", "if", "then", "else", "while", "break", "continue", "return", "let", "mut",
             "struct", "enum", "end", "and", "or", "(", ")", ",", ";", "not", "+", "-", "*", "/",
-            "%", "==", "!=", "<", "=", "true", "false", "nil",
+            "%", "==", "!=", "<=", ">=", ">", "<", "=", "true", "false", "nil",
         ];
         for special in specials {
             if let Some(input) = self.input.strip_prefix(special) {
@@ -145,117 +160,210 @@ impl<'a> Context<'a> {
             }
         }
         self.shift();
-        let expr = self.parse_scope(false);
+
+        self.blocks = vec![vec![]];
+        // argument block: turn arguments into references
+        self.block_id = self.push_block();
+        let mut scope = HashMap::new();
+        for (i, name) in param_names.iter().enumerate() {
+            scope.insert(name.clone(), self.ref_new((0, i)));
+        }
+        let block = self.push_block();
+        self.push_instr(Instr::goto(block));
+
+        self.block_id = block;
+        self.parse_scope(scope, false);
+        take(&mut self.block_id);
+        assert_eq!((self.break_id, self.continue_id), Default::default());
+        assert!(self.scopes.is_empty());
         self.loader.register_fn(FnDef {
             name: String::from(name),
             param_types,
             untyped_len,
             param_names,
-            expr,
+            blocks: take(&mut self.blocks),
         });
     }
 
-    fn parse_scope(&mut self, is_then: bool) -> Expr<ExprOp> {
-        let mut scope = Vec::new();
+    fn parse_scope(&mut self, names: HashMap<String, InstrId>, expect_else: bool) {
+        self.scopes.push(names);
         while !(self.token() == &Token::Special("end")
-            || is_then && self.token() == &Token::Special("else"))
+            || expect_else && self.token() == &Token::Special("else"))
         {
-            scope.push(self.parse_stmt());
+            self.parse_stmt();
+            while self.token() == &Token::Special(";") {
+                self.shift();
+            }
         }
         if self.token() != &Token::Special("else") {
             self.shift();
         }
-        Expr::Scope(scope)
+        self.scopes.pop();
     }
 
-    fn parse_stmt(&mut self) -> Stmt<ExprOp> {
+    fn push_instr(&mut self, instr: Instr<ExprOp>) -> InstrId {
+        assert_ne!(self.block_id, Default::default());
+        let id = (self.block_id, self.blocks[self.block_id].len());
+        self.blocks[self.block_id].push(instr);
+        id
+    }
+
+    fn push_block(&mut self) -> usize {
+        let id = self.blocks.len();
+        self.blocks.push(Vec::new());
+        id
+    }
+
+    fn parse_stmt(&mut self) {
         match self.token() {
-            Token::Special("return") => {
-                self.shift();
-                let stmt = Stmt::Return(self.parse_expr());
-                assert_eq!(self.shift(), Token::Special(";"));
-                stmt
-            }
+            Token::Special("if") => self.parse_if(),
+            Token::Special("let") => self.parse_let(),
+            Token::Special("mut") => self.parse_mut(),
+            Token::Special("while") => self.parse_while(),
             Token::Special("break") => {
                 self.shift();
-                assert_eq!(self.shift(), Token::Special(";"));
-                Stmt::Break
+                assert_ne!(self.break_id, Default::default());
+                self.push_instr(Instr::goto(self.break_id));
             }
             Token::Special("continue") => {
                 self.shift();
-                assert_eq!(self.shift(), Token::Special(";"));
-                Stmt::Continue
+                assert_ne!(self.continue_id, Default::default());
+                self.push_instr(Instr::goto(self.continue_id));
             }
-            Token::Special("while") => self.parse_while(),
-            Token::Special("if") => self.parse_if(),
-            Token::Special("let") => {
+            Token::Special("return") => {
                 self.shift();
-                let name = if let Token::Name(name) = self.shift() {
-                    name
-                } else {
-                    panic!()
-                };
-                assert_eq!(self.shift(), Token::Special(";"));
-                Stmt::AllocName(String::from(name))
-            }
-            Token::Special("mut") => {
-                self.shift();
-                let name = if let Token::Name(name) = self.shift() {
-                    name
-                } else {
-                    panic!()
-                };
-                assert_eq!(self.shift(), Token::Special("="));
-                let expr = self.parse_expr();
-                assert_eq!(self.shift(), Token::Special(";"));
-                Stmt::Mutate(String::from(name), expr)
+                let expr_instr = self.parse_expr();
+                self.push_instr(Instr::Return(expr_instr));
             }
             _ => {
-                let stmt = Stmt::Expr(self.parse_expr());
-                assert_eq!(self.shift(), Token::Special(";"));
-                stmt
+                self.parse_expr();
             }
         }
     }
 
-    fn parse_if(&mut self) -> Stmt<ExprOp> {
-        assert_eq!(self.shift(), Token::Special("if"));
-        let expr = self.parse_expr();
+    fn parse_while(&mut self) {
+        assert_eq!(self.shift(), Token::Special("while"));
+        let continue_block = self.push_block();
+        let then_block = self.push_block();
+        let break_block = self.push_block();
+        self.push_instr(Instr::goto(continue_block));
+
+        self.block_id = continue_block;
+        let expr_instr = self.parse_expr();
+        self.push_instr(Instr::Branch(expr_instr, then_block, break_block));
+
+        self.block_id = then_block;
         assert_eq!(self.shift(), Token::Special("then"));
-        let then_scope = self.parse_scope(true);
-        let mut else_scope = Expr::Scope(Vec::new());
+        let saved_break = replace(&mut self.break_id, break_block);
+        let saved_continue = replace(&mut self.continue_id, continue_block);
+        self.parse_scope(HashMap::new(), false);
+        self.push_instr(Instr::goto(self.continue_id));
+
+        self.block_id = break_block;
+        self.break_id = saved_break;
+        self.continue_id = saved_continue;
+    }
+
+    fn parse_if(&mut self) {
+        assert_eq!(self.shift(), Token::Special("if"));
+        let then_block = self.push_block();
+        let else_block = self.push_block();
+        let end_block = self.push_block();
+        let expr_instr = self.parse_expr();
+        self.push_instr(Instr::Branch(expr_instr, then_block, else_block));
+
+        self.block_id = then_block;
+        assert_eq!(self.shift(), Token::Special("then"));
+        self.parse_scope(HashMap::new(), true);
+        self.push_instr(Instr::goto(end_block));
+
+        self.block_id = else_block;
         if self.token() == &Token::Special("else") {
             self.shift();
-            else_scope = self.parse_scope(false);
+            self.parse_scope(HashMap::new(), false);
         }
-        Stmt::IfElse(expr, then_scope, else_scope)
+        self.push_instr(Instr::goto(end_block));
+
+        self.block_id = end_block;
     }
 
-    fn parse_while(&mut self) -> Stmt<ExprOp> {
-        assert_eq!(self.shift(), Token::Special("while"));
-        let expr = self.parse_expr();
-        assert_eq!(self.shift(), Token::Special("then"));
-        let scope = self.parse_scope(false);
-        Stmt::While(expr, scope)
+    fn ref_new(&mut self, expr: InstrId) -> InstrId {
+        self.push_instr(Instr::Op(ExprOp::ProductNew(Eval::TYPE_REF), vec![expr]))
     }
 
-    fn parse_expr(&mut self) -> Expr<ExprOp> {
+    fn ref_mut(&mut self, ref_instr: InstrId, expr: InstrId) -> InstrId {
+        self.push_instr(Instr::Op(ExprOp::ProductSet(0), vec![ref_instr, expr]))
+    }
+
+    fn ref_get(&mut self, ref_instr: InstrId) -> InstrId {
+        self.push_instr(Instr::Op(ExprOp::ProductGet(0), vec![ref_instr]))
+    }
+
+    fn parse_let(&mut self) {
+        assert_eq!(self.shift(), Token::Special("let"));
+        let name = if let Token::Name(name) = self.shift() {
+            name
+        } else {
+            panic!()
+        };
+        let expr_instr = if self.token() == &Token::Special("=") {
+            self.shift();
+            self.parse_expr()
+        } else {
+            self.push_instr(Instr::Op(ExprOp::NilNew, vec![]))
+        };
+        let ref_instr = self.ref_new(expr_instr);
+        self.scopes
+            .last_mut()
+            .unwrap()
+            .insert(String::from(name), ref_instr);
+    }
+
+    fn parse_mut(&mut self) {
+        assert_eq!(self.shift(), Token::Special("mut"));
+        let name = if let Token::Name(name) = self.shift() {
+            name
+        } else {
+            panic!()
+        };
+        let ref_instr = 'found: loop {
+            for scope in self.scopes.iter().rev() {
+                if let Some(&instr) = scope.get(name) {
+                    break 'found instr;
+                }
+            }
+            panic!("not found {name}");
+        };
+
+        assert_eq!(self.shift(), Token::Special("="));
+        let expr_instr = self.parse_expr();
+        self.ref_mut(ref_instr, expr_instr);
+    }
+
+    fn parse_expr(&mut self) -> InstrId {
         self.parse_infix0()
     }
 
-    fn parse_single_expr(&mut self) -> Expr<ExprOp> {
+    fn parse_single_expr(&mut self) -> InstrId {
         match self.shift() {
-            Token::LitInt(lit) => Expr::Op(ExprOp::IntNew(lit), vec![]),
-            Token::LitStr(lit) => Expr::Op(ExprOp::StrNew(lit), vec![]),
+            Token::LitInt(lit) => self.push_instr(Instr::Op(ExprOp::IntNew(lit), vec![])),
+            Token::LitStr(lit) => self.push_instr(Instr::Op(ExprOp::StrNew(lit), vec![])),
             Token::Special("(") => {
                 let expr = self.parse_expr();
                 assert_eq!(self.shift(), Token::Special(")"));
                 expr
             }
-            Token::Special("nil") => Expr::Op(ExprOp::NilNew, vec![]),
+            Token::Special("nil") => self.push_instr(Instr::Op(ExprOp::NilNew, vec![])),
+            Token::Special(lit @ ("true" | "false")) => {
+                let nil = self.push_instr(Instr::Op(ExprOp::NilNew, vec![]));
+                self.push_instr(Instr::Op(
+                    ExprOp::SumNew(Eval::TYPE_RESULT, (lit == "true") as _),
+                    vec![nil],
+                ))
+            }
             Token::Name(name) => {
                 if self.token() != &Token::Special("(") {
-                    return Expr::Name(String::from(name));
+                    return self.transpile_name(name);
                 }
                 self.shift();
                 let mut args = Vec::new();
@@ -266,83 +374,120 @@ impl<'a> Context<'a> {
                     }
                 }
                 self.shift();
-                Expr::Call(String::from(name), args)
+                self.push_instr(Instr::Call(String::from(name), args))
             }
-            token => todo!("{token:?}"),
+            token => panic!("{token:?} at: {}", &self.input[..32]),
         }
     }
 
-    fn parse_infix(
-        &mut self,
-        ops: &[(&str, &str)],
-        nested: impl Fn(&mut Self) -> Expr<ExprOp>,
-        compose: impl Fn(&str, Expr<ExprOp>, Expr<ExprOp>) -> Expr<ExprOp>,
-    ) -> Expr<ExprOp> {
+    fn transpile_name(&mut self, name: &str) -> InstrId {
+        let ref_instr = 'found: loop {
+            for scope in self.scopes.iter().rev() {
+                if let Some(&instr) = scope.get(name) {
+                    break 'found instr;
+                }
+            }
+            panic!("not found: {name} at {}", &self.input[..32]);
+        };
+        self.push_instr(Instr::Op(ExprOp::ProductGet(0), vec![ref_instr]))
+    }
+
+    fn parse_infix(&mut self, ops: &[&str], nested: impl Fn(&mut Self) -> InstrId) -> InstrId {
         let mut expr = nested(self);
-        while let Some(&(_, name)) = ops
-            .iter()
-            .find(|(op, _)| self.token() == &Token::Special(op))
-        {
+        while let Some(name) = ops.iter().find(|op| self.token() == &Token::Special(op)) {
             self.shift();
             let latter_expr = nested(self);
-            expr = compose(name, expr, latter_expr);
+            expr = self.transpile_infix(name, expr, latter_expr);
         }
         expr
     }
 
-    fn infix_call(name: &str, expr1: Expr<ExprOp>, expr2: Expr<ExprOp>) -> Expr<ExprOp> {
-        Expr::Call(String::from(name), vec![expr1, expr2])
-    }
-
-    fn parse_infix0(&mut self) -> Expr<ExprOp> {
-        self.parse_infix(
-            &[("==", "eq"), ("!=", "ne"), ("<", "lt")],
-            Self::parse_infix1,
-            |name, expr1, expr2| {
-                if name == "ne" {
-                    Expr::Call(
-                        String::from("not"),
-                        vec![Expr::Call(String::from("eq"), vec![expr1, expr2])],
-                    )
-                } else {
-                    Self::infix_call(name, expr1, expr2)
-                }
-            },
-        )
-    }
-
-    fn parse_infix1(&mut self) -> Expr<ExprOp> {
-        self.parse_infix(
-            &[("+", "add"), ("-", "sub")],
-            Self::parse_infix2,
-            |name, expr1, expr2| {
-                if name == "sub" {
-                    Expr::Call(
-                        String::from("add"),
-                        vec![expr1, Expr::Call(String::from("neg"), vec![expr2])],
-                    )
-                } else {
-                    Self::infix_call(name, expr1, expr2)
-                }
-            },
-        )
-    }
-
-    fn parse_infix2(&mut self) -> Expr<ExprOp> {
-        self.parse_infix(
-            &[("*", "mul"), ("/", "div"), ("%", "rem")],
-            Self::parse_prefix,
-            Self::infix_call,
-        )
-    }
-
-    fn parse_prefix(&mut self) -> Expr<ExprOp> {
-        match self.token() {
-            Token::Special("not") => {
+    fn parse_short_circut(&mut self, op: &str, nested: impl Fn(&mut Self) -> InstrId) -> InstrId {
+        let expr = nested(self);
+        if self.token() != &Token::Special(op) {
+            expr
+        } else {
+            let mut expr = expr;
+            let ref_instr = self.ref_new(expr);
+            let end_block = self.push_block();
+            while self.token() == &Token::Special(op) {
                 self.shift();
-                Expr::Call(String::from("not"), vec![self.parse_prefix()])
+                let alter_block = self.push_block();
+                self.push_instr(match op {
+                    "or" => Instr::Branch(expr, end_block, alter_block),
+                    "and" => Instr::Branch(expr, alter_block, end_block),
+                    _ => unreachable!(),
+                });
+
+                self.block_id = alter_block;
+                expr = nested(self);
+                self.ref_mut(ref_instr, expr);
             }
-            _ => self.parse_single_expr(),
+            self.push_instr(Instr::goto(end_block));
+
+            self.block_id = end_block;
+            self.ref_get(ref_instr)
         }
+    }
+
+    fn parse_infix0(&mut self) -> InstrId {
+        self.parse_short_circut("or", Self::parse_infix1)
+    }
+
+    fn parse_infix1(&mut self) -> InstrId {
+        self.parse_short_circut("and", Self::parse_infix2)
+    }
+
+    fn parse_infix2(&mut self) -> InstrId {
+        self.parse_infix(&["==", "!=", ">", "<", ">=", "<="], Self::parse_infix3)
+    }
+
+    fn parse_infix3(&mut self) -> InstrId {
+        self.parse_infix(&["+", "-"], Self::parse_infix4)
+    }
+
+    fn parse_infix4(&mut self) -> InstrId {
+        self.parse_infix(&["*", "/", "%"], Self::parse_prefix)
+    }
+
+    fn parse_prefix(&mut self) -> InstrId {
+        let ops = ["not", "-"];
+        if let Some(op) = ops.iter().find(|op| self.token() == &Token::Special(op)) {
+            self.shift();
+            let expr = self.parse_prefix();
+            self.transpile_prefix(op, expr)
+        } else {
+            self.parse_single_expr()
+        }
+    }
+
+    fn transpile_prefix(&mut self, op: &str, expr: InstrId) -> InstrId {
+        self.push_instr(Instr::Call(
+            String::from(match op {
+                "-" | "not" => "neg",
+                _ => unreachable!(),
+            }),
+            vec![expr],
+        ))
+    }
+
+    fn transpile_infix(&mut self, op: &str, expr1: InstrId, expr2: InstrId) -> InstrId {
+        self.push_instr(Instr::Call(
+            String::from(match op {
+                "+" => "add",
+                "-" => "sub",
+                "*" => "mul",
+                "/" => "div",
+                "%" => "rem",
+                "==" => "eq",
+                "!=" => "ne",
+                "<" => "lt",
+                ">" => "gt",
+                "<=" => "le",
+                ">=" => "ge",
+                _ => unreachable!(),
+            }),
+            vec![expr1, expr2],
+        ))
     }
 }
