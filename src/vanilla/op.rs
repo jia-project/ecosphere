@@ -99,6 +99,7 @@ impl Eval {
 
     pub fn install(loader: &mut Loader<ExprOp>) {
         loader.register_type(Self::TYPE_NIL, String::from("Nil"));
+        loader.register_type(Self::TYPE_REF, String::from("Ref"));
         loader.register_type(Self::TYPE_INT, String::from("Int"));
         loader.register_type(Self::TYPE_RESULT, String::from("Result"));
         loader.register_type(Self::TYPE_LIST, String::from("List"));
@@ -248,7 +249,7 @@ unsafe impl EvalOp<ExprOp> for Eval {
             ExprOp::Trace => {
                 let entity = &unsafe { &*args[0] }.core;
                 let mut log = format!(
-                    "[{:8?}] <{} entity at {:#x?}>",
+                    "[{:10?}] <{} entity at {:#x?}>",
                     Instant::now() - self.ref_instant,
                     loader.type_repr(entity.ty()),
                     args[0]

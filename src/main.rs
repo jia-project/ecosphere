@@ -81,17 +81,55 @@ fn swap(l, i, j)
     get_mut(l, j, tmp);
     return nil;
 end
- 
+
+struct HighScore
+    id
+    score
+end
+
+fn lt(a HighScore, b HighScore)
+    return score(a) > score(b);
+end
+
+fn eq(a HighScore, b HighScore)
+    return score(a) == score(b);
+end
+
+fn str(a HighScore)
+    return "Id " + id(a) + " Score " + str(score(a));
+end
+
 fn main()
-    let l = List();
-    push(l, 3);
-    push(l, 14);
-    push(l, 15);
-    push(l, 92);
-    push(l, 65);
-    trace(str(l));
-    sort(l)
-    trace(str(l));
+    let users = List();
+    push(users, "cowsay");
+    push(users, "catsay");
+    push(users, "dogsay");
+    push(users, "ducksay");
+    push(users, "pigsay");
+    push(users, "goatsay");
+    push(users, "mousesay");
+    push(users, "tigersay");
+    
+    let board = List();
+    let score = 1;
+    let i = 0;
+    let a = 884;
+    let m = 8191;
+    while i < 3000 then
+        mut score = score * a % m;
+        push(board, HighScore(get(users, i % 8), score));
+        mut i = i + 1;
+    end
+    
+    trace("start sorting");
+    sort(board)
+    trace("done");
+    
+    let i = 0;
+    while i < 10 then
+        trace(str(get(board, i)));
+        mut i = i + 1;
+    end
     return nil;
 end
 "#;

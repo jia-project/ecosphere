@@ -96,6 +96,7 @@ where
             (frame.blocks_id, frame.instr_id)
         };
         let instr = self.loader.fetch(blocks_id, instr_id);
+        // println!("{instr:?}");
         match instr {
             Instr::Op(op, args) => self.eval_op(op, args),
             Instr::Call(name, args) => self.eval_call(name, args),
