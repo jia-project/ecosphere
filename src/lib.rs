@@ -40,12 +40,47 @@ pub enum InstructionLiteral {
 
 pub type TypeIndex = u32;
 
-pub enum Object {
+#[derive(Default)]
+pub struct Object {
+    bits: std::sync::atomic::AtomicU8,
+    data: ObjectData,
+}
+
+#[derive(Default)]
+pub enum ObjectData {
+    #[default]
+    Vacant,
+
     Integer(i64),
     // float
     String(String),
+    // vector
     Product(TypeIndex, Box<[*mut Object]>),
     Sum(TypeIndex, u8, *mut Object),
+    Any(Box<dyn ObjectAny>),
+}
+
+pub trait ObjectAny: std::any::Any {
+    fn iterate_pointer(&self, on_pointer: ());
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+}
+
+pub trait CastData: Sized + 'static {
+    fn cast_ref(data: &ObjectData) -> Option<&Self> {
+        let ObjectData::Any(data) = data else {
+            return None;
+        };
+        (data as &dyn std::any::Any).downcast_ref()
+    }
+
+    fn cast_mut(data: &mut ObjectData) -> Option<&mut Self> {
+        let ObjectData::Any(data) = data else {
+            return None;
+        };
+        (data as &mut dyn std::any::Any).downcast_mut()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

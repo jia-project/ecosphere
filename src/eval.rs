@@ -5,10 +5,12 @@ use std::{
     sync::Arc,
 };
 
-use crate::{arena::Arena, Instruction, InstructionLiteral, Object, RegisterIndex, TypeIndex};
+use crate::{
+    arena::Arena, Instruction, InstructionLiteral, Object, ObjectData, RegisterIndex, TypeIndex,
+};
 
 #[derive(Clone, Default)]
-pub struct Symbol {
+struct Symbol {
     product_type_names: HashMap<String, usize>,
     product_types: Vec<ProductType>,
     sum_type_names: HashMap<String, usize>,
@@ -143,10 +145,10 @@ impl Machine {
         use Instruction::*;
         match instruction {
             MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
-                r[i] = self.arena.allocate(Object::Integer(*value))
+                r[i] = self.arena.allocate(ObjectData::Integer(*value))
             }
             MakeLiteralObject(i, InstructionLiteral::String(value)) => {
-                r[i] = self.arena.allocate(Object::String(value.clone()))
+                r[i] = self.arena.allocate(ObjectData::String(value.clone()))
             }
             MakeProductTypeObject(i, type_name, fields) => {
                 let type_index = self.symbol.product_type_names[type_name];
@@ -156,14 +158,16 @@ impl Machine {
                     data[layout[name]] = r[i];
                 }
                 assert!(data.iter().all(|p| !p.is_null()));
-                r[i] = self.arena.allocate(Object::Product(type_index as _, data))
+                r[i] = self
+                    .arena
+                    .allocate(ObjectData::Product(type_index as _, data))
             }
             MakeSumTypeObject(i, type_name, variant_name, x) => {
                 let type_index = self.symbol.sum_type_names[type_name];
                 let variant = self.symbol.sum_types[type_index].variants[variant_name];
                 r[i] = self
                     .arena
-                    .allocate(Object::Sum(type_index as _, variant, r[x]))
+                    .allocate(ObjectData::Sum(type_index as _, variant, r[x]))
             }
 
             JumpIf(x, offset) => {
@@ -173,8 +177,8 @@ impl Machine {
                     let condition = r[x];
                     assert!(!condition.is_null());
                     let _r = self.arena.read(condition);
-                    let condition = unsafe { &*condition };
-                    let Object::Sum(_, variant, _) = condition else {
+                    let condition = unsafe { &(*condition).data };
+                    let ObjectData::Sum(_, variant, _) = condition else {
                         panic!()
                     };
                     *variant != 0
@@ -202,8 +206,8 @@ impl Machine {
                     .map(|&x| {
                         assert!(!x.is_null());
                         let _r = self.arena.read(x);
-                        match unsafe { &*x } {
-                            Object::Product(type_index, _) => *type_index,
+                        match unsafe { &(*x).data } {
+                            ObjectData::Product(type_index, _) => *type_index,
                             _ => todo!(),
                         }
                     })
@@ -218,22 +222,25 @@ impl Machine {
                 let object = r[x];
                 assert!(!object.is_null());
                 let _r = self.arena.read(object);
-                let repr = match unsafe { &*object } {
-                    Object::Integer(value) => format!("Integer {value}"),
-                    Object::String(value) => format!("String {value}"),
-                    Object::Product(type_index, _) => {
+                let repr = match unsafe { &(*object).data } {
+                    ObjectData::Vacant => unreachable!(),
+
+                    ObjectData::Integer(value) => format!("Integer {value}"),
+                    ObjectData::String(value) => format!("String {value}"),
+                    ObjectData::Product(type_index, _) => {
                         format!(
                             "(product) {}",
                             self.symbol.product_types[*type_index as usize].name
                         )
                     }
-                    Object::Sum(type_index, variant, _) => {
+                    ObjectData::Sum(type_index, variant, _) => {
                         let meta = &self.symbol.sum_types[*type_index as usize];
                         format!(
                             "(sum) {}.{}",
                             meta.name, meta.variant_names[*variant as usize]
                         )
                     }
+                    ObjectData::Any(value) => format!("(any) {}", value.type_name()),
                 };
                 println!("{object:#x?} {repr}")
             }
@@ -241,8 +248,8 @@ impl Machine {
                 let object = r[x];
                 assert!(!object.is_null());
                 let _r = self.arena.read(object);
-                let object = unsafe { &*object };
-                let Object::Product(type_index, data) = object else {
+                let object = unsafe { &(*object).data };
+                let ObjectData::Product(type_index, data) = object else {
                     panic!()
                 };
                 let layout = &self.symbol.product_types[*type_index as usize].fields;
@@ -252,8 +259,8 @@ impl Machine {
                 let object = r[x];
                 assert!(!object.is_null());
                 let _w = self.arena.write(object);
-                let object = unsafe { &mut *object };
-                let Object::Product(type_index, data) = object else {
+                let object = unsafe { &mut (*object).data };
+                let ObjectData::Product(type_index, data) = object else {
                     panic!()
                 };
                 let layout = &self.symbol.product_types[*type_index as usize].fields;
@@ -261,15 +268,13 @@ impl Machine {
             }
             Operator1(..) => unreachable!(),
             Operator2(i, op, x, y) => {
-                use crate::Operator2::*;
+                use {crate::Operator2::*, ObjectData::*};
                 let (x, y) = (r[x], r[y]);
                 let object = {
                     let (_rx, _ry) = (self.arena.read(x), self.arena.read(y));
-                    match unsafe { (op, &*x, &*y) } {
-                        (Add, Object::Integer(x), Object::Integer(y)) => Object::Integer(*x + *y),
-                        (Add, Object::String(x), Object::String(y)) => {
-                            Object::String(x.clone() + y)
-                        }
+                    match unsafe { (op, &(*x).data, &(*y).data) } {
+                        (Add, Integer(x), Integer(y)) => Integer(*x + *y),
+                        (Add, String(x), String(y)) => String(x.clone() + y),
                         _ => panic!(),
                     }
                 };
