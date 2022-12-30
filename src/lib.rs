@@ -17,6 +17,8 @@ pub enum Instruction {
         String,               // name
         Box<[RegisterIndex]>, // argument object(s)
     ),
+
+    Inspect(RegisterIndex),
     ProductObjectGet(RegisterIndex, RegisterIndex, String),
     ProductObjectSet(RegisterIndex, String, RegisterIndex),
     // sum type intrinsic

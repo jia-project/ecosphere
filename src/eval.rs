@@ -10,10 +10,23 @@ use crate::{arena::Arena, Instruction, InstructionLiteral, Object, RegisterIndex
 #[derive(Clone, Default)]
 pub struct Symbol {
     product_type_names: HashMap<String, usize>,
-    product_types: Vec<HashMap<String, usize>>,
+    product_types: Vec<ProductType>,
     sum_type_names: HashMap<String, usize>,
-    sum_types: Vec<HashMap<String, u8>>,
+    sum_types: Vec<SumType>,
     function_dispatches: HashMap<(Box<[TypeIndex]>, usize), HashMap<String, usize>>,
+}
+
+#[derive(Clone, Default)]
+struct ProductType {
+    name: String,
+    fields: HashMap<String, usize>,
+}
+
+#[derive(Clone, Default)]
+struct SumType {
+    name: String,
+    variants: HashMap<String, u8>,
+    variant_names: Box<[String]>,
 }
 
 #[derive(Default)]
@@ -137,7 +150,7 @@ impl Machine {
             }
             MakeProductTypeObject(i, type_name, fields) => {
                 let type_index = self.symbol.product_type_names[type_name];
-                let layout = &self.symbol.product_types[type_index];
+                let layout = &self.symbol.product_types[type_index].fields;
                 let mut data = vec![null_mut(); layout.len()].into_boxed_slice();
                 for (name, i) in fields.iter() {
                     data[layout[name]] = r[i];
@@ -147,7 +160,7 @@ impl Machine {
             }
             MakeSumTypeObject(i, type_name, variant_name, x) => {
                 let type_index = self.symbol.sum_type_names[type_name];
-                let variant = self.symbol.sum_types[type_index][variant_name];
+                let variant = self.symbol.sum_types[type_index].variants[variant_name];
                 r[i] = self
                     .arena
                     .allocate(Object::Sum(type_index as _, variant, r[x]))
@@ -200,6 +213,30 @@ impl Machine {
                 self.push_frame(index, &xs, *i);
                 return true;
             }
+
+            Inspect(x) => {
+                let object = r[x];
+                assert!(!object.is_null());
+                let _r = self.arena.read(object);
+                let repr = match unsafe { &*object } {
+                    Object::Integer(value) => format!("Integer {value}"),
+                    Object::String(value) => format!("String {value}"),
+                    Object::Product(type_index, _) => {
+                        format!(
+                            "(product) {}",
+                            self.symbol.product_types[*type_index as usize].name
+                        )
+                    }
+                    Object::Sum(type_index, variant, _) => {
+                        let meta = &self.symbol.sum_types[*type_index as usize];
+                        format!(
+                            "(sum) {}.{}",
+                            meta.name, meta.variant_names[*variant as usize]
+                        )
+                    }
+                };
+                println!("{object:#x?} {repr}")
+            }
             ProductObjectGet(i, x, name) => {
                 let object = r[x];
                 assert!(!object.is_null());
@@ -208,7 +245,7 @@ impl Machine {
                 let Object::Product(type_index, data) = object else {
                     panic!()
                 };
-                let layout = &self.symbol.product_types[*type_index as usize];
+                let layout = &self.symbol.product_types[*type_index as usize].fields;
                 r[i] = data[layout[name]]
             }
             ProductObjectSet(x, name, y) => {
@@ -219,7 +256,7 @@ impl Machine {
                 let Object::Product(type_index, data) = object else {
                     panic!()
                 };
-                let layout = &self.symbol.product_types[*type_index as usize];
+                let layout = &self.symbol.product_types[*type_index as usize].fields;
                 data[layout[name]] = r[y]
             }
             Operator1(..) => unreachable!(),
@@ -244,24 +281,27 @@ impl Machine {
                 self.symbol
                     .product_type_names
                     .insert(name.clone(), type_index);
-                self.symbol.product_types.push(
-                    fields
+                self.symbol.product_types.push(ProductType {
+                    name: name.clone(),
+                    fields: fields
                         .iter()
                         .enumerate()
                         .map(|(i, name)| (name.clone(), i))
                         .collect(),
-                );
+                });
             }
             MakeSumType(name, variants) => {
                 let type_index = self.symbol.sum_types.len();
                 self.symbol.sum_type_names.insert(name.clone(), type_index);
-                self.symbol.sum_types.push(
-                    variants
+                self.symbol.sum_types.push(SumType {
+                    name: name.clone(),
+                    variants: variants
                         .iter()
                         .enumerate()
                         .map(|(i, name)| (name.clone(), i as _))
                         .collect(),
-                )
+                    variant_names: variants.clone(),
+                })
             }
             MakeFunction(..) => unreachable!(),
         }
