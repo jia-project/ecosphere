@@ -3,6 +3,7 @@ use std::{
     ops::{Index, IndexMut},
     ptr::null_mut,
     sync::Arc,
+    time::Instant,
 };
 
 use crate::{
@@ -31,11 +32,11 @@ struct SumType {
     variant_names: Box<[String]>,
 }
 
-#[derive(Default)]
 pub struct Machine {
     symbol: Symbol,
     frames: Vec<Frame>,
     arena: Arc<Arena>,
+    instant_zero: Instant,
 }
 
 struct Frame {
@@ -47,7 +48,12 @@ struct Frame {
 
 impl Machine {
     pub fn run_initial(instructions: Box<[Instruction]>) {
-        let mut machine = Machine::default();
+        let mut machine = Machine {
+            symbol: Default::default(),
+            frames: Default::default(),
+            arena: Default::default(),
+            instant_zero: Instant::now(),
+        };
         machine.push_frame(0, &[], RegisterIndex::MAX);
         machine.run(vec![instructions]);
     }
@@ -242,7 +248,10 @@ impl Machine {
                     }
                     ObjectData::Any(value) => format!("(any) {}", value.type_name()),
                 };
-                println!("{object:#x?} {repr}")
+                println!(
+                    "[{:>9.3?}] {object:#x?} {repr}",
+                    Instant::now() - self.instant_zero
+                );
             }
             ProductObjectGet(i, x, name) => {
                 let object = r[x];

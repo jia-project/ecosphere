@@ -1,0 +1,48 @@
+WHITESPACE = _{ " " | "\n" }
+COMMENT = _{ ";" ~ (!"\n" ~ ANY) }
+
+Program = { SOI ~ (Stmt ~ ";"?)* ~ EOI }
+
+Expr = _{ Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
+
+PrimaryExpr = _{
+    BlockExpr
+    | CallExpr
+    | "(" ~ Expr ~ ")"
+    | Ident
+    | Integer
+    | Float
+    | String
+}
+
+BlockExpr = { "{" ~ (Stmt ~ ";"?)* ~ Expr? ~ "}" }
+
+CallExpr = { Ident ~ "(" ~ CallArgs ~ ")" }
+CallArgs = { (Expr ~ ",")* ~ Expr? }
+
+Stmt = _{
+    MakeFunctionStmt
+    | InspectStmt
+    | Expr
+}
+
+MakeFunctionStmt = { "make" ~ Ident ~ "(" ~ MakeFunctionParams ~ ")" ~ BlockExpr }
+MakeFunctionParams = { (Ident ~ ",")* ~ Ident? }
+
+InspectStmt = { "inspect" ~ Expr }
+
+Prefix = { "-" | "not" }
+
+Postfix = { "." ~ Ident }
+
+Infix = { "+" }
+
+Ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+
+Operator2 = @{ "+" }
+
+Integer = @{ ASCII_DIGIT+ }
+
+Float = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* }
+
+String = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }

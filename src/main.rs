@@ -1,11 +1,14 @@
-use shattuck::{eval::Machine, Instruction, InstructionLiteral, Operator2, RegisterIndex};
+use pest::Parser as _;
+use shattuck::{
+    eval::Machine, parse::Rule, Instruction, InstructionLiteral, Operator2, Parser, RegisterIndex,
+};
 
 const PROG: &str = r#"
 make greetings_line(name) {
     "Hello, " + name + "!"
 }
 
-inspect greetings_line("cowsay")
+inspect greetings_line("cowsay");
 "#;
 
 fn main() {
@@ -26,6 +29,7 @@ fn main() {
     ]);
 
     println!("{PROG}");
+    dbg!(Parser::parse(Rule::Program, PROG).unwrap());
 
     Machine::run_initial(instructions);
 }
