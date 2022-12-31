@@ -1,5 +1,6 @@
 use std::{
     iter::repeat_with,
+    ops::Deref,
     slice,
     sync::atomic::{AtomicI8, AtomicUsize, Ordering},
 };
@@ -16,7 +17,7 @@ pub struct Arena {
 
 impl Default for Arena {
     fn default() -> Self {
-        let objects = repeat_with(|| Default::default())
+        let objects = repeat_with(Default::default)
             // initially allocate 32K * 32B = 1MB space for objects
             .take(32 << 10)
             .collect::<Box<[Object]>>();
@@ -83,22 +84,16 @@ impl Arena {
         assert!(status > 0);
     }
 
-    pub fn read(&self, _: *mut Object) -> ArenaRead<'_> {
+    pub fn view(&self, object: *mut Object) -> ArenaObject<'_> {
+        assert!(!object.is_null());
         self.mutate_enter();
-        ArenaRead(self)
+        ArenaObject(self, object)
     }
 
-    pub fn write(&self, _: *mut Object) -> ArenaWrite<'_> {
+    pub fn view_mut(&self, object: *mut Object) -> ArenaObject<'_> {
+        assert!(!object.is_null());
         self.mutate_enter();
-        ArenaWrite(self)
-    }
-
-    fn drop_read(&self) {
-        self.mutate_exit()
-    }
-
-    fn drop_write(&self) {
-        self.mutate_exit()
+        ArenaObject(self, object)
     }
 }
 
@@ -121,16 +116,18 @@ impl ObjectScanner<'_> {
     }
 }
 
-pub struct ArenaRead<'a>(&'a Arena);
-impl Drop for ArenaRead<'_> {
-    fn drop(&mut self) {
-        self.0.drop_read()
+pub struct ArenaObject<'a>(&'a Arena, *mut Object);
+
+impl Deref for ArenaObject<'_> {
+    type Target = *mut Object;
+
+    fn deref(&self) -> &Self::Target {
+        &self.1
     }
 }
 
-pub struct ArenaWrite<'a>(&'a Arena);
-impl Drop for ArenaWrite<'_> {
+impl Drop for ArenaObject<'_> {
     fn drop(&mut self) {
-        self.0.drop_write()
+        self.0.mutate_exit()
     }
 }

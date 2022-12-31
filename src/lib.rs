@@ -87,6 +87,16 @@ pub trait CastData: Sized + 'static {
     }
 }
 
+impl Object {
+    pub fn cast_ref<T: CastData>(&self) -> Option<&T> {
+        T::cast_ref(&self.data)
+    }
+
+    pub fn cast_mut<T: CastData>(&mut self) -> Option<&mut T> {
+        T::cast_mut(&mut self.data)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator1 {
     //

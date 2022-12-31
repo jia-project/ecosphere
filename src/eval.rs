@@ -180,10 +180,8 @@ impl Machine {
                 let jumping = if *x == RegisterIndex::MAX {
                     true
                 } else {
-                    let condition = r[x];
-                    assert!(!condition.is_null());
-                    let _r = self.arena.read(condition);
-                    let condition = unsafe { &(*condition).data };
+                    let condition = self.arena.view(r[x]);
+                    let condition = unsafe { &(**condition).data };
                     let ObjectData::Sum(_, variant, _) = condition else {
                         panic!()
                     };
@@ -209,13 +207,9 @@ impl Machine {
                 let mut xs = context_xs.iter().map(|x| r[x]).collect::<Vec<_>>();
                 let context = xs
                     .iter()
-                    .map(|&x| {
-                        assert!(!x.is_null());
-                        let _r = self.arena.read(x);
-                        match unsafe { &(*x).data } {
-                            ObjectData::Product(type_index, _) => *type_index,
-                            _ => todo!(),
-                        }
+                    .map(|&x| match unsafe { &(**self.arena.view(x)).data } {
+                        ObjectData::Product(type_index, _) => *type_index,
+                        _ => todo!(),
                     })
                     .collect::<Box<_>>();
                 xs.extend(argument_xs.iter().map(|x| r[x]));
@@ -225,10 +219,8 @@ impl Machine {
             }
 
             Inspect(x) => {
-                let object = r[x];
-                assert!(!object.is_null());
-                let _r = self.arena.read(object);
-                let repr = match unsafe { &(*object).data } {
+                // is that `view` guard dropped too early?
+                let repr = match unsafe { &(**self.arena.view(r[x])).data } {
                     ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
@@ -249,15 +241,14 @@ impl Machine {
                     ObjectData::Any(value) => format!("(any) {}", value.type_name()),
                 };
                 println!(
-                    "[{:>9.3?}] {object:#x?} {repr}",
-                    Instant::now() - self.instant_zero
+                    "[{:>9.3?}] {:#x?} {repr}",
+                    Instant::now() - self.instant_zero,
+                    r[x]
                 );
             }
             ProductObjectGet(i, x, name) => {
-                let object = r[x];
-                assert!(!object.is_null());
-                let _r = self.arena.read(object);
-                let object = unsafe { &(*object).data };
+                let object = self.arena.view(r[x]);
+                let object = unsafe { &(**object).data };
                 let ObjectData::Product(type_index, data) = object else {
                     panic!()
                 };
@@ -265,10 +256,8 @@ impl Machine {
                 r[i] = data[layout[name]]
             }
             ProductObjectSet(x, name, y) => {
-                let object = r[x];
-                assert!(!object.is_null());
-                let _w = self.arena.write(object);
-                let object = unsafe { &mut (*object).data };
+                let object = self.arena.view_mut(r[x]);
+                let object = unsafe { &mut (**object).data };
                 let ObjectData::Product(type_index, data) = object else {
                     panic!()
                 };
@@ -278,10 +267,9 @@ impl Machine {
             Operator1(..) => unreachable!(),
             Operator2(i, op, x, y) => {
                 use {crate::Operator2::*, ObjectData::*};
-                let (x, y) = (r[x], r[y]);
                 let object = {
-                    let (_rx, _ry) = (self.arena.read(x), self.arena.read(y));
-                    match unsafe { (op, &(*x).data, &(*y).data) } {
+                    let (x, y) = (self.arena.view(r[x]), self.arena.view(r[y]));
+                    match unsafe { (op, &(**x).data, &(**y).data) } {
                         (Add, Integer(x), Integer(y)) => Integer(*x + *y),
                         (Add, String(x), String(y)) => String(x.clone() + y),
                         _ => panic!(),
