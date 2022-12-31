@@ -229,7 +229,7 @@ impl Machine {
                 assert!(!object.is_null());
                 let _r = self.arena.read(object);
                 let repr = match unsafe { &(*object).data } {
-                    ObjectData::Vacant => unreachable!(),
+                    ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
                     ObjectData::String(value) => format!("String {value}"),

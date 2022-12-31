@@ -1,82 +1,136 @@
 use std::{
     iter::repeat_with,
-    sync::atomic::{AtomicUsize, Ordering},
+    slice,
+    sync::atomic::{AtomicI8, AtomicUsize, Ordering},
 };
 
 use crate::{Object, ObjectData};
 
 pub struct Arena {
-    objects: Box<[Object]>,
+    objects_data: AtomicUsize, // Box<[Object]> as *mut _ as usize
+    objects_len: AtomicUsize,
     allocate_index: AtomicUsize,
+    // >= 0 means number of active mutator, -1 means no mutator and collecting
+    mutate_status: AtomicI8,
 }
 
 impl Default for Arena {
     fn default() -> Self {
+        let objects = repeat_with(|| Default::default())
+            // initially allocate 32K * 32B = 1MB space for objects
+            .take(32 << 10)
+            .collect::<Box<[Object]>>();
+        let objects = Box::leak(objects);
         Self {
-            objects: repeat_with(|| Default::default())
-                .take(4 << 20)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
+            objects_data: AtomicUsize::new(objects.as_mut_ptr() as _),
+            objects_len: AtomicUsize::new(objects.len()),
             allocate_index: AtomicUsize::new(0),
+            mutate_status: AtomicI8::new(0),
         }
-    }
-}
-
-impl Object {
-    fn is_occupied(&self) -> bool {
-        self.bits.load(Ordering::SeqCst) & 0x1 == 1
-    }
-
-    fn set_occupied(&self, value: bool) {
-        let bits = self.bits.load(Ordering::SeqCst);
-        if (bits & 0x1 == 1) == value {
-            return;
-        }
-        self.bits
-            .compare_exchange(bits, bits ^ 0x1, Ordering::SeqCst, Ordering::SeqCst)
-            .unwrap();
     }
 }
 
 impl Arena {
     pub fn allocate(&self, data: ObjectData) -> *mut Object {
-        let mut index;
-        while {
-            index = self.allocate_index.load(Ordering::SeqCst);
-            let previous_index = index;
-            while index < self.objects.len() && self.objects[index].is_occupied() {
-                index += 1;
+        assert!(!matches!(
+            data,
+            ObjectData::Vacant | ObjectData::Forwarded(_)
+        ));
+
+        self.mutate_enter();
+        let mut objects_data = self.objects_data.load(Ordering::SeqCst);
+        let mut objects_len = self.objects_len.load(Ordering::SeqCst);
+        let mut index = self.allocate_index.fetch_add(1, Ordering::SeqCst);
+        match index.cmp(&objects_len) {
+            std::cmp::Ordering::Equal => todo!(),
+            std::cmp::Ordering::Greater => {
+                let previous_data = objects_data;
+                while {
+                    objects_data = self.objects_data.load(Ordering::SeqCst);
+                    objects_data == previous_data
+                } {}
+                objects_len = self.objects_len.load(Ordering::SeqCst);
+                index = self.allocate_index.fetch_add(1, Ordering::SeqCst);
             }
-            if index == self.objects.len() {
-                false
-            } else {
-                self.allocate_index
-                    .compare_exchange_weak(
-                        previous_index,
-                        index + 1,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    )
-                    .is_err()
-            }
-        } {}
-        if index == self.objects.len() {
-            todo!()
+            std::cmp::Ordering::Less => {}
         }
-        self.objects[index].set_occupied(true);
-        let object = &self.objects[index] as *const _ as *mut Object;
+        assert!(index < objects_len);
+
+        let object = unsafe { (objects_data as *mut Object).add(index) };
+        assert!(matches!(unsafe { &(*object).data }, ObjectData::Vacant));
         unsafe { (*object).data = data }
+
+        self.mutate_exit();
         object
     }
 
-    pub fn read(&self, object: *mut Object) -> ArenaRead<'_> {
+    fn mutate_enter(&self) {
+        let mut status;
+        while {
+            status = self.mutate_status.load(Ordering::SeqCst);
+            if status < 0 {
+                true
+            } else {
+                self.mutate_status
+                    .compare_exchange_weak(status, status + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+            }
+        } {}
+    }
+
+    fn mutate_exit(&self) {
+        let status = self.mutate_status.fetch_sub(1, Ordering::SeqCst);
+        assert!(status > 0);
+    }
+
+    pub fn read(&self, _: *mut Object) -> ArenaRead<'_> {
+        self.mutate_enter();
         ArenaRead(self)
     }
 
-    pub fn write(&self, object: *mut Object) -> ArenaWrite<'_> {
+    pub fn write(&self, _: *mut Object) -> ArenaWrite<'_> {
+        self.mutate_enter();
         ArenaWrite(self)
+    }
+
+    fn drop_read(&self) {
+        self.mutate_exit()
+    }
+
+    fn drop_write(&self) {
+        self.mutate_exit()
+    }
+}
+
+impl Drop for Arena {
+    fn drop(&mut self) {
+        assert_eq!(self.mutate_status.load(Ordering::SeqCst), 0);
+        unsafe {
+            drop(Box::from_raw(slice::from_raw_parts_mut(
+                self.objects_data.load(Ordering::SeqCst) as *mut Object,
+                self.objects_len.load(Ordering::SeqCst),
+            )))
+        }
+    }
+}
+
+pub struct ObjectScanner<'a>(&'a Arena);
+impl ObjectScanner<'_> {
+    pub fn process(&mut self, pointer: &mut *mut Object) {
+        //
     }
 }
 
 pub struct ArenaRead<'a>(&'a Arena);
+impl Drop for ArenaRead<'_> {
+    fn drop(&mut self) {
+        self.0.drop_read()
+    }
+}
+
 pub struct ArenaWrite<'a>(&'a Arena);
+impl Drop for ArenaWrite<'_> {
+    fn drop(&mut self) {
+        self.0.drop_write()
+    }
+}

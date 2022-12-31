@@ -44,7 +44,7 @@ pub type TypeIndex = u32;
 
 #[derive(Default)]
 pub struct Object {
-    bits: std::sync::atomic::AtomicU8,
+    // bits: std::sync::atomic::AtomicU8,
     data: ObjectData,
 }
 
@@ -52,6 +52,7 @@ pub struct Object {
 pub enum ObjectData {
     #[default]
     Vacant,
+    Forwarded(*mut Object),
 
     Integer(i64),
     // float
@@ -63,7 +64,8 @@ pub enum ObjectData {
 }
 
 pub trait ObjectAny: std::any::Any {
-    fn iterate_pointer(&self, on_pointer: ());
+    fn on_scan(&self, scanner: arena::ObjectScanner<'_>);
+
     fn type_name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
