@@ -3,7 +3,15 @@ COMMENT = _{ ";" ~ (!"\n" ~ ANY) }
 
 Program = { SOI ~ (Stmt ~ ";"?)* ~ EOI }
 
-Expr = _{ Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
+Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
+    Infix = _{ Add | Sub }
+    Prefix = _ { Sub | Not }
+    Postfix = _ { Dot }
+
+    Add = { "+" }
+    Sub = { "-" }
+    Not = { "not" }
+    Dot = { "." ~ Ident }
 
 PrimaryExpr = _{
     BlockExpr
@@ -31,15 +39,7 @@ MakeFunctionParams = { (Ident ~ ",")* ~ Ident? }
 
 InspectStmt = { "inspect" ~ Expr }
 
-Prefix = { "-" | "not" }
-
-Postfix = { "." ~ Ident }
-
-Infix = { "+" }
-
 Ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
-
-Operator2 = @{ "+" }
 
 Integer = @{ ASCII_DIGIT+ }
 

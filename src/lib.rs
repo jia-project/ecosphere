@@ -1,7 +1,7 @@
 pub mod arena;
 pub mod eval;
 pub mod parse;
-pub use parse::Parser;
+pub use parse::parse;
 
 pub type RegisterIndex = u8;
 
