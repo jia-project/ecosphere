@@ -1,7 +1,6 @@
 pub mod arena;
 pub mod eval;
-pub mod parse;
-pub use parse::parse;
+pub mod grammar;
 
 pub type RegisterIndex = u8;
 
@@ -52,19 +51,19 @@ pub struct Object {
 pub enum ObjectData {
     #[default]
     Vacant,
-    Forwarded(*mut Object),
+    Forwarded(std::ptr::NonNull<Object>),
 
     Integer(i64),
     // float
     String(String),
     // vector
-    Product(TypeIndex, Box<[*mut Object]>),
-    Sum(TypeIndex, u8, *mut Object),
+    Product(TypeIndex, Box<[std::ptr::NonNull<Object>]>),
+    Sum(TypeIndex, u8, std::ptr::NonNull<Object>),
     Any(Box<dyn ObjectAny>),
 }
 
 pub trait ObjectAny: std::any::Any {
-    fn on_scan(&self, scanner: arena::ObjectScanner<'_>);
+    fn on_scan(&self, scanner: &mut arena::ObjectScanner<'_>);
 
     fn type_name(&self) -> &'static str {
         std::any::type_name::<Self>()

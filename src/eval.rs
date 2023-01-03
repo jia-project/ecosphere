@@ -1,13 +1,14 @@
 use std::{
     collections::HashMap,
+    iter::repeat_with,
     ops::{Index, IndexMut},
-    ptr::null_mut,
-    sync::Arc,
+    ptr::NonNull,
     time::Instant,
 };
 
 use crate::{
-    arena::Arena, Instruction, InstructionLiteral, Object, ObjectData, RegisterIndex, TypeIndex,
+    arena::{Arena, ArenaUser},
+    Instruction, InstructionLiteral, Object, ObjectData, RegisterIndex, TypeIndex,
 };
 
 #[derive(Clone, Default)]
@@ -35,23 +36,58 @@ struct SumType {
 pub struct Machine {
     symbol: Symbol,
     frames: Vec<Frame>,
-    arena: Arc<Arena>,
+    arena: ArenaUser,
     instant_zero: Instant,
 }
 
 struct Frame {
-    registers: [*mut Object; 1 << RegisterIndex::BITS],
+    registers: [FrameRegister; 1 << RegisterIndex::BITS],
     return_register: RegisterIndex,
     function_index: usize,
     program_counter: usize,
 }
 
+#[derive(Debug, Default, Clone)]
+enum FrameRegister {
+    #[default]
+    Vacant,
+    Address(NonNull<Object>),
+    // inline
+}
+
+impl FrameRegister {
+    fn view(&self) -> &ObjectData {
+        match self {
+            Self::Vacant => panic!(),
+            Self::Address(address) => unsafe { &address.as_ref().data },
+            //
+        }
+    }
+
+    fn view_mut(&mut self) -> &mut ObjectData {
+        match self {
+            Self::Vacant => panic!(),
+            Self::Address(address) => unsafe { &mut address.as_mut().data },
+            //
+        }
+    }
+
+    fn to_address(&mut self, arena: &mut ArenaUser) -> NonNull<Object> {
+        match self {
+            Self::Vacant => panic!(),
+            Self::Address(address) => *address,
+            //
+        }
+    }
+}
+
 impl Machine {
     pub fn run_initial(instructions: Box<[Instruction]>) {
+        let arena = Arena::default();
         let mut machine = Machine {
             symbol: Default::default(),
             frames: Default::default(),
-            arena: Default::default(),
+            arena: arena.add_user(),
             instant_zero: Instant::now(),
         };
         machine.push_frame(0, &[], RegisterIndex::MAX);
@@ -61,16 +97,22 @@ impl Machine {
     fn push_frame(
         &mut self,
         index: usize,
-        arguments: &[*mut Object],
+        arguments: &[NonNull<Object>],
         return_register: RegisterIndex,
     ) {
         let mut frame = Frame {
-            registers: [null_mut(); 1 << RegisterIndex::BITS],
+            registers: repeat_with(Default::default)
+                .take(1 << RegisterIndex::BITS)
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
             return_register,
             function_index: index,
             program_counter: 0,
         };
-        frame.registers[..arguments.len()].copy_from_slice(arguments);
+        for (r, argument) in frame.registers[..arguments.len()].iter_mut().zip(arguments) {
+            *r = FrameRegister::Address(*argument);
+        }
         self.frames.push(frame);
     }
 
@@ -90,7 +132,10 @@ impl Machine {
                     continue 'control;
                 }
 
-                if self.execute(instruction) {
+                self.arena.mutate_enter();
+                let control = self.execute(instruction);
+                self.arena.mutate_exit();
+                if control {
                     continue 'control;
                 }
             }
@@ -136,7 +181,7 @@ impl Machine {
     fn execute(&mut self, instruction: &Instruction) -> bool {
         struct R<'a>(&'a mut Vec<Frame>);
         impl Index<&u8> for R<'_> {
-            type Output = *mut Object;
+            type Output = FrameRegister;
             fn index(&self, index: &u8) -> &Self::Output {
                 &self.0.last().unwrap().registers[*index as usize]
             }
@@ -151,38 +196,40 @@ impl Machine {
         use Instruction::*;
         match instruction {
             MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
-                r[i] = self.arena.allocate(ObjectData::Integer(*value))
+                r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Integer(*value)))
             }
             MakeLiteralObject(i, InstructionLiteral::String(value)) => {
-                r[i] = self.arena.allocate(ObjectData::String(value.clone()))
+                r[i] =
+                    FrameRegister::Address(self.arena.allocate(ObjectData::String(value.clone())))
             }
             MakeProductTypeObject(i, type_name, fields) => {
                 let type_index = self.symbol.product_type_names[type_name];
                 let layout = &self.symbol.product_types[type_index].fields;
-                let mut data = vec![null_mut(); layout.len()].into_boxed_slice();
+                let mut data = vec![NonNull::dangling(); layout.len()].into_boxed_slice();
                 for (name, i) in fields.iter() {
-                    data[layout[name]] = r[i];
+                    data[layout[name]] = r[i].to_address(&mut self.arena);
                 }
-                assert!(data.iter().all(|p| !p.is_null()));
-                r[i] = self
-                    .arena
-                    .allocate(ObjectData::Product(type_index as _, data))
+                r[i] = FrameRegister::Address(
+                    self.arena
+                        .allocate(ObjectData::Product(type_index as _, data)),
+                )
             }
             MakeSumTypeObject(i, type_name, variant_name, x) => {
                 let type_index = self.symbol.sum_type_names[type_name];
                 let variant = self.symbol.sum_types[type_index].variants[variant_name];
-                r[i] = self
-                    .arena
-                    .allocate(ObjectData::Sum(type_index as _, variant, r[x]))
+                let x = r[x].to_address(&mut self.arena);
+                r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Sum(
+                    type_index as _,
+                    variant,
+                    x,
+                )))
             }
 
             JumpIf(x, offset) => {
                 let jumping = if *x == RegisterIndex::MAX {
                     true
                 } else {
-                    let condition = self.arena.view(r[x]);
-                    let condition = unsafe { &(**condition).data };
-                    let ObjectData::Sum(_, variant, _) = condition else {
+                    let ObjectData::Sum(_, variant, _) = r[x].view() else {
                         panic!()
                     };
                     *variant != 0
@@ -195,32 +242,34 @@ impl Machine {
                 }
             }
             Return(x) => {
-                let x = r[x];
+                let x = r[x].to_address(&mut self.arena);
                 let frame = self.frames.pop().unwrap();
                 if !self.is_finished() {
                     let mut r = R(&mut self.frames);
-                    r[&frame.return_register] = x;
-                }
+                    r[&frame.return_register] = FrameRegister::Address(x);
+                } //
                 return true;
             }
             Call(i, context_xs, name, argument_xs) => {
-                let mut xs = context_xs.iter().map(|x| r[x]).collect::<Vec<_>>();
-                let context = xs
-                    .iter()
-                    .map(|&x| match unsafe { &(**self.arena.view(x)).data } {
+                let mut xs = Vec::new();
+                let mut context = Vec::new();
+                for x in context_xs.iter() {
+                    let x = &mut r[x];
+                    context.push(match x.view() {
                         ObjectData::Product(type_index, _) => *type_index,
                         _ => todo!(),
-                    })
-                    .collect::<Box<_>>();
-                xs.extend(argument_xs.iter().map(|x| r[x]));
-                let index = self.symbol.function_dispatches[&(context, xs.len())][name];
+                    });
+                    xs.push(x.to_address(&mut self.arena));
+                }
+                xs.extend(argument_xs.iter().map(|x| r[x].to_address(&mut self.arena)));
+                let index =
+                    self.symbol.function_dispatches[&(context.into_boxed_slice(), xs.len())][name];
                 self.push_frame(index, &xs, *i);
                 return true;
             }
 
             Inspect(x) => {
-                // is that `view` guard dropped too early?
-                let repr = match unsafe { &(**self.arena.view(r[x])).data } {
+                let repr = match r[x].view() {
                     ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
@@ -241,41 +290,37 @@ impl Machine {
                     ObjectData::Any(value) => format!("(any) {}", value.type_name()),
                 };
                 println!(
-                    "[{:>9.3?}] {:#x?} {repr}",
+                    "[{:>9.3?}] {:x?} {repr}",
                     Instant::now() - self.instant_zero,
                     r[x]
                 );
             }
             ProductObjectGet(i, x, name) => {
-                let object = self.arena.view(r[x]);
-                let object = unsafe { &(**object).data };
-                let ObjectData::Product(type_index, data) = object else {
+                let ObjectData::Product(type_index, data) = r[x].view() else {
                     panic!()
                 };
                 let layout = &self.symbol.product_types[*type_index as usize].fields;
-                r[i] = data[layout[name]]
+                r[i] = FrameRegister::Address(data[layout[name]])
             }
             ProductObjectSet(x, name, y) => {
-                let object = self.arena.view_mut(r[x]);
-                let object = unsafe { &mut (**object).data };
-                let ObjectData::Product(type_index, data) = object else {
+                let y = r[y].to_address(&mut self.arena);
+                let ObjectData::Product(type_index, data) = r[x].view_mut() else {
                     panic!()
                 };
                 let layout = &self.symbol.product_types[*type_index as usize].fields;
-                data[layout[name]] = r[y]
+                data[layout[name]] = y
             }
             Operator1(..) => unreachable!(),
             Operator2(i, op, x, y) => {
                 use {crate::Operator2::*, ObjectData::*};
                 let object = {
-                    let (x, y) = (self.arena.view(r[x]), self.arena.view(r[y]));
-                    match unsafe { (op, &(**x).data, &(**y).data) } {
+                    match (op, r[x].view(), r[y].view()) {
                         (Add, Integer(x), Integer(y)) => Integer(*x + *y),
                         (Add, String(x), String(y)) => String(x.clone() + y),
                         _ => panic!(),
                     }
                 };
-                r[i] = self.arena.allocate(object)
+                r[i] = FrameRegister::Address(self.arena.allocate(object))
             }
 
             MakeProductType(name, fields) => {

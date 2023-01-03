@@ -1,4 +1,4 @@
-use shattuck::{eval::Machine, parse, Instruction, InstructionLiteral, Operator2, RegisterIndex};
+use shattuck::{eval::Machine, grammar::parse, Instruction, InstructionLiteral, Operator2};
 
 const PROG: &str = r#"
 make greetings_line(name) {
@@ -22,7 +22,7 @@ fn main() {
         Instruction::MakeLiteralObject(0, InstructionLiteral::String(String::from("cowsay"))),
         Instruction::Call(0, Box::new([]), func_name(), Box::new([0])),
         Instruction::Inspect(0),
-        Instruction::Return(RegisterIndex::MAX),
+        Instruction::Return(0),
     ]);
 
     println!("{PROG}");
