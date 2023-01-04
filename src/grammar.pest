@@ -1,7 +1,7 @@
 WHITESPACE = _{ " " | "\n" }
 COMMENT = _{ ";" ~ (!"\n" ~ ANY) }
 
-Program = { SOI ~ (Stmt ~ ";"?)* ~ EOI }
+Program = _{ SOI ~ (ProgramStmt ~ ";"?)* ~ EOI }
 
 Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
     Infix = _{ Add | Sub }
@@ -28,9 +28,17 @@ BlockExpr = { "{" ~ (Stmt ~ ";"?)* ~ Expr? ~ "}" }
 CallExpr = { Ident ~ "(" ~ CallArgs ~ ")" }
 CallArgs = { (Expr ~ ",")* ~ Expr? }
 
-Stmt = _{
+ProgramStmt = _{
     MakeFunctionStmt
-    | InspectStmt
+    | UniversalStmt
+}
+
+Stmt = _{
+    UniversalStmt
+}
+
+UniversalStmt = _{
+    InspectStmt
     | Expr
 }
 

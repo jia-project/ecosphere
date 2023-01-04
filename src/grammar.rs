@@ -10,9 +10,11 @@ use pest_derive::Parser;
 pub struct Parser;
 
 pub fn parse(input: &str) {
-    let program = Parser::parse(Rule::Program, input).unwrap().next().unwrap();
-    assert!(program.as_rule() == Rule::Program);
-    parse_rule(program)
+    let program = Parser::parse(Rule::Program, input).unwrap();
+    // dbg!(&program);
+    for rule in program {
+        parse_rule(rule)
+    }
 }
 
 fn parse_rule(pair: Pair<Rule>) {

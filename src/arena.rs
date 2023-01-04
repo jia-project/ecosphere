@@ -9,17 +9,15 @@ use std::{
     },
 };
 
-use crate::{Object, ObjectData};
+use crate::{Object, ObjectAny, ObjectData};
 
-pub struct Arena {
-    shared: Arc<ArenaShared>,
-    //
-}
+pub struct Arena(Arc<ArenaShared>);
 
 struct ArenaShared {
     // >= 0 means number of active mutator, -1 means no mutator and collecting
     mutate_status: AtomicI8,
     slabs: Mutex<Vec<Slab>>,
+    roots: Mutex<Vec<Box<dyn ObjectAny>>>,
 }
 
 pub struct ArenaUser {
@@ -46,7 +44,7 @@ impl Default for Arena {
     fn default() -> Self {
         let new_slab = || {
             let slab = repeat_with(Default::default)
-                // initially allocate 32K * 32B = 1MB space for objects
+                // slab size 32K * 32B (object size) = 1MB
                 .take(32 << 10)
                 .collect::<Box<[Object]>>();
             let slab = Box::leak(slab);
@@ -55,24 +53,34 @@ impl Default for Arena {
                 status: SlabStatus::Available,
             }
         };
-        Self {
-            shared: Arc::new(ArenaShared {
-                slabs: Mutex::new(repeat_with(new_slab).take(64).collect()),
-                mutate_status: AtomicI8::new(0),
-            }),
-        }
+        Self(Arc::new(ArenaShared {
+            slabs: Mutex::new(repeat_with(new_slab).take(64).collect()),
+            mutate_status: AtomicI8::new(0),
+            roots: Default::default(),
+        }))
     }
 }
 
 impl Arena {
-    pub fn add_user(&self) -> ArenaUser {
-        assert_eq!(self.shared.mutate_status.load(Ordering::SeqCst), 0);
-        let mut slabs = self.shared.slabs.try_lock().unwrap();
+    /// # Safety
+    /// `root` must outlive every `allocate` call. This is trivial if all `allocate` calls are made by `root`.
+    pub unsafe fn add_user(&self, root: *mut impl ObjectAny) -> ArenaUser {
+        struct RootObject<T>(*mut T);
+        unsafe impl<T: ObjectAny> ObjectAny for RootObject<T> {
+            fn on_scan(&mut self, scanner: &mut crate::arena::ObjectScanner<'_>) {
+                unsafe { &mut *self.0 }.on_scan(scanner)
+            }
+        }
+
+        // assert_eq!(self.0.mutate_status.load(Ordering::SeqCst), 0);
+        let mut roots = self.0.roots.lock().unwrap();
+        let mut slabs = self.0.slabs.lock().unwrap();
+        roots.push(Box::new(RootObject(root)));
         for (i, slab) in slabs.iter_mut().enumerate() {
             if matches!(slab.status, SlabStatus::Available) {
                 slab.status = SlabStatus::Allocating;
                 return ArenaUser {
-                    shared: self.shared.clone(),
+                    shared: self.0.clone(),
                     slab: *slab,
                     slab_index: i,
                     allocate_len: 0,
@@ -126,8 +134,8 @@ impl ArenaShared {
 
 impl Drop for Arena {
     fn drop(&mut self) {
-        assert_eq!(self.shared.mutate_status.load(Ordering::SeqCst), 0);
-        for slab in Arc::get_mut(&mut self.shared)
+        assert_eq!(self.0.mutate_status.load(Ordering::SeqCst), 0);
+        for slab in Arc::get_mut(&mut self.0)
             .unwrap()
             .slabs
             .get_mut()

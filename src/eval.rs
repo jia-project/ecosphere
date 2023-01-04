@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     iter::repeat_with,
+    mem::MaybeUninit,
     ops::{Index, IndexMut},
     ptr::NonNull,
     time::Instant,
@@ -8,7 +9,7 @@ use std::{
 
 use crate::{
     arena::{Arena, ArenaUser},
-    Instruction, InstructionLiteral, Object, ObjectData, RegisterIndex, TypeIndex,
+    Instruction, InstructionLiteral, Object, ObjectAny, ObjectData, RegisterIndex, TypeIndex,
 };
 
 #[derive(Clone, Default)]
@@ -72,7 +73,7 @@ impl FrameRegister {
         }
     }
 
-    fn to_address(&mut self, arena: &mut ArenaUser) -> NonNull<Object> {
+    fn escape(&mut self, arena: &mut ArenaUser) -> NonNull<Object> {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => *address,
@@ -84,12 +85,16 @@ impl FrameRegister {
 impl Machine {
     pub fn run_initial(instructions: Box<[Instruction]>) {
         let arena = Arena::default();
-        let mut machine = Machine {
+        let mut machine = Box::new(MaybeUninit::<Self>::uninit());
+        let arena = unsafe { arena.add_user(machine.as_mut_ptr()) };
+        machine.write(Machine {
             symbol: Default::default(),
             frames: Default::default(),
-            arena: arena.add_user(),
+            arena,
             instant_zero: Instant::now(),
-        };
+        });
+        // port unstable `assume_init`
+        let mut machine = unsafe { Box::from_raw(Box::into_raw(machine) as *mut Self) };
         machine.push_frame(0, &[], RegisterIndex::MAX);
         machine.run(vec![instructions]);
     }
@@ -207,7 +212,7 @@ impl Machine {
                 let layout = &self.symbol.product_types[type_index].fields;
                 let mut data = vec![NonNull::dangling(); layout.len()].into_boxed_slice();
                 for (name, i) in fields.iter() {
-                    data[layout[name]] = r[i].to_address(&mut self.arena);
+                    data[layout[name]] = r[i].escape(&mut self.arena);
                 }
                 r[i] = FrameRegister::Address(
                     self.arena
@@ -217,7 +222,7 @@ impl Machine {
             MakeSumTypeObject(i, type_name, variant_name, x) => {
                 let type_index = self.symbol.sum_type_names[type_name];
                 let variant = self.symbol.sum_types[type_index].variants[variant_name];
-                let x = r[x].to_address(&mut self.arena);
+                let x = r[x].escape(&mut self.arena);
                 r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Sum(
                     type_index as _,
                     variant,
@@ -242,7 +247,7 @@ impl Machine {
                 }
             }
             Return(x) => {
-                let x = r[x].to_address(&mut self.arena);
+                let x = r[x].escape(&mut self.arena);
                 let frame = self.frames.pop().unwrap();
                 if !self.is_finished() {
                     let mut r = R(&mut self.frames);
@@ -259,9 +264,9 @@ impl Machine {
                         ObjectData::Product(type_index, _) => *type_index,
                         _ => todo!(),
                     });
-                    xs.push(x.to_address(&mut self.arena));
+                    xs.push(x.escape(&mut self.arena));
                 }
-                xs.extend(argument_xs.iter().map(|x| r[x].to_address(&mut self.arena)));
+                xs.extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
                 let index =
                     self.symbol.function_dispatches[&(context.into_boxed_slice(), xs.len())][name];
                 self.push_frame(index, &xs, *i);
@@ -303,7 +308,7 @@ impl Machine {
                 r[i] = FrameRegister::Address(data[layout[name]])
             }
             ProductObjectSet(x, name, y) => {
-                let y = r[y].to_address(&mut self.arena);
+                let y = r[y].escape(&mut self.arena);
                 let ObjectData::Product(type_index, data) = r[x].view_mut() else {
                     panic!()
                 };
@@ -353,5 +358,17 @@ impl Machine {
             MakeFunction(..) => unreachable!(),
         }
         false
+    }
+}
+
+unsafe impl ObjectAny for Machine {
+    fn on_scan(&mut self, scanner: &mut crate::arena::ObjectScanner<'_>) {
+        for frame in &mut self.frames {
+            for register in &mut frame.registers {
+                if let FrameRegister::Address(address) = register {
+                    scanner.process(address)
+                }
+            }
+        }
     }
 }

@@ -62,8 +62,10 @@ pub enum ObjectData {
     Any(Box<dyn ObjectAny>),
 }
 
-pub trait ObjectAny: std::any::Any {
-    fn on_scan(&self, scanner: &mut arena::ObjectScanner<'_>);
+/// # Safety
+/// `on_scan` must call `process` on every address that may be access in the future.
+pub unsafe trait ObjectAny: std::any::Any {
+    fn on_scan(&mut self, scanner: &mut arena::ObjectScanner<'_>);
 
     fn type_name(&self) -> &'static str {
         std::any::type_name::<Self>()
