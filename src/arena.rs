@@ -179,12 +179,11 @@ impl ObjectScanner<'_> {
         match &mut object.data {
             ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
             ObjectData::Integer(_) | ObjectData::String(_) => {}
-            ObjectData::Product(_, data) => {
+            ObjectData::Data(_, _, data) => {
                 for pointer in data.iter_mut() {
                     self.process(pointer)
                 }
             }
-            ObjectData::Sum(_, _, pointer) => self.process(pointer),
             ObjectData::Any(object) => object.on_scan(self),
         }
     }

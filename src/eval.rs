@@ -9,48 +9,38 @@ use std::{
 
 use crate::{
     arena::{Arena, ArenaUser},
-    Instruction, InstructionLiteral, Object, ObjectAny, ObjectData, RegisterIndex, TypeIndex,
+    Instruction, InstructionLiteral, InstructionType, Object, ObjectAny, ObjectData, RegisterIndex,
+    TypeIndex,
 };
 
 #[derive(Clone)]
 struct Symbol {
-    product_type_names: HashMap<String, usize>,
-    product_types: Vec<ProductType>,
-    sum_type_names: HashMap<String, usize>,
-    sum_types: Vec<SumType>,
+    type_names: HashMap<String, usize>,
+    types: Vec<TypeLayout>,
     function_dispatches: HashMap<(Box<[TypeIndex]>, usize), HashMap<String, usize>>,
 }
 
 impl Default for Symbol {
     fn default() -> Self {
-        let mut product_type_names = HashMap::new();
-        let mut product_types = Vec::new();
-        product_type_names.insert(String::from(":intrinsic.nil"), product_types.len());
-        product_types.push(ProductType {
+        let mut type_names = HashMap::new();
+        let mut types = Vec::new();
+        type_names.insert(String::from(":intrinsic.nil"), types.len());
+        types.push(TypeLayout {
             name: String::from("Nil"),
-            fields: HashMap::new(),
+            layout: Default::default(),
         });
         Self {
-            product_type_names,
-            product_types,
-            sum_type_names: Default::default(),
-            sum_types: Default::default(),
+            type_names,
+            types,
             function_dispatches: Default::default(),
         }
     }
 }
 
 #[derive(Clone, Default)]
-struct ProductType {
+struct TypeLayout {
     name: String,
-    fields: HashMap<String, usize>,
-}
-
-#[derive(Clone, Default)]
-struct SumType {
-    name: String,
-    variants: HashMap<String, u8>,
-    variant_names: Box<[String]>,
+    layout: Box<[HashMap<String, usize>]>,
 }
 
 pub struct Machine {
@@ -151,7 +141,8 @@ impl Machine {
                     self.make_function(instruction.clone(), &mut functions);
                     // continue;
                     // logically this is ok, but Rust does not allow it because
-                    // we are in the middle of iterating `functions`
+                    // we are in the middle of iterating `functions[...]`
+                    // with the `&mut functions` above this cannot resume
                     // not on hot path so just conform it
                     continue 'control;
                 }
@@ -173,18 +164,12 @@ impl Machine {
         };
         let context_types = context_types
             .iter()
-            .map(|name| {
-                match (
-                    &**name,
-                    self.symbol.product_type_names.get(name),
-                    self.symbol.sum_type_names.get(name),
-                ) {
-                    ("Integer", _, _) => todo!(),
-                    ("String", _, _) => todo!(),
-                    (_, Some(type_index), _) => *type_index as _,
-                    (_, _, Some(type_index)) => todo!(),
-                    _ => panic!(),
-                }
+            .map(|name| match (&**name, self.symbol.type_names.get(name)) {
+                (":intrinsic.nil", _) => todo!(),
+                (":intrinsic.integer", _) => todo!(),
+                (":intrinsic.string", _) => todo!(),
+                (_, Some(type_index)) => *type_index as _,
+                _ => panic!(),
             })
             .collect();
         let index = functions.len();
@@ -220,9 +205,11 @@ impl Machine {
         use Instruction::*;
         match instruction {
             MakeLiteralObject(i, InstructionLiteral::Nil) => {
-                r[i] = FrameRegister::Address(
-                    self.arena.allocate(ObjectData::Product(0, Box::new([]))),
-                )
+                r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Data(
+                    0,
+                    0,
+                    Box::new([]),
+                )))
             }
             MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
                 r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Integer(*value)))
@@ -231,34 +218,12 @@ impl Machine {
                 r[i] =
                     FrameRegister::Address(self.arena.allocate(ObjectData::String(value.clone())))
             }
-            MakeProductTypeObject(i, type_name, fields) => {
-                let type_index = self.symbol.product_type_names[type_name];
-                let layout = &self.symbol.product_types[type_index].fields;
-                let mut data = vec![NonNull::dangling(); layout.len()].into_boxed_slice();
-                for (name, i) in fields.iter() {
-                    data[layout[name]] = r[i].escape(&mut self.arena);
-                }
-                r[i] = FrameRegister::Address(
-                    self.arena
-                        .allocate(ObjectData::Product(type_index as _, data)),
-                )
-            }
-            MakeSumTypeObject(i, type_name, variant_name, x) => {
-                let type_index = self.symbol.sum_type_names[type_name];
-                let variant = self.symbol.sum_types[type_index].variants[variant_name];
-                let x = r[x].escape(&mut self.arena);
-                r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Sum(
-                    type_index as _,
-                    variant,
-                    x,
-                )))
-            }
-
+            // make data object
             JumpIf(x, offset) => {
                 let jumping = if *x == RegisterIndex::MAX {
                     true
                 } else {
-                    let ObjectData::Sum(_, variant, _) = r[x].view() else {
+                    let ObjectData::Data(_, variant, _) = r[x].view() else {
                         panic!()
                     };
                     *variant != 0
@@ -285,7 +250,7 @@ impl Machine {
                 for x in context_xs.iter() {
                     let x = &mut r[x];
                     context.push(match x.view() {
-                        ObjectData::Product(type_index, _) => *type_index,
+                        ObjectData::Data(type_index, _, _) => *type_index,
                         _ => todo!(),
                     });
                     xs.push(x.escape(&mut self.arena));
@@ -304,17 +269,10 @@ impl Machine {
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
                     ObjectData::String(value) => format!("String {value}"),
-                    ObjectData::Product(type_index, _) => {
+                    ObjectData::Data(type_index, variant, _) => {
                         format!(
-                            "(product) {}",
-                            self.symbol.product_types[*type_index as usize].name
-                        )
-                    }
-                    ObjectData::Sum(type_index, variant, _) => {
-                        let meta = &self.symbol.sum_types[*type_index as usize];
-                        format!(
-                            "(sum) {}.{}",
-                            meta.name, meta.variant_names[*variant as usize]
+                            "(data) {}.{variant}",
+                            self.symbol.types[*type_index as usize].name
                         )
                     }
                     ObjectData::Any(value) => format!("(any) {}", value.type_name()),
@@ -326,19 +284,21 @@ impl Machine {
                 );
             }
             ProductObjectGet(i, x, name) => {
-                let ObjectData::Product(type_index, data) = r[x].view() else {
+                let ObjectData::Data(type_index, variant, data) = r[x].view() else {
                     panic!()
                 };
-                let layout = &self.symbol.product_types[*type_index as usize].fields;
-                r[i] = FrameRegister::Address(data[layout[name]])
+                assert_eq!(*variant, 0);
+                let layout = &self.symbol.types[*type_index as usize].layout;
+                r[i] = FrameRegister::Address(data[layout[0][name]])
             }
             ProductObjectSet(x, name, y) => {
                 let y = r[y].escape(&mut self.arena);
-                let ObjectData::Product(type_index, data) = r[x].view_mut() else {
+                let ObjectData::Data(type_index, variant, data) = r[x].view_mut() else {
                     panic!()
                 };
-                let layout = &self.symbol.product_types[*type_index as usize].fields;
-                data[layout[name]] = y
+                assert_eq!(*variant, 0);
+                let layout = &self.symbol.types[*type_index as usize].layout;
+                data[layout[0][name]] = y
             }
             Operator1(..) => unreachable!(),
             Operator2(i, op, x, y) => {
@@ -353,36 +313,21 @@ impl Machine {
                 r[i] = FrameRegister::Address(self.arena.allocate(object))
             }
 
-            MakeProductType(name, fields) => {
-                let type_index = self.symbol.product_types.len();
-                self.symbol
-                    .product_type_names
-                    .insert(name.clone(), type_index);
-                self.symbol.product_types.push(ProductType {
+            MakeType(name, layout) => {
+                let type_index = self.symbol.types.len();
+                self.symbol.type_names.insert(name.clone(), type_index);
+                self.symbol.types.push(TypeLayout {
                     name: name.clone(),
-                    fields: fields
-                        .iter()
-                        .enumerate()
-                        .map(|(i, name)| (name.clone(), i))
-                        .collect(),
+                    layout: Self::generate_layout(layout),
                 });
-            }
-            MakeSumType(name, variants) => {
-                let type_index = self.symbol.sum_types.len();
-                self.symbol.sum_type_names.insert(name.clone(), type_index);
-                self.symbol.sum_types.push(SumType {
-                    name: name.clone(),
-                    variants: variants
-                        .iter()
-                        .enumerate()
-                        .map(|(i, name)| (name.clone(), i as _))
-                        .collect(),
-                    variant_names: variants.clone(),
-                })
             }
             MakeFunction(..) => unreachable!(),
         }
         false
+    }
+
+    fn generate_layout(layout: &InstructionType) -> Box<[HashMap<String, usize>]> {
+        todo!()
     }
 }
 
