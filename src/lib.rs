@@ -20,6 +20,7 @@ pub enum Instruction {
     ),
 
     Inspect(RegisterIndex),
+    Load(RegisterIndex, String),
     ProductObjectGet(RegisterIndex, RegisterIndex, String),
     ProductObjectSet(RegisterIndex, String, RegisterIndex),
     // sum type intrinsic
@@ -34,6 +35,7 @@ pub enum Instruction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstructionLiteral {
+    Nil,
     Integer(i64),
     // float
     String(String),

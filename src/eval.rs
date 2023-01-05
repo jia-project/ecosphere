@@ -12,13 +12,32 @@ use crate::{
     Instruction, InstructionLiteral, Object, ObjectAny, ObjectData, RegisterIndex, TypeIndex,
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Symbol {
     product_type_names: HashMap<String, usize>,
     product_types: Vec<ProductType>,
     sum_type_names: HashMap<String, usize>,
     sum_types: Vec<SumType>,
     function_dispatches: HashMap<(Box<[TypeIndex]>, usize), HashMap<String, usize>>,
+}
+
+impl Default for Symbol {
+    fn default() -> Self {
+        let mut product_type_names = HashMap::new();
+        let mut product_types = Vec::new();
+        product_type_names.insert(String::from(":intrinsic.nil"), product_types.len());
+        product_types.push(ProductType {
+            name: String::from("Nil"),
+            fields: HashMap::new(),
+        });
+        Self {
+            product_type_names,
+            product_types,
+            sum_type_names: Default::default(),
+            sum_types: Default::default(),
+            function_dispatches: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -200,6 +219,11 @@ impl Machine {
 
         use Instruction::*;
         match instruction {
+            MakeLiteralObject(i, InstructionLiteral::Nil) => {
+                r[i] = FrameRegister::Address(
+                    self.arena.allocate(ObjectData::Product(0, Box::new([]))),
+                )
+            }
             MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
                 r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Integer(*value)))
             }
@@ -273,6 +297,7 @@ impl Machine {
                 return true;
             }
 
+            Load(i, name) => todo!(),
             Inspect(x) => {
                 let repr = match r[x].view() {
                     ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
