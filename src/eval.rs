@@ -225,8 +225,35 @@ impl Machine {
                 r[i] =
                     FrameRegister::Address(self.arena.allocate(ObjectData::String(value.clone())))
             }
-            // make data object
-            //
+
+            MakeDataObject(i, name, items) => {
+                let type_index = self.symbol.type_names[name];
+                let data = match &self.symbol.types[type_index] {
+                    SymbolType::Product { components, .. } => {
+                        let mut data = repeat_with(|| {
+                            self.arena.allocate(ObjectData::Product(0, Box::new([])))
+                        })
+                        .take(components.len())
+                        .collect::<Box<_>>();
+                        for (name, x) in items.iter() {
+                            data[components[name]] = r[x].escape(&mut self.arena);
+                        }
+                        ObjectData::Product(type_index as _, data)
+                    }
+                    SymbolType::Sum { variant_names, .. } => {
+                        let [(name, x)] = &**items else {
+                            panic!()
+                        };
+                        ObjectData::Sum(
+                            type_index as _,
+                            variant_names[name],
+                            r[x].escape(&mut self.arena),
+                        )
+                    }
+                };
+                r[i] = FrameRegister::Address(self.arena.allocate(data))
+            }
+
             JumpUnless(x, target) => {
                 let jumping = if *x == RegisterIndex::MAX {
                     true
@@ -300,8 +327,8 @@ impl Machine {
                     r[x]
                 );
             }
-            ProductObjectGet(i, x, name) => {
-                let ObjectData::Product(type_index,  data) = r[x].view() else {
+            Get(i, x, name) => {
+                let ObjectData::Product(type_index, data) = r[x].view() else {
                     panic!()
                 };
                 let SymbolType::Product{components,..} = &self.symbol.types[*type_index as usize] else {
@@ -309,7 +336,7 @@ impl Machine {
                 };
                 r[i] = FrameRegister::Address(data[components[name]])
             }
-            ProductObjectSet(x, name, y) => {
+            Set(x, name, y) => {
                 let y = r[y].escape(&mut self.arena);
                 let ObjectData::Product(type_index,  data) = r[x].view_mut() else {
                     panic!()
@@ -318,6 +345,35 @@ impl Machine {
                     panic!()
                 };
                 data[components[name]] = y
+            }
+            Is(i, x, name) => {
+                let ObjectData::Sum(type_index, variant, _) = r[x].view() else {
+                    panic!()
+                };
+                let SymbolType::Sum{variants, ..} = &self.symbol.types[*type_index as usize] else {
+                    panic!()
+                };
+                let test = if &variants[*variant as usize] == name {
+                    1
+                } else {
+                    0
+                };
+                let data = self.arena.allocate(ObjectData::Product(0, Box::new([])));
+                r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Sum(
+                    *type_index,
+                    test,
+                    data,
+                )))
+            }
+            As(i, x, name) => {
+                let ObjectData::Sum(type_index, variant, data) = r[x].view() else {
+                    panic!()
+                };
+                let SymbolType::Sum{variants, ..} = &self.symbol.types[*type_index as usize] else {
+                    panic!()
+                };
+                assert_eq!(&variants[*variant as usize], name);
+                r[i] = FrameRegister::Address(*data)
             }
             Operator1(..) => unreachable!(),
             Operator2(i, op, x, y) => {

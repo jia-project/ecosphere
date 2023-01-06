@@ -7,8 +7,8 @@ pub type RegisterIndex = u8;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
     MakeLiteralObject(RegisterIndex, InstructionLiteral),
-    // MakeDataObject(RegisterIndex, String, ()),
-    //
+    MakeDataObject(RegisterIndex, String, Box<[(String, RegisterIndex)]>),
+
     JumpUnless(RegisterIndex, usize),
     Return(RegisterIndex),
     Call(
@@ -20,9 +20,10 @@ pub enum Instruction {
 
     Inspect(RegisterIndex),
     Load(RegisterIndex, String),
-    ProductObjectGet(RegisterIndex, RegisterIndex, String),
-    ProductObjectSet(RegisterIndex, String, RegisterIndex),
-    // sum type intrinsic
+    Get(RegisterIndex, RegisterIndex, String),
+    Set(RegisterIndex, String, RegisterIndex),
+    Is(RegisterIndex, RegisterIndex, String),
+    As(RegisterIndex, RegisterIndex, String),
     Operator1(RegisterIndex, Operator1, RegisterIndex),
     Operator2(RegisterIndex, Operator2, RegisterIndex, RegisterIndex),
 
