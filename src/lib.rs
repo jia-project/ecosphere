@@ -8,8 +8,8 @@ pub type RegisterIndex = u8;
 pub enum Instruction {
     MakeLiteralObject(RegisterIndex, InstructionLiteral),
     // MakeDataObject(RegisterIndex, String, ()),
-
-    JumpIf(RegisterIndex, i32), // jump 0 to the following instruction
+    //
+    JumpUnless(RegisterIndex, usize),
     Return(RegisterIndex),
     Call(
         RegisterIndex,
@@ -26,7 +26,7 @@ pub enum Instruction {
     Operator1(RegisterIndex, Operator1, RegisterIndex),
     Operator2(RegisterIndex, Operator2, RegisterIndex, RegisterIndex),
 
-    MakeType(String, InstructionType),
+    MakeType(String, TypeOperator, Box<[String]>),
     // context type names, name, argument number, instructions
     MakeFunction(Box<[String]>, String, usize, Box<[Instruction]>),
 }
@@ -40,12 +40,9 @@ pub enum InstructionLiteral {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InstructionType {
-    Void,
-    Data,
-    Product(Box<[(String, InstructionType)]>),
-    Sum(Box<[(String, InstructionType)]>),
-    Name(String),
+pub enum TypeOperator {
+    Product,
+    Sum,
 }
 
 pub type TypeIndex = u32;
@@ -66,7 +63,8 @@ pub enum ObjectData {
     // float
     String(String),
     // vector
-    Data(TypeIndex, u8, Box<[std::ptr::NonNull<Object>]>),
+    Product(TypeIndex, Box<[std::ptr::NonNull<Object>]>),
+    Sum(TypeIndex, u8, std::ptr::NonNull<Object>),
     Any(Box<dyn ObjectAny>),
 }
 

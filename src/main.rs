@@ -8,7 +8,7 @@ make Run data [
 
 make Option data [
     + None
-    + Some [value]
+    + Some
 ]
 
 make merge_sort(v) {
@@ -43,7 +43,7 @@ make merge_sort(v) {
         runs.push(Run[start = start, len = end - start]);
         end = start;
 
-        while collapse(runs_start, runs_len).?Some [value = r] {
+        while collapse(runs_start, runs_len) match Some r {
             var left = runs.get(r + 1);
             var right = runs.get(r);
             merge(v, left.start, right.start + right.len, left.len);
