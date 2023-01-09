@@ -1,5 +1,5 @@
 WHITESPACE = _{ " " | "\n" }
-COMMENT = _{ ";" ~ (!"\n" ~ ANY) }
+COMMENT = _{ "#" ~ (!"\n" ~ ANY) }
 
 Program = _{ SOI ~ ProgramStmt* ~ EOI }
 

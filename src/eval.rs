@@ -24,10 +24,16 @@ impl Default for Symbol {
     fn default() -> Self {
         let mut type_names = HashMap::new();
         let mut types = Vec::new();
+        let s = String::from;
         type_names.insert(String::from(":intrinsic.nil"), types.len());
         types.push(SymbolType::Product {
-            name: String::from("Nil"),
+            name: s("Nil"),
             components: Default::default(),
+        });
+        types.push(SymbolType::SumVariant {
+            type_name: s("Bool"),
+            name: s("False"),
+            test: false,
         });
         Self {
             type_names,
@@ -45,8 +51,12 @@ enum SymbolType {
     },
     Sum {
         name: String,
-        variant_names: HashMap<String, u8>,
-        variants: Box<[String]>,
+        variant_names: HashMap<String, u32>,
+    },
+    SumVariant {
+        type_name: String,
+        name: String,
+        test: bool,
     },
 }
 
@@ -214,9 +224,8 @@ impl Machine {
         use Instruction::*;
         match instruction {
             MakeLiteralObject(i, InstructionLiteral::Nil) => {
-                r[i] = FrameRegister::Address(
-                    self.arena.allocate(ObjectData::Product(0, Box::new([]))),
-                )
+                r[i] =
+                    FrameRegister::Address(self.arena.allocate(ObjectData::Data(0, Box::new([]))))
             }
             MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
                 r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Integer(*value)))
@@ -230,26 +239,25 @@ impl Machine {
                 let type_index = self.symbol.type_names[name];
                 let data = match &self.symbol.types[type_index] {
                     SymbolType::Product { components, .. } => {
-                        let mut data = repeat_with(|| {
-                            self.arena.allocate(ObjectData::Product(0, Box::new([])))
-                        })
-                        .take(components.len())
-                        .collect::<Box<_>>();
+                        let mut data =
+                            repeat_with(|| self.arena.allocate(ObjectData::Data(0, Box::new([]))))
+                                .take(components.len())
+                                .collect::<Box<_>>();
                         for (name, x) in items.iter() {
                             data[components[name]] = r[x].escape(&mut self.arena);
                         }
-                        ObjectData::Product(type_index as _, data)
+                        ObjectData::Data(type_index as _, data)
                     }
                     SymbolType::Sum { variant_names, .. } => {
                         let [(name, x)] = &**items else {
                             panic!()
                         };
-                        ObjectData::Sum(
-                            type_index as _,
+                        ObjectData::Data(
                             variant_names[name],
-                            r[x].escape(&mut self.arena),
+                            Box::new([r[x].escape(&mut self.arena)]), //
                         )
                     }
+                    SymbolType::SumVariant { .. } => panic!(),
                 };
                 r[i] = FrameRegister::Address(self.arena.allocate(data))
             }
@@ -258,10 +266,13 @@ impl Machine {
                 let jumping = if *x == RegisterIndex::MAX {
                     true
                 } else {
-                    let ObjectData::Sum(_, variant, _) = r[x].view() else {
+                    let ObjectData::Data(type_index, _) = r[x].view() else {
                         panic!()
                     };
-                    *variant == 0
+                    let SymbolType::SumVariant { test, .. } = self.symbol.types[*type_index as usize] else {
+                        panic!()
+                    };
+                    test
                 };
                 if jumping {
                     self.frames.last_mut().unwrap().program_counter = *target;
@@ -284,9 +295,7 @@ impl Machine {
                     let x = &mut r[x];
                     context.push(match x.view() {
                         ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
-                        ObjectData::Product(type_index, _) | ObjectData::Sum(type_index, _, _) => {
-                            *type_index
-                        }
+                        ObjectData::Data(type_index, _) => *type_index,
                         ObjectData::Integer(_) => Self::TYPE_INTEGER,
                         ObjectData::String(_) => Self::TYPE_STRING,
                         ObjectData::Any(_) => todo!(),
@@ -307,17 +316,14 @@ impl Machine {
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
                     ObjectData::String(value) => format!("String {value}"),
-                    ObjectData::Product(type_index, _) => {
-                        let SymbolType::Product { name,  .. } = &self.symbol.types[*type_index as usize] else {
-                            panic!()
-                        };
-                        format!("(sum) {}", name)
-                    }
-                    ObjectData::Sum(type_index, variant, _) => {
-                        let SymbolType::Sum { name, variants, .. } = &self.symbol.types[*type_index as usize] else {
-                            panic!()
-                        };
-                        format!("(sum) {}[{}]", name, variants[*variant as usize])
+                    ObjectData::Data(type_index, _) => {
+                        match &self.symbol.types[*type_index as usize] {
+                            SymbolType::Product { name, .. } => format!("{name}[...]"),
+                            SymbolType::SumVariant {
+                                type_name, name, ..
+                            } => format!("{type_name}.{name}"),
+                            SymbolType::Sum { .. } => unreachable!(),
+                        }
                     }
                     ObjectData::Any(value) => format!("(any) {}", value.type_name()),
                 };
@@ -328,7 +334,7 @@ impl Machine {
                 );
             }
             Get(i, x, name) => {
-                let ObjectData::Product(type_index, data) = r[x].view() else {
+                let ObjectData::Data(type_index, data) = r[x].view() else {
                     panic!()
                 };
                 let SymbolType::Product{components,..} = &self.symbol.types[*type_index as usize] else {
@@ -338,7 +344,7 @@ impl Machine {
             }
             Set(x, name, y) => {
                 let y = r[y].escape(&mut self.arena);
-                let ObjectData::Product(type_index,  data) = r[x].view_mut() else {
+                let ObjectData::Data(type_index,  data) = r[x].view_mut() else {
                     panic!()
                 };
                 let SymbolType::Product{components,..} = &self.symbol.types[*type_index as usize] else {
@@ -347,33 +353,27 @@ impl Machine {
                 data[components[name]] = y
             }
             Is(i, x, name) => {
-                let ObjectData::Sum(type_index, variant, _) = r[x].view() else {
+                let ObjectData::Data(type_index, _) = r[x].view() else {
                     panic!()
                 };
-                let SymbolType::Sum{variants, ..} = &self.symbol.types[*type_index as usize] else {
+                let SymbolType::SumVariant{name: n, ..} = &self.symbol.types[*type_index as usize] else {
                     panic!()
                 };
-                let test = if &variants[*variant as usize] == name {
-                    1
-                } else {
-                    0
-                };
-                let data = self.arena.allocate(ObjectData::Product(0, Box::new([])));
-                r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Sum(
-                    *type_index,
-                    test,
-                    data,
-                )))
+                let type_index = 1 + u32::from(name == n);
+                let data = self.arena.allocate(ObjectData::Data(0, Box::new([])));
+                r[i] = FrameRegister::Address(
+                    self.arena
+                        .allocate(ObjectData::Data(type_index, Box::new([data]))),
+                )
             }
             As(i, x, name) => {
-                let ObjectData::Sum(type_index, variant, data) = r[x].view() else {
+                let ObjectData::Data(type_index, data) = r[x].view() else {
                     panic!()
                 };
-                let SymbolType::Sum{variants, ..} = &self.symbol.types[*type_index as usize] else {
-                    panic!()
-                };
-                assert_eq!(&variants[*variant as usize], name);
-                r[i] = FrameRegister::Address(*data)
+                assert!(
+                    matches!(&self.symbol.types[*type_index as usize], SymbolType::SumVariant {name: n, ..} if n == name)
+                );
+                r[i] = FrameRegister::Address(data[0]) // more check?
             }
             Operator1(..) => unreachable!(),
             Operator2(i, op, x, y) => {
@@ -389,28 +389,37 @@ impl Machine {
             }
 
             MakeType(name, op, items) => {
-                let type_index = self.symbol.types.len();
-                self.symbol.type_names.insert(name.clone(), type_index);
-                let ty = match op {
-                    TypeOperator::Product => SymbolType::Product {
-                        name: name.clone(),
-                        components: items
-                            .iter()
-                            .enumerate()
-                            .map(|(i, component)| (component.clone(), i))
-                            .collect(),
-                    },
-                    TypeOperator::Sum => SymbolType::Sum {
-                        name: name.clone(),
-                        variant_names: items
-                            .iter()
-                            .enumerate()
-                            .map(|(i, variant)| (variant.clone(), i as _))
-                            .collect(),
-                        variants: items.clone(),
-                    },
-                };
-                self.symbol.types.push(ty);
+                match op {
+                    TypeOperator::Product => {
+                        let type_index = self.symbol.types.len();
+                        self.symbol.type_names.insert(name.clone(), type_index);
+                        self.symbol.types.push(SymbolType::Product {
+                            name: name.clone(),
+                            components: items
+                                .iter()
+                                .enumerate()
+                                .map(|(i, component)| (component.clone(), i))
+                                .collect(),
+                        })
+                    }
+                    TypeOperator::Sum => {
+                        let mut variant_names = HashMap::new();
+                        for (i, variant) in items.iter().enumerate() {
+                            variant_names.insert(variant.clone(), i as _);
+                            self.symbol.types.push(SymbolType::SumVariant {
+                                type_name: name.clone(),
+                                name: variant.clone(),
+                                test: i != 0, //
+                            });
+                        }
+                        let type_index = self.symbol.types.len();
+                        self.symbol.type_names.insert(name.clone(), type_index);
+                        self.symbol.types.push(SymbolType::Sum {
+                            name: name.clone(),
+                            variant_names,
+                        });
+                    }
+                }
             }
             MakeFunction(..) => unreachable!(),
         }

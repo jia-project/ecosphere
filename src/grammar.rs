@@ -82,17 +82,20 @@ impl Layers {
 impl ProgramVisitor {
     fn visit_program_stmt(&mut self, stmt: Pair<'_, Rule>) {
         match stmt.as_rule() {
-            Rule::MakeFunctionStmt => self.visit_make_function_stmt(stmt.into_inner()),
+            Rule::MakeFunctionStmt => self.visit_make_function_stmt(stmt),
             Rule::EOI => {}
             _ => self.visit_stmt(stmt),
         }
     }
 
-    fn visit_make_function_stmt(&mut self, mut pairs: Pairs<'_, Rule>) {
-        let name = pairs.next().unwrap().as_str().to_owned();
-        let parameters = pairs
-            .next()
-            .unwrap()
+    fn visit_make_function_stmt(&mut self, stmt: Pair<'_, Rule>) {
+        let mut stmt = stmt.into_inner();
+        let name = stmt.next().unwrap().as_str().to_owned();
+        let parameters = stmt.next().unwrap();
+        let expr = stmt.next().unwrap();
+        assert_eq!(expr.as_rule(), Rule::BlockExpr); // or allow single line function?
+
+        let parameters = parameters
             .into_inner()
             .map(|param| param.as_str().to_owned())
             .collect::<Vec<_>>();
@@ -106,16 +109,9 @@ impl ProgramVisitor {
             instructions: Default::default(),
             layers,
         };
-        let expr = pairs.next().unwrap();
-        assert_eq!(expr.as_rule(), Rule::BlockExpr); // or allow single line function?
         visitor.visit_primary_expr(expr);
         visitor.layers.exit();
-        if visitor
-            .instructions
-            .last()
-            .filter(|instruction| matches!(instruction, Instruction::Return(_)))
-            .is_none()
-        {
+        if !matches!(visitor.instructions.last(), Some(Instruction::Return(_))) {
             visitor.push_instruction(Instruction::Return(arity as _));
         }
         self.instructions.push(Instruction::MakeFunction(
@@ -132,12 +128,18 @@ struct FunctionVisitor {
     layers: Layers,
 }
 
+enum Expr<'a> {
+    Primary(Pair<'a, Rule>),
+    Operator1(Pair<'a, Rule>, Box<Expr<'a>>),
+    Operator2(Pair<'a, Rule>, Box<Expr<'a>>, Box<Expr<'a>>),
+}
+
 trait StmtVisitor {
     fn push_instruction(&mut self, instruction: Instruction);
 
     fn layers(&mut self) -> &mut Layers;
 
-    fn visit_expr(&mut self, pairs: Pairs<'_, Rule>) -> RegisterIndex {
+    fn visit_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
         let expr = PrattParser::new()
             .op(Op::prefix(Rule::Not))
             .op(Op::infix(Rule::Add, Assoc::Left) | Op::infix(Rule::Sub, Assoc::Left))
@@ -145,7 +147,7 @@ trait StmtVisitor {
             .map_infix(|lhs, op, rhs| Expr::Operator2(op, Box::new(lhs), Box::new(rhs)))
             .map_prefix(|op, rhs| Expr::Operator1(op, Box::new(rhs)))
             // postfix
-            .parse(pairs);
+            .parse(expr.into_inner());
         self.visit_expr_internal(expr)
     }
 
@@ -171,7 +173,7 @@ trait StmtVisitor {
 
     fn visit_primary_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
         match expr.as_rule() {
-            Rule::Expr => self.visit_expr(expr.into_inner()),
+            Rule::Expr => self.visit_expr(expr),
             Rule::Ident => {
                 if let Some(r) = self.layers().find(expr.as_str()) {
                     r
@@ -221,7 +223,7 @@ trait StmtVisitor {
                     self.layers().restore(level);
                 }
                 let r = if item.as_rule() == Rule::ValueExpr {
-                    self.visit_expr(item.into_inner())
+                    self.visit_expr(item)
                 } else {
                     self.visit_stmt(item);
                     self.layers().restore(level);
@@ -242,7 +244,7 @@ trait StmtVisitor {
                 let level = self.layers().save();
                 for expr in expr.next().unwrap().into_inner() {
                     assert_eq!(expr.as_rule(), Rule::Expr);
-                    let register = self.visit_expr(expr.into_inner());
+                    let register = self.visit_expr(expr);
                     assert_eq!(register, level + arity);
                     arity += 1;
                 }
@@ -261,24 +263,16 @@ trait StmtVisitor {
 
     fn visit_stmt(&mut self, stmt: Pair<'_, Rule>) {
         match stmt.as_rule() {
-            Rule::InspectStmt => self.visit_inspect_stmt(stmt.into_inner()),
+            Rule::InspectStmt => {
+                let register = self.visit_expr(stmt.into_inner().next().unwrap());
+                self.push_instruction(Instruction::Inspect(register))
+            }
             Rule::Expr => {
-                self.visit_expr(stmt.into_inner());
+                self.visit_expr(stmt);
             }
             _ => unreachable!(),
         }
     }
-
-    fn visit_inspect_stmt(&mut self, mut pairs: Pairs<'_, Rule>) {
-        let register = self.visit_expr(pairs.next().unwrap().into_inner());
-        self.push_instruction(Instruction::Inspect(register))
-    }
-}
-
-enum Expr<'a> {
-    Primary(Pair<'a, Rule>),
-    Operator1(Pair<'a, Rule>, Box<Expr<'a>>),
-    Operator2(Pair<'a, Rule>, Box<Expr<'a>>, Box<Expr<'a>>),
 }
 
 impl StmtVisitor for ProgramVisitor {

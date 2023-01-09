@@ -24,12 +24,16 @@ pub enum Instruction {
     Set(RegisterIndex, String, RegisterIndex),
     Is(RegisterIndex, RegisterIndex, String),
     As(RegisterIndex, RegisterIndex, String),
+    // overloadable operations
     Operator1(RegisterIndex, Operator1, RegisterIndex),
     Operator2(RegisterIndex, Operator2, RegisterIndex, RegisterIndex),
 
     MakeType(String, TypeOperator, Box<[String]>),
     // context type names, name, argument number, instructions
     MakeFunction(Box<[String]>, String, usize, Box<[Instruction]>),
+    //
+    // AsOrJump(i, x, variant, target) ~>
+    //   Is(t, x, variant); JumpUnless(t, target); As(i, x, variant)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,8 +68,8 @@ pub enum ObjectData {
     // float
     String(String),
     // vector
-    Product(TypeIndex, Box<[std::ptr::NonNull<Object>]>),
-    Sum(TypeIndex, u8, std::ptr::NonNull<Object>),
+    Data(TypeIndex, Box<[std::ptr::NonNull<Object>]>),
+
     Any(Box<dyn ObjectAny>),
 }
 
