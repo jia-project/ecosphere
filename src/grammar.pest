@@ -1,21 +1,34 @@
-WHITESPACE = _{ " " | "\n" }
-COMMENT = _{ "#" ~ (!"\n" ~ ANY) }
+WHITESPACE = _{ " " | NEWLINE }
+COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
 
 Program = _{ SOI ~ ProgramStmt* ~ EOI }
 
+
 Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
-    Infix = _{ Add | Sub }
-    Prefix = _ { Sub | Not }
-    Postfix = _ { Dot }
+    Infix = _{ Add | Sub | And | Or | LessThan | GreaterThan | Equal }
+    Prefix = _ { Sub | Not | Inspect }
+    Postfix = _ { Dot | Is | As | Call1 }
 
     Add = { "+" }
     Sub = { "-" }
+    And = { "and" }
+    Or = { "or" }
+    LessThan = { "<" }
+    GreaterThan = { ">" }
+    Equal = { "==" }
+    Inspect = { "inspect" }
     Not = { "not" }
     Dot = { "." ~ Ident }
+    Is = { "is" ~ Ident ~ Ident? }
+    As = { ".!" ~ Ident }
+    Call1 = { "." ~ CallArgs }
 
 PrimaryExpr = _{
     BlockExpr
-    | CallExpr
+    | IfExpr
+    | Call0Expr
+    | CallNExpr
+    | DataExpr
     | "(" ~ Expr ~ ")"
     | Ident
     | Integer
@@ -26,25 +39,60 @@ PrimaryExpr = _{
 BlockExpr = { "{" ~ Stmt* ~ ValueExpr? ~ "}" }
 ValueExpr = { Expr }
 
-CallExpr = { Ident ~ "(" ~ CallArgs ~ ")" }
-CallArgs = { (Expr ~ ",")* ~ Expr? }
+IfExpr = { "if" ~ Expr ~ BlockExpr ~ ("else" ~ BlockExpr)? }
+
+// call0 will also match some of the call1, because at this time there is no 
+// enough information to distinguish a dotted imported name and a local name 
+// that serves as single context argument (which by-design has higher priority), 
+// so we only correct for the latter case in parsing code
+// notice that a call on a product object's component must be wrapped with 
+// parens, i.e. `(a.b).c()`, so `a.b.c()` will always resolve to some global
+// function `a.b.c` and there's no confliction when there's more than one dot
+Call0Expr = { DotIdent ~ CallArgs }
+CallNExpr = { CallArgs ~ "." ~ Ident ~ CallArgs }
+CallArgs = { "(" ~ (Expr ~ ",")* ~ Expr? ~ ")" }
+
+DataExpr = { DotIdent ~ DataItems }
+DataItems = { "[" ~ (DataItem ~ ",")* ~ DataItem? ~ "]" }
+DataItem = { Ident ~ ("=" ~ (Expr | DataItems))? }
+
 
 ProgramStmt = _{
-    MakeFunctionStmt
+    MakeTypeStmt
+    | MakeFunctionStmt
     | Stmt
 }
 
 Stmt = _{
-    InspectStmt ~ ";"
+    VarStmt
+    | AssignStmt
+    | AssertStmt
+    | WhileStmt
+    | IfExpr // allow omit semicolon for expr ending with blockexpr
     | Expr ~ ";"
 }
 
-MakeFunctionStmt = { "make" ~ Ident ~ "(" ~ MakeFunctionParams ~ ")" ~ BlockExpr }
+MakeFunctionStmt = { "make" ~ DotIdent ~ "(" ~ MakeFunctionParams ~ ")" ~ BlockExpr }
 MakeFunctionParams = { (Ident ~ ",")* ~ Ident? }
 
-InspectStmt = { "inspect" ~ Expr }
+MakeTypeStmt = { "make" ~ DotIdent ~ MakeTypeItems }
+MakeTypeItems = _{ "[" ~ (SumTypeItems | ProductTypeItems) ~ "]" }
+SumTypeItems = { "+"? ~ TypeItem ~ ("+" ~ TypeItem)* }
+ProductTypeItems = { "*"? ~ TypeItem ~ ("*" ~ TypeItem)* }
+TypeItem = { Ident ~ MakeTypeItems? }
+
+VarStmt = { "var" ~ Ident ~ ("=" ~ Expr)? ~ ";" }
+
+// the restriction on placement expr will be conducted in parsing code
+AssignStmt = { Expr ~ "=" ~ Expr ~ ";" }
+
+AssertStmt = { "assert" ~ Expr ~ ";" }
+
+WhileStmt = { "while" ~ Expr ~ BlockExpr }
+
 
 Ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+DotIdent = @{ Ident ~ ("." ~ Ident)* }
 
 Integer = @{ ASCII_DIGIT+ }
 

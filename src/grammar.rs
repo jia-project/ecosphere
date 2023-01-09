@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use pest::{
-    iterators::{Pair, Pairs},
+    iterators::Pair,
     pratt_parser::{Assoc, Op, PrattParser},
     Parser as _,
 };
@@ -15,7 +15,6 @@ pub struct Parser;
 
 pub fn parse(input: &str) -> Box<[Instruction]> {
     let program = Parser::parse(Rule::Program, input).unwrap();
-    // dbg!(&program);
     let mut layers = Layers::default();
     layers.enter();
     let mut visitor = ProgramVisitor {
@@ -237,7 +236,7 @@ trait StmtVisitor {
                 self.layers().exit();
                 r
             }
-            Rule::CallExpr => {
+            Rule::CallNExpr => {
                 let mut expr = expr.into_inner();
                 let name = expr.next().unwrap().as_str().to_owned();
                 let mut arity = 0;
@@ -263,10 +262,6 @@ trait StmtVisitor {
 
     fn visit_stmt(&mut self, stmt: Pair<'_, Rule>) {
         match stmt.as_rule() {
-            Rule::InspectStmt => {
-                let register = self.visit_expr(stmt.into_inner().next().unwrap());
-                self.push_instruction(Instruction::Inspect(register))
-            }
             Rule::Expr => {
                 self.visit_expr(stmt);
             }

@@ -1,12 +1,12 @@
 use shattuck::{eval::Machine, grammar::parse, Instruction};
 
 const PROG: &str = r#"
-make Run data [
+make Run [
     * start
     * len
 ]
 
-make Option data [
+make Option [
     + None
     + Some
 ]
@@ -15,7 +15,7 @@ make merge_sort(v) {
     var MIN_RUN = 10;
 
     var len = v.length();
-    ; TODO insert sort for small list
+    # TODO insert sort for small list
 
     var runs = List.new();
     var end = len;
@@ -43,7 +43,7 @@ make merge_sort(v) {
         runs.push(Run[start = start, len = end - start]);
         end = start;
 
-        while collapse(runs_start, runs_len) match Some r {
+        while collapse(runs_start, runs_len) is Some r {
             var left = runs.get(r + 1);
             var right = runs.get(r);
             merge(v, left.start, right.start + right.len, left.len);
@@ -52,9 +52,9 @@ make merge_sort(v) {
         }
     }
 
-    assert runs.len() == 1
-    assert runs.get(0).start == 0
-    assert runs.get(0).len == len
+    assert runs.len() == 1;
+    assert runs.get(0).start == 0;
+    assert runs.get(0).len == len;
 }
 "#;
 
