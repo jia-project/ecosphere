@@ -7,7 +7,7 @@ Program = _{ SOI ~ ProgramStmt* ~ EOI }
 Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
     Infix = _{ Add | Sub | And | Or | LessThan | GreaterThan | Equal }
     Prefix = _ { Sub | Not | Inspect }
-    Postfix = _ { Dot | Is | As | Call1 }
+    Postfix = _ { Dot | Is | Match | As | Call1 }
 
     Add = { "+" }
     Sub = { "-" }
@@ -20,6 +20,7 @@ Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Pos
     Not = { "not" }
     Dot = { "." ~ Ident }
     Is = { "is" ~ Ident ~ Ident? }
+    Match = { "is" ~ "{" ~ "}" } // TODO
     As = { ".!" ~ Ident }
     Call1 = { "." ~ CallArgs }
 

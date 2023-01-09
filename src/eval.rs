@@ -303,8 +303,8 @@ impl Machine {
                     xs.push(x.escape(&mut self.arena));
                 }
                 xs.extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
-                let index =
-                    self.symbol.function_dispatches[&(context.into_boxed_slice(), xs.len())][name];
+                let index = self.symbol.function_dispatches
+                    [&(context.into_boxed_slice(), argument_xs.len())][name];
                 self.push_frame(index, &xs, *i);
                 return true;
             }

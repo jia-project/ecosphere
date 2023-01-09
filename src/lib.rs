@@ -111,10 +111,16 @@ impl Object {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator1 {
-    //
+    Not,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator2 {
     Add,
+    Sub,
+    And,
+    Or,
+    LessThan,
+    GreaterThan,
+    Equal,
 }
