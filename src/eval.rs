@@ -262,9 +262,9 @@ impl Machine {
                 r[i] = FrameRegister::Address(self.arena.allocate(data))
             }
 
-            JumpUnless(x, target) => {
-                let jumping = if *x == RegisterIndex::MAX {
-                    true
+            Jump(x, positive, negative) => {
+                let target = if positive == negative {
+                    *positive
                 } else {
                     let ObjectData::Data(type_index, _) = r[x].view() else {
                         panic!()
@@ -272,12 +272,10 @@ impl Machine {
                     let SymbolType::SumVariant { test, .. } = self.symbol.types[*type_index as usize] else {
                         panic!()
                     };
-                    test
+                    *if test { positive } else { negative }
                 };
-                if jumping {
-                    self.frames.last_mut().unwrap().program_counter = *target;
-                    return true;
-                }
+                self.frames.last_mut().unwrap().program_counter = target;
+                return true;
             }
             Return(x) => {
                 let x = r[x].escape(&mut self.arena);

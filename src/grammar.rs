@@ -17,27 +17,116 @@ pub fn parse(input: &str) -> Box<[Instruction]> {
     let program = Parser::parse(Rule::Program, input).unwrap();
     let mut layers = Context::default();
     layers.enter();
-    let mut visitor = ProgramVisitor {
-        instructions: Default::default(),
-        context: layers,
-    };
+    let mut visitor = ProgramVisitor(Context::default());
     for pair in program {
         visitor.visit_program_stmt(pair)
     }
-    visitor.push_instruction(Instruction::MakeLiteralObject(0, InstructionLiteral::Nil));
-    visitor.push_instruction(Instruction::Return(0));
-    visitor.instructions.into_boxed_slice()
+    visitor
+        .0
+        .instructions
+        .push(Instruction::MakeLiteralObject(0, InstructionLiteral::Nil));
+    visitor.0.instructions.push(Instruction::Return(0));
+    visitor.0.instructions.into_boxed_slice()
 }
 
-struct ProgramVisitor {
-    instructions: Vec<Instruction>,
-    context: Context,
+struct ProgramVisitor(Context);
+
+struct FunctionVisitor(Context);
+
+enum Expr<'a> {
+    Primary(Pair<'a, Rule>),
+    Operator1(Pair<'a, Rule>, Box<Expr<'a>>),
+    Operator2(Pair<'a, Rule>, Box<Expr<'a>>, Box<Expr<'a>>),
 }
 
 #[derive(Default)]
 struct Context {
+    instructions: Vec<Instruction>,
     scopes: Vec<HashMap<String, RegisterIndex>>,
     register_level: RegisterIndex,
+    control_scopes: Vec<(Vec<usize>, Vec<usize>)>,
+}
+
+impl ProgramVisitor {
+    fn visit_program_stmt(&mut self, stmt: Pair<'_, Rule>) {
+        match stmt.as_rule() {
+            Rule::MakeFunctionStmt => self.visit_make_function_stmt(stmt),
+            Rule::MakeTypeStmt => self.visit_make_type_stmt(stmt),
+            Rule::EOI => {}
+            _ => self.0.visit_stmt(stmt),
+        }
+    }
+
+    fn visit_make_function_stmt(&mut self, stmt: Pair<'_, Rule>) {
+        let mut stmt = stmt.into_inner();
+        // TODO context parameters
+        let name = stmt.next().unwrap().as_str().to_owned();
+        let parameters = stmt.next().unwrap();
+        let expr = stmt.next().unwrap();
+        assert_eq!(expr.as_rule(), Rule::BlockExpr); // or allow single line function?
+
+        let parameters = parameters
+            .into_inner()
+            .map(|param| param.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let arity = parameters.len();
+
+        let mut context = Context::default();
+        context.restore(arity as _);
+        context.enter();
+        for (i, parameter) in parameters.into_iter().enumerate() {
+            context.bind(parameter, i as _);
+        }
+
+        // newtype `FunctionVisitor` is not necessary for now
+        let mut visitor = FunctionVisitor(context);
+        visitor.0.visit_primary_expr(expr);
+        visitor.0.exit();
+        if !matches!(visitor.0.instructions.last(), Some(Instruction::Return(_))) {
+            let r = visitor.0.allocate();
+            visitor
+                .0
+                .instructions
+                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+            visitor.0.instructions.push(Instruction::Return(r));
+        }
+
+        self.0.instructions.push(Instruction::MakeFunction(
+            Box::new([]),
+            name,
+            arity,
+            visitor.0.instructions.into_boxed_slice(),
+        ))
+    }
+
+    fn visit_make_type_stmt(&mut self, stmt: Pair<'_, Rule>) {
+        let mut stmt = stmt.into_inner();
+        let name = stmt.next().unwrap().as_str().to_owned();
+        let items = stmt.next().unwrap();
+
+        fn visit(visitor: &mut ProgramVisitor, name: String, items: Pair<'_, Rule>) {
+            let type_op = match items.as_rule() {
+                Rule::ProductTypeItems => TypeOperator::Product,
+                Rule::SumTypeItems => TypeOperator::Sum,
+                _ => unreachable!(),
+            };
+            let mut item_names = Vec::new();
+            for item in items.into_inner() {
+                let mut item = item.into_inner();
+                let item_name = item.next().unwrap().as_str();
+                item_names.push(item_name.to_owned());
+                if let Some(items) = item.next() {
+                    visit(visitor, name.clone() + "." + item_name, items)
+                }
+            }
+            visitor.0.instructions.push(Instruction::MakeType(
+                name,
+                type_op,
+                item_names.into_boxed_slice(),
+            ))
+        }
+        visit(self, name, items)
+    }
 }
 
 impl Context {
@@ -90,104 +179,38 @@ impl Context {
         }
         false
     }
-}
 
-impl ProgramVisitor {
-    fn visit_program_stmt(&mut self, stmt: Pair<'_, Rule>) {
-        match stmt.as_rule() {
-            Rule::MakeFunctionStmt => self.visit_make_function_stmt(stmt),
-            Rule::MakeTypeStmt => self.visit_make_type_stmt(stmt),
-            Rule::EOI => {}
-            _ => self.visit_stmt(stmt),
-        }
+    fn control_enter(&mut self) {
+        self.control_scopes.push(Default::default())
     }
 
-    fn visit_make_function_stmt(&mut self, stmt: Pair<'_, Rule>) {
-        let mut stmt = stmt.into_inner();
-        // TODO context parameters
-        let name = stmt.next().unwrap().as_str().to_owned();
-        let parameters = stmt.next().unwrap();
-        let expr = stmt.next().unwrap();
-        assert_eq!(expr.as_rule(), Rule::BlockExpr); // or allow single line function?
-
-        let parameters = parameters
-            .into_inner()
-            .map(|param| param.as_str().to_owned())
-            .collect::<Vec<_>>();
-        let arity = parameters.len();
-
-        let mut context = Context::default();
-        context.restore(arity as _);
-        context.enter();
-        for (i, parameter) in parameters.into_iter().enumerate() {
-            context.bind(parameter, i as _);
-        }
-
-        let mut visitor = FunctionVisitor {
-            instructions: Default::default(),
-            context,
-        };
-        visitor.visit_primary_expr(expr);
-        visitor.context.exit();
-        if !matches!(visitor.instructions.last(), Some(Instruction::Return(_))) {
-            let r = visitor.context.allocate();
-            visitor.push_instruction(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
-            visitor.push_instruction(Instruction::Return(r));
-        }
-
-        self.instructions.push(Instruction::MakeFunction(
-            Box::new([]),
-            name,
-            arity,
-            visitor.instructions.into_boxed_slice(),
-        ))
+    fn jump_positive(&mut self, index: usize) {
+        self.control_scopes.last_mut().unwrap().0.push(index)
     }
 
-    fn visit_make_type_stmt(&mut self, stmt: Pair<'_, Rule>) {
-        let mut stmt = stmt.into_inner();
-        let name = stmt.next().unwrap().as_str().to_owned();
-        let items = stmt.next().unwrap();
+    fn jump_negative(&mut self, index: usize) {
+        self.control_scopes.last_mut().unwrap().1.push(index)
+    }
 
-        fn visit(visitor: &mut ProgramVisitor, name: String, items: Pair<'_, Rule>) {
-            let type_op = match items.as_rule() {
-                Rule::ProductTypeItems => TypeOperator::Product,
-                Rule::SumTypeItems => TypeOperator::Sum,
-                _ => unreachable!(),
-            };
-            let mut item_names = Vec::new();
-            for item in items.into_inner() {
-                let mut item = item.into_inner();
-                let item_name = item.next().unwrap().as_str();
-                item_names.push(item_name.to_owned());
-                if let Some(items) = item.next() {
-                    visit(visitor, name.clone() + "." + item_name, items)
-                }
+    fn control_exit(&mut self, positive: usize, negative: usize, instructions: &mut [Instruction]) {
+        let (pos, neg) = self.control_scopes.pop().unwrap();
+        for index in pos {
+            if let Instruction::Jump(_, target, _) = &mut instructions[index] {
+                *target = positive
+            } else {
+                unreachable!()
             }
-            visitor.instructions.push(Instruction::MakeType(
-                name,
-                type_op,
-                item_names.into_boxed_slice(),
-            ))
         }
-        visit(self, name, items)
+        for index in neg {
+            if let Instruction::Jump(_, _, target) = &mut instructions[index] {
+                *target = negative
+            } else {
+                unreachable!()
+            }
+        }
     }
-}
 
-struct FunctionVisitor {
-    instructions: Vec<Instruction>,
-    context: Context,
-}
-
-enum Expr<'a> {
-    Primary(Pair<'a, Rule>),
-    Operator1(Pair<'a, Rule>, Box<Expr<'a>>),
-    Operator2(Pair<'a, Rule>, Box<Expr<'a>>, Box<Expr<'a>>),
-}
-
-trait StmtVisitor {
-    fn push_instruction(&mut self, instruction: Instruction);
-
-    fn context(&mut self) -> &mut Context;
+    fn jump_if(&mut self, r: RegisterIndex) {}
 
     fn visit_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
         let expr = PrattParser::new()
@@ -213,7 +236,7 @@ trait StmtVisitor {
         match expr {
             Expr::Primary(expr) => self.visit_primary_expr(expr),
             Expr::Operator2(op, expr1, expr2) => {
-                let r = self.context().save();
+                let r = self.save();
                 let r1 = self.visit_expr_internal(*expr1);
                 let r2 = self.visit_expr_internal(*expr2);
                 let op = match op.as_rule() {
@@ -226,12 +249,13 @@ trait StmtVisitor {
                     Rule::Equal => Operator2::Equal,
                     _ => unreachable!(),
                 };
-                self.context().restore_allocate(r);
-                self.push_instruction(Instruction::Operator2(r, op, r1, r2));
+                self.restore_allocate(r);
+                self.instructions
+                    .push(Instruction::Operator2(r, op, r1, r2));
                 r
             }
             Expr::Operator1(op, expr) => {
-                let r = self.context().save();
+                let r = self.save();
                 let r1 = self.visit_expr_internal(*expr);
 
                 if op.as_rule() == Rule::Call1 {
@@ -246,31 +270,33 @@ trait StmtVisitor {
                             self.visit_expr(argument)
                         })
                         .collect();
-                    self.context().restore_allocate(r);
-                    self.push_instruction(Instruction::Call(r, Box::new([r1]), name, arguments));
+                    self.restore_allocate(r);
+                    self.instructions
+                        .push(Instruction::Call(r, Box::new([r1]), name, arguments));
                     return r;
                 }
 
                 if op.as_rule() == Rule::Inspect {
-                    self.push_instruction(Instruction::Inspect(r1));
+                    self.instructions.push(Instruction::Inspect(r1));
                     return r1;
                 }
 
-                self.context().restore_allocate(r);
+                self.restore_allocate(r);
                 match op.as_rule() {
                     Rule::Not => {
-                        self.push_instruction(Instruction::Operator1(r, Operator1::Not, r1));
+                        self.instructions
+                            .push(Instruction::Operator1(r, Operator1::Not, r1));
                         r
                     }
                     Rule::Sub => todo!(),
                     Rule::Dot => {
                         let component = op.into_inner().next().unwrap().as_str().to_owned();
-                        self.push_instruction(Instruction::Get(r, r1, component));
+                        self.instructions.push(Instruction::Get(r, r1, component));
                         r
                     }
                     Rule::As => {
                         let variant = op.into_inner().next().unwrap().as_str().to_owned();
-                        self.push_instruction(Instruction::As(r, r1, variant));
+                        self.instructions.push(Instruction::As(r, r1, variant));
                         r
                     }
                     Rule::Is => {
@@ -289,17 +315,18 @@ trait StmtVisitor {
         match expr.as_rule() {
             Rule::Expr => self.visit_expr(expr),
             Rule::Ident => {
-                if let Some(r) = self.context().find(expr.as_str()) {
+                if let Some(r) = self.find(expr.as_str()) {
                     r
                 } else {
-                    let r = self.context().allocate();
-                    self.push_instruction(Instruction::Load(r, expr.as_str().to_owned()));
+                    let r = self.allocate();
+                    self.instructions
+                        .push(Instruction::Load(r, expr.as_str().to_owned()));
                     r
                 }
             }
             Rule::Integer => {
-                let r = self.context().allocate();
-                self.push_instruction(Instruction::MakeLiteralObject(
+                let r = self.allocate();
+                self.instructions.push(Instruction::MakeLiteralObject(
                     r,
                     InstructionLiteral::Integer(expr.as_str().parse().unwrap()),
                 ));
@@ -308,8 +335,8 @@ trait StmtVisitor {
             Rule::String => {
                 // handle escaping properly
                 let value = expr.as_str()[1..expr.as_str().len() - 1].to_owned();
-                let r = self.context().allocate();
-                self.push_instruction(Instruction::MakeLiteralObject(
+                let r = self.allocate();
+                self.instructions.push(Instruction::MakeLiteralObject(
                     r,
                     InstructionLiteral::String(value),
                 ));
@@ -359,38 +386,42 @@ trait StmtVisitor {
                 )
             })
             .collect();
-        let r = self.context().allocate();
-        self.push_instruction(Instruction::MakeDataObject(r, name, data));
+        let r = self.allocate();
+        self.instructions
+            .push(Instruction::MakeDataObject(r, name, data));
         r
     }
 
     fn visit_block_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
         let mut expr = expr.into_inner().peekable();
         if expr.peek().is_none() {
-            let r = self.context().allocate();
-            self.push_instruction(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+            let r = self.allocate();
+            self.instructions
+                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
             return r;
         }
-        self.context().enter();
-        let level = self.context().save();
+        self.enter();
+        let level = self.save();
         let mut item;
         while {
             item = expr.next().unwrap();
             expr.peek().is_some()
         } {
             self.visit_stmt(item);
-            self.context().restore(level);
+            self.restore(level);
         }
         let r = if item.as_rule() == Rule::ValueExpr {
             self.visit_expr(item)
         } else {
             self.visit_stmt(item);
-            self.context().restore(level);
-            let r = self.context().allocate();
-            self.push_instruction(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
-            r
+            self.restore_allocate(level);
+            self.instructions.push(Instruction::MakeLiteralObject(
+                level,
+                InstructionLiteral::Nil,
+            ));
+            level
         };
-        self.context().exit();
+        self.exit();
         r
     }
 
@@ -400,7 +431,7 @@ trait StmtVisitor {
         mut name: &'a str,
         arguments: impl Iterator<Item = Pair<'a, Rule>>,
     ) -> RegisterIndex {
-        let level = self.context().save();
+        let r = self.save();
         let mut context_arguments = context_arguments
             .map(|expr| {
                 assert_eq!(expr.as_rule(), Rule::Expr);
@@ -409,7 +440,7 @@ trait StmtVisitor {
             .collect::<Vec<_>>();
         if let [context, n] = *name.split('.').collect::<Vec<_>>() {
             assert!(context_arguments.is_empty());
-            if let Some(r) = self.context().find(context) {
+            if let Some(r) = self.find(context) {
                 context_arguments.push(r);
                 name = n;
             }
@@ -420,9 +451,8 @@ trait StmtVisitor {
                 self.visit_expr(expr)
             })
             .collect();
-        self.context().restore(level);
-        let r = self.context().allocate();
-        self.push_instruction(Instruction::Call(
+        self.restore_allocate(r);
+        self.instructions.push(Instruction::Call(
             r,
             context_arguments.into_boxed_slice(),
             name.to_owned(),
@@ -442,10 +472,12 @@ trait StmtVisitor {
             Rule::SetStmt => todo!(),
             Rule::AssertStmt => {
                 let r = self.visit_expr(stmt.into_inner().next().unwrap());
-                self.push_instruction(Instruction::Assert(r))
+                self.instructions.push(Instruction::Assert(r))
             }
             Rule::Expr => {
+                let level = self.save();
                 self.visit_expr(stmt);
+                self.restore(level)
             }
             _ => unreachable!(),
         }
@@ -457,11 +489,12 @@ trait StmtVisitor {
         let r = if let Some(expr) = stmt.next() {
             self.visit_assign_expr(expr)
         } else {
-            let r = self.context().allocate();
-            self.push_instruction(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+            let r = self.allocate();
+            self.instructions
+                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
             r
         };
-        self.context().bind(name, r);
+        self.bind(name, r);
     }
 
     fn visit_assign_stmt(&mut self, stmt: Pair<'_, Rule>) {
@@ -469,41 +502,21 @@ trait StmtVisitor {
         let name = stmt.next().unwrap().as_str();
         let expr = stmt.next().unwrap();
         let r = self.visit_assign_expr(expr);
-        if !self.context().find_update(name, r) {
+        if !self.find_update(name, r) {
             todo!() // update global
         }
     }
 
     fn visit_assign_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
-        let r = self.context().save();
+        let r = self.save();
         let r1 = self.visit_expr(expr);
         if r1 < r {
-            self.context().restore(r);
+            self.restore(r);
             r1
         } else {
-            self.context().restore_allocate(r);
-            self.push_instruction(Instruction::Operator1(r, Operator1::Copy, r1));
+            self.restore_allocate(r);
+            self.instructions.push(Instruction::Operator1(r, Operator1::Copy, r1));
             r
         }
-    }
-}
-
-impl StmtVisitor for ProgramVisitor {
-    fn push_instruction(&mut self, instruction: Instruction) {
-        self.instructions.push(instruction)
-    }
-
-    fn context(&mut self) -> &mut Context {
-        &mut self.context
-    }
-}
-
-impl StmtVisitor for FunctionVisitor {
-    fn push_instruction(&mut self, instruction: Instruction) {
-        self.instructions.push(instruction)
-    }
-
-    fn context(&mut self) -> &mut Context {
-        &mut self.context
     }
 }

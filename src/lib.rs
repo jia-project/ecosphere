@@ -9,7 +9,7 @@ pub enum Instruction {
     MakeLiteralObject(RegisterIndex, InstructionLiteral),
     MakeDataObject(RegisterIndex, String, Box<[(String, RegisterIndex)]>),
 
-    JumpUnless(RegisterIndex, usize),
+    Jump(RegisterIndex, usize, usize),
     Return(RegisterIndex),
     Call(
         RegisterIndex,
