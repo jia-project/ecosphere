@@ -49,11 +49,11 @@ IfExpr = { "if" ~ Expr ~ BlockExpr ~ ("else" ~ BlockExpr)? }
 // notice that a call on a product object's component must be wrapped with 
 // parens, i.e. `(a.b).c()`, so `a.b.c()` will always resolve to some global
 // function `a.b.c` and there's no confliction when there's more than one dot
-Call0Expr = { DotIdent ~ CallArgs }
+Call0Expr = { PublicIdent ~ CallArgs }
 CallNExpr = { CallArgs ~ "." ~ Ident ~ CallArgs }
 CallArgs = { "(" ~ (Expr ~ ",")* ~ Expr? ~ ")" }
 
-DataExpr = { DotIdent ~ DataItems }
+DataExpr = { PublicIdent ~ DataItems }
 DataItems = { "[" ~ (DataItem ~ ",")* ~ DataItem? ~ "]" }
 DataItem = { Ident ~ ("=" ~ (Expr | DataItems))? }
 
@@ -67,16 +67,20 @@ ProgramStmt = _{
 Stmt = _{
     VarStmt
     | AssignStmt
+    | SetStmt
     | AssertStmt
     | WhileStmt
+    | BreakStmt
+    | ContinueStmt
+    | ReturnStmt
     | IfExpr // allow omit semicolon for expr ending with blockexpr
     | Expr ~ ";"
 }
 
-MakeFunctionStmt = { "make" ~ DotIdent ~ "(" ~ MakeFunctionParams ~ ")" ~ BlockExpr }
+MakeFunctionStmt = { "make" ~ PublicIdent ~ "(" ~ MakeFunctionParams ~ ")" ~ BlockExpr }
 MakeFunctionParams = { (Ident ~ ",")* ~ Ident? }
 
-MakeTypeStmt = { "make" ~ DotIdent ~ MakeTypeItems }
+MakeTypeStmt = { "make" ~ PublicIdent ~ MakeTypeItems }
 MakeTypeItems = _{ "[" ~ (SumTypeItems | ProductTypeItems) ~ "]" }
 SumTypeItems = { "+"? ~ TypeItem ~ ("+" ~ TypeItem)* }
 ProductTypeItems = { "*"? ~ TypeItem ~ ("*" ~ TypeItem)* }
@@ -84,16 +88,22 @@ TypeItem = { Ident ~ MakeTypeItems? }
 
 VarStmt = { "var" ~ Ident ~ ("=" ~ Expr)? ~ ";" }
 
-// the restriction on placement expr will be conducted in parsing code
-AssignStmt = { Expr ~ "=" ~ Expr ~ ";" }
+AssignStmt = { Ident ~ "=" ~ Expr ~ ";" }
+
+SetStmt = { Expr ~ "set" ~ Ident ~ "=" ~ Expr ~ ";" }
 
 AssertStmt = { "assert" ~ Expr ~ ";" }
 
 WhileStmt = { "while" ~ Expr ~ BlockExpr }
 
+BreakStmt = { "break" ~ ";" }
+
+ContinueStmt = { "continue" ~ ";" }
+
+ReturnStmt = { "return" ~ Expr? ~ ";" }
 
 Ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
-DotIdent = @{ Ident ~ ("." ~ Ident)* }
+PublicIdent = @{ Ident ~ ("." ~ Ident)* }
 
 Integer = @{ ASCII_DIGIT+ }
 

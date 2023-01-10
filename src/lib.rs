@@ -19,7 +19,9 @@ pub enum Instruction {
     ),
 
     Inspect(RegisterIndex),
+    Assert(RegisterIndex),
     Load(RegisterIndex, String),
+    Store(String, RegisterIndex),
     Get(RegisterIndex, RegisterIndex, String),
     Set(RegisterIndex, String, RegisterIndex),
     Is(RegisterIndex, RegisterIndex, String),
@@ -111,6 +113,7 @@ impl Object {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator1 {
+    Copy,
     Not,
 }
 

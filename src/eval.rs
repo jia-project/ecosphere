@@ -50,7 +50,7 @@ enum SymbolType {
         components: HashMap<String, usize>,
     },
     Sum {
-        name: String,
+        // name: String,
         variant_names: HashMap<String, u32>,
     },
     SumVariant {
@@ -310,6 +310,7 @@ impl Machine {
             }
 
             Load(i, name) => todo!(),
+            Store(name, x) => todo!(),
             Inspect(x) => {
                 let repr = match r[x].view() {
                     ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
@@ -332,6 +333,15 @@ impl Machine {
                     Instant::now() - self.instant_zero,
                     r[x]
                 );
+            }
+            Assert(x) => {
+                let ObjectData::Data(type_index, _) = r[x].view() else {
+                    panic!()
+                };
+                let SymbolType::SumVariant { test, ..} = &self.symbol.types[*type_index as usize] else {
+                    panic!()
+                };
+                assert!(*test)
             }
             Get(i, x, name) => {
                 let ObjectData::Data(type_index, data) = r[x].view() else {
@@ -415,7 +425,7 @@ impl Machine {
                         let type_index = self.symbol.types.len();
                         self.symbol.type_names.insert(name.clone(), type_index);
                         self.symbol.types.push(SymbolType::Sum {
-                            name: name.clone(),
+                            // name: name.clone(),
                             variant_names,
                         });
                     }

@@ -52,7 +52,12 @@ impl Context {
     }
 
     fn restore(&mut self, level: RegisterIndex) {
+        assert!(self.register_level >= level); // always?
         self.register_level = level;
+    }
+
+    fn restore_allocate(&mut self, level: RegisterIndex) {
+        self.register_level = level + 1;
     }
 
     fn enter(&mut self) {
@@ -63,15 +68,8 @@ impl Context {
         self.scopes.pop().unwrap();
     }
 
-    fn allocate_name(&mut self, name: String) {
-        let r = self
-            .scopes
-            .last()
-            .unwrap()
-            .get(&name)
-            .copied()
-            .unwrap_or_else(|| self.allocate());
-        self.scopes.last_mut().unwrap().insert(name, r);
+    fn bind(&mut self, name: String, register: RegisterIndex) {
+        self.scopes.last_mut().unwrap().insert(name, register);
     }
 
     fn find(&self, name: &str) -> Option<RegisterIndex> {
@@ -81,6 +79,16 @@ impl Context {
             }
         }
         None
+    }
+
+    fn find_update(&mut self, name: &str, register: RegisterIndex) -> bool {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(r) = scope.get_mut(name) {
+                *r = register;
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -107,20 +115,26 @@ impl ProgramVisitor {
             .map(|param| param.as_str().to_owned())
             .collect::<Vec<_>>();
         let arity = parameters.len();
-        let mut layers = Context::default();
-        layers.enter();
-        for parameter in parameters {
-            layers.allocate_name(parameter);
+
+        let mut context = Context::default();
+        context.restore(arity as _);
+        context.enter();
+        for (i, parameter) in parameters.into_iter().enumerate() {
+            context.bind(parameter, i as _);
         }
+
         let mut visitor = FunctionVisitor {
             instructions: Default::default(),
-            context: layers,
+            context,
         };
         visitor.visit_primary_expr(expr);
         visitor.context.exit();
         if !matches!(visitor.instructions.last(), Some(Instruction::Return(_))) {
-            visitor.push_instruction(Instruction::Return(arity as _));
+            let r = visitor.context.allocate();
+            visitor.push_instruction(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+            visitor.push_instruction(Instruction::Return(r));
         }
+
         self.instructions.push(Instruction::MakeFunction(
             Box::new([]),
             name,
@@ -199,7 +213,7 @@ trait StmtVisitor {
         match expr {
             Expr::Primary(expr) => self.visit_primary_expr(expr),
             Expr::Operator2(op, expr1, expr2) => {
-                let level = self.context().save();
+                let r = self.context().save();
                 let r1 = self.visit_expr_internal(*expr1);
                 let r2 = self.visit_expr_internal(*expr2);
                 let op = match op.as_rule() {
@@ -212,13 +226,12 @@ trait StmtVisitor {
                     Rule::Equal => Operator2::Equal,
                     _ => unreachable!(),
                 };
-                self.context().restore(level);
-                let r = self.context().allocate();
+                self.context().restore_allocate(r);
                 self.push_instruction(Instruction::Operator2(r, op, r1, r2));
                 r
             }
             Expr::Operator1(op, expr) => {
-                let level = self.context().save();
+                let r = self.context().save();
                 let r1 = self.visit_expr_internal(*expr);
 
                 if op.as_rule() == Rule::Call1 {
@@ -233,8 +246,7 @@ trait StmtVisitor {
                             self.visit_expr(argument)
                         })
                         .collect();
-                    self.context().restore(level);
-                    let r = self.context().allocate();
+                    self.context().restore_allocate(r);
                     self.push_instruction(Instruction::Call(r, Box::new([r1]), name, arguments));
                     return r;
                 }
@@ -244,8 +256,7 @@ trait StmtVisitor {
                     return r1;
                 }
 
-                self.context().restore(level);
-                let r = self.context().allocate();
+                self.context().restore_allocate(r);
                 match op.as_rule() {
                     Rule::Not => {
                         self.push_instruction(Instruction::Operator1(r, Operator1::Not, r1));
@@ -287,59 +298,26 @@ trait StmtVisitor {
                 }
             }
             Rule::Integer => {
-                let register = self.context().allocate();
+                let r = self.context().allocate();
                 self.push_instruction(Instruction::MakeLiteralObject(
-                    register,
+                    r,
                     InstructionLiteral::Integer(expr.as_str().parse().unwrap()),
                 ));
-                register
+                r
             }
             Rule::String => {
                 // handle escaping properly
                 let value = expr.as_str()[1..expr.as_str().len() - 1].to_owned();
-                let register = self.context().allocate();
+                let r = self.context().allocate();
                 self.push_instruction(Instruction::MakeLiteralObject(
-                    register,
+                    r,
                     InstructionLiteral::String(value),
                 ));
-                register
-            }
-            Rule::Float => todo!(),
-            Rule::BlockExpr => {
-                let mut expr = expr.into_inner().peekable();
-                if expr.peek().is_none() {
-                    let r = self.context().allocate();
-                    self.push_instruction(Instruction::MakeLiteralObject(
-                        r,
-                        InstructionLiteral::Nil,
-                    ));
-                    return r;
-                }
-                self.context().enter();
-                let level = self.context().save();
-                let mut item;
-                while {
-                    item = expr.next().unwrap();
-                    expr.peek().is_some()
-                } {
-                    self.visit_stmt(item);
-                    self.context().restore(level);
-                }
-                let r = if item.as_rule() == Rule::ValueExpr {
-                    self.visit_expr(item)
-                } else {
-                    self.visit_stmt(item);
-                    self.context().restore(level);
-                    let r = self.context().allocate();
-                    self.push_instruction(Instruction::MakeLiteralObject(
-                        r,
-                        InstructionLiteral::Nil,
-                    ));
-                    r
-                };
-                self.context().exit();
                 r
             }
+            Rule::Float => todo!(),
+            Rule::DataExpr => self.visit_data_expr(expr),
+            Rule::BlockExpr => self.visit_block_expr(expr),
             Rule::Call0Expr => {
                 let mut expr = expr.into_inner();
                 let name = expr.next().unwrap().as_str();
@@ -355,6 +333,65 @@ trait StmtVisitor {
             }
             _ => unreachable!(),
         }
+    }
+
+    fn visit_data_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+        let mut expr = expr.into_inner();
+        let name = expr.next().unwrap().as_str().to_owned();
+        let items = expr.next().unwrap();
+        self.visit_data_items(name, items)
+    }
+
+    fn visit_data_items(&mut self, name: String, items: Pair<'_, Rule>) -> RegisterIndex {
+        let data = items
+            .into_inner()
+            .map(|item| {
+                let mut item = item.into_inner();
+                let item_name = item.next().unwrap().as_str();
+                let value = item.next().unwrap();
+                (
+                    item_name.to_owned(),
+                    match value.as_rule() {
+                        Rule::Expr => self.visit_expr(value),
+                        Rule::DataItems => self.visit_data_items(name.clone() + item_name, value),
+                        _ => unreachable!(),
+                    },
+                )
+            })
+            .collect();
+        let r = self.context().allocate();
+        self.push_instruction(Instruction::MakeDataObject(r, name, data));
+        r
+    }
+
+    fn visit_block_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+        let mut expr = expr.into_inner().peekable();
+        if expr.peek().is_none() {
+            let r = self.context().allocate();
+            self.push_instruction(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+            return r;
+        }
+        self.context().enter();
+        let level = self.context().save();
+        let mut item;
+        while {
+            item = expr.next().unwrap();
+            expr.peek().is_some()
+        } {
+            self.visit_stmt(item);
+            self.context().restore(level);
+        }
+        let r = if item.as_rule() == Rule::ValueExpr {
+            self.visit_expr(item)
+        } else {
+            self.visit_stmt(item);
+            self.context().restore(level);
+            let r = self.context().allocate();
+            self.push_instruction(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+            r
+        };
+        self.context().exit();
+        r
     }
 
     fn visit_call_expr<'a>(
@@ -394,12 +431,59 @@ trait StmtVisitor {
         r
     }
 
+    fn visit_if_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+        todo!()
+    }
+
     fn visit_stmt(&mut self, stmt: Pair<'_, Rule>) {
         match stmt.as_rule() {
+            Rule::VarStmt => self.visit_var_stmt(stmt),
+            Rule::AssignStmt => self.visit_assign_stmt(stmt),
+            Rule::SetStmt => todo!(),
+            Rule::AssertStmt => {
+                let r = self.visit_expr(stmt.into_inner().next().unwrap());
+                self.push_instruction(Instruction::Assert(r))
+            }
             Rule::Expr => {
                 self.visit_expr(stmt);
             }
             _ => unreachable!(),
+        }
+    }
+
+    fn visit_var_stmt(&mut self, stmt: Pair<'_, Rule>) {
+        let mut stmt = stmt.into_inner();
+        let name = stmt.next().unwrap().as_str().to_owned();
+        let r = if let Some(expr) = stmt.next() {
+            self.visit_assign_expr(expr)
+        } else {
+            let r = self.context().allocate();
+            self.push_instruction(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+            r
+        };
+        self.context().bind(name, r);
+    }
+
+    fn visit_assign_stmt(&mut self, stmt: Pair<'_, Rule>) {
+        let mut stmt = stmt.into_inner();
+        let name = stmt.next().unwrap().as_str();
+        let expr = stmt.next().unwrap();
+        let r = self.visit_assign_expr(expr);
+        if !self.context().find_update(name, r) {
+            todo!() // update global
+        }
+    }
+
+    fn visit_assign_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+        let r = self.context().save();
+        let r1 = self.visit_expr(expr);
+        if r1 < r {
+            self.context().restore(r);
+            r1
+        } else {
+            self.context().restore_allocate(r);
+            self.push_instruction(Instruction::Operator1(r, Operator1::Copy, r1));
+            r
         }
     }
 }
