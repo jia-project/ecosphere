@@ -25,16 +25,34 @@ impl Default for Symbol {
         let mut type_names = HashMap::new();
         let mut types = Vec::new();
         let s = String::from;
-        type_names.insert(String::from(":intrinsic.nil"), types.len());
+
+        // intrinsic types should be scoped with namespace
+        type_names.insert(s("Integer"), Machine::TYPE_INTEGER as usize);
+        type_names.insert(s("String"), Machine::TYPE_STRING as usize);
+        type_names.insert(s("Array"), Machine::TYPE_ARRAY as usize);
+
+        type_names.insert(s("Nil"), types.len());
         types.push(SymbolType::Product {
             name: s("Nil"),
             components: Default::default(),
         });
+
+        let mut variant_names = HashMap::new();
+        variant_names.insert(s("False"), types.len() as u32);
         types.push(SymbolType::SumVariant {
             type_name: s("Bool"),
             name: s("False"),
             test: false,
         });
+        variant_names.insert(s("True"), types.len() as _);
+        types.push(SymbolType::SumVariant {
+            type_name: s("Bool"),
+            name: s("True"),
+            test: true,
+        });
+        type_names.insert(s("Bool"), types.len());
+        types.push(SymbolType::Sum { variant_names });
+
         Self {
             type_names,
             types,
@@ -181,6 +199,7 @@ impl Machine {
 
     const TYPE_INTEGER: TypeIndex = TypeIndex::MAX - 1;
     const TYPE_STRING: TypeIndex = TypeIndex::MAX - 2;
+    const TYPE_ARRAY: TypeIndex = TypeIndex::MAX - 3;
 
     fn make_function(&mut self, instruction: Instruction, functions: &mut Vec<Box<[Instruction]>>) {
         let Instruction::MakeFunction(context_types, name, n_argument, instructions) = instruction else {
@@ -188,12 +207,7 @@ impl Machine {
         };
         let context_types = context_types
             .iter()
-            .map(|name| match (&**name, self.symbol.type_names.get(name)) {
-                (":intrinsic.integer", _) => Self::TYPE_INTEGER,
-                (":intrinsic.string", _) => Self::TYPE_STRING,
-                (_, Some(type_index)) => *type_index as _,
-                _ => panic!(),
-            })
+            .map(|name| self.symbol.type_names[name] as _)
             .collect();
         let index = functions.len();
         let present = self
@@ -245,8 +259,10 @@ impl Machine {
                 r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Integer(*value)))
             }
             MakeLiteralObject(i, InstructionLiteral::String(value)) => {
-                r[i] =
-                    FrameRegister::Address(self.arena.allocate(ObjectData::String(value.clone())))
+                r[i] = FrameRegister::Address(
+                    self.arena
+                        .allocate(ObjectData::String(value.clone().into())),
+                )
             }
 
             MakeDataObject(i, name, items) => {
@@ -403,7 +419,7 @@ impl Machine {
                 let object = {
                     match (op, r[x].view(), r[y].view()) {
                         (Add, Integer(x), Integer(y)) => Integer(*x + *y),
-                        (Add, String(x), String(y)) => String(x.clone() + y),
+                        (Add, String(x), String(y)) => String((x.to_string() + y).into()),
                         _ => panic!(),
                     }
                 };
