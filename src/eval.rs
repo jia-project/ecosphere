@@ -68,10 +68,14 @@ pub struct Machine {
 }
 
 struct Frame {
-    registers: [FrameRegister; 1 << RegisterIndex::BITS],
+    registers: [FrameRegister; Self::REGISTER_COUNT], //
     return_register: RegisterIndex,
     function_index: usize,
     program_counter: usize,
+}
+
+impl Frame {
+    const REGISTER_COUNT: usize = 64;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -133,7 +137,7 @@ impl Machine {
     ) {
         let mut frame = Frame {
             registers: repeat_with(Default::default)
-                .take(1 << RegisterIndex::BITS)
+                .take(Frame::REGISTER_COUNT)
                 .collect::<Vec<_>>()
                 .try_into()
                 .unwrap(),
@@ -208,15 +212,15 @@ impl Machine {
 
     fn execute(&mut self, instruction: &Instruction) -> bool {
         struct R<'a>(&'a mut Vec<Frame>);
-        impl Index<&u8> for R<'_> {
+        impl Index<&usize> for R<'_> {
             type Output = FrameRegister;
-            fn index(&self, index: &u8) -> &Self::Output {
-                &self.0.last().unwrap().registers[*index as usize]
+            fn index(&self, index: &usize) -> &Self::Output {
+                &self.0.last().unwrap().registers[*index]
             }
         }
-        impl IndexMut<&u8> for R<'_> {
-            fn index_mut(&mut self, index: &u8) -> &mut Self::Output {
-                &mut self.0.last_mut().unwrap().registers[*index as usize]
+        impl IndexMut<&usize> for R<'_> {
+            fn index_mut(&mut self, index: &usize) -> &mut Self::Output {
+                &mut self.0.last_mut().unwrap().registers[*index]
             }
         }
         let mut r = R(&mut self.frames);

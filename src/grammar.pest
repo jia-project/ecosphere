@@ -5,12 +5,15 @@ Program = _{ SOI ~ ProgramStmt* ~ EOI }
 
 
 Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
-    Infix = _{ Add | Sub | And | Or | LessThan | GreaterThan | Equal }
+    Infix = _{ Add | Sub | Mul | Div | Rem | And | Or | LessThan | GreaterThan | Equal }
     Prefix = _ { Sub | Not | Inspect }
     Postfix = _ { Dot | Is | Match | As | Call1 }
 
     Add = { "+" }
     Sub = { "-" }
+    Mul = { "*" }
+    Div = { "/" }
+    Rem = { "%" }
     And = { "and" }
     Or = { "or" }
     LessThan = { "<" }

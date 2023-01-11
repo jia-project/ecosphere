@@ -1,0 +1,60 @@
+make Run [
+    * start
+    * len
+]
+
+make Option [
+    + None
+    + Some
+]
+
+make merge_sort(v) {
+    var MIN_RUN = 10;
+
+    var len = v.length();
+    # TODO insert sort for small list
+
+    var runs = Array.new(v / 10 + 1);  # maximum number of runs
+    var runs_len = 0;
+    var end = len;
+    while end > 0 {
+        var start = end - 1;
+        if start > 0 {
+            start = start - 1;
+            if v.at(start + 1) < v.at(start) {
+                while start > 0 and v.at(start) < v.at(start - 1) {
+                    start = start - 1;
+                }
+                # polyfill of v.view(start, end).reverse()
+                reverse(v, start, end);
+            } else {
+                while start > 0 and not v.at(start) < v.at(start - 1) {
+                    start = start - 1;
+                }
+            }
+        }
+
+        while start > 0 and end - start < MIN_RUN {
+            start = start - 1;
+            insert_head(v, start, end);
+        }
+
+        runs.at(runs_len, Run[start = start, len = end - start]);
+        runs_len = runs_len + 1;
+        end = start;
+
+        while collapse(runs_start, runs_len) is Some r {
+            var left = runs.at(r + 1);
+            var right = runs.at(r);
+            merge(v, left.start, right.start + right.len, left.len);
+            runs.at(r, Run[start = left.start, len = left.len + right.len]);
+            # runs.remove(r + 1);
+            runs.swap(r + 1, runs.length() - 1);
+            runs_len = runs_len - 1;
+        }
+    }
+
+    assert runs_len == 1;
+    assert runs.at(0).start == 0;
+    assert runs.at(0).len == len;
+}

@@ -2,7 +2,7 @@ pub mod arena;
 pub mod eval;
 pub mod grammar;
 
-pub type RegisterIndex = u8;
+pub type RegisterIndex = usize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
@@ -42,6 +42,7 @@ pub enum Instruction {
     ParsingPlaceholder(grammar::Placeholder),
 }
 
+// must be embedded in bytecode directly because parser emitts these
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstructionLiteral {
     Nil,
@@ -134,6 +135,9 @@ pub enum Operator1 {
 pub enum Operator2 {
     Add,
     Sub,
+    Mul,
+    Div,
+    Rem,
     LessThan,
     GreaterThan,
     Equal,
