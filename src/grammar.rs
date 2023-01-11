@@ -78,16 +78,15 @@ impl ProgramVisitor {
             .collect::<Vec<_>>();
         let arity = parameters.len();
 
-        let mut context = FunctionVisitor::default();
-        context.restore(arity as _);
-        context.enter();
-        for (i, parameter) in parameters.into_iter().enumerate() {
-            context.bind(parameter, i as _);
-        }
-
         let mut visitor = FunctionVisitor::default();
+        visitor.enter();
+        for parameter in parameters {
+            let r = visitor.allocate();
+            visitor.bind(parameter, r);
+        }
         visitor.visit_primary_expr(expr);
         visitor.exit();
+        // patch a `return;` if function is not ending with one
         if !matches!(visitor.instructions.last(), Some(Instruction::Return(_))) {
             let r = visitor.allocate();
             visitor
@@ -218,21 +217,23 @@ impl FunctionVisitor {
     }
 
     fn visit_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+        // dbg!(&expr);
         let expr = PrattParser::new()
             .op(Op::prefix(Rule::Inspect))
-            .op(Op::postfix(Rule::Or))
-            .op(Op::postfix(Rule::And))
+            .op(Op::infix(Rule::Or, Assoc::Left))
+            .op(Op::infix(Rule::And, Assoc::Left))
             .op(Op::prefix(Rule::Not))
             .op(Op::postfix(Rule::Is))
             .op(Op::infix(Rule::LessThan, Assoc::Left)
                 | Op::infix(Rule::GreaterThan, Assoc::Left)
                 | Op::infix(Rule::Equal, Assoc::Left))
             .op(Op::infix(Rule::Add, Assoc::Left) | Op::infix(Rule::Sub, Assoc::Left))
-            .op(Op::prefix(Rule::Sub))
+            // .op(Op::prefix(Rule::Sub))
             .op(Op::postfix(Rule::Dot) | Op::postfix(Rule::As) | Op::postfix(Rule::Call1))
             .map_primary(Expr::Primary)
             .map_infix(|lhs, op, rhs| Expr::Operator2(op, Box::new(lhs), Box::new(rhs)))
             .map_prefix(|op, rhs| Expr::Operator1(op, Box::new(rhs)))
+            .map_postfix(|lhs, op| Expr::Operator1(op, Box::new(lhs)))
             .parse(expr.into_inner());
         self.visit_expr_internal(expr)
     }
@@ -475,15 +476,16 @@ impl FunctionVisitor {
         let r = self.save();
         for stmt in stmts.into_inner() {
             self.visit_stmt(stmt);
-            self.restore(r);
         }
-        let r = if let Some(expr) = expr {
-            self.visit_expr(expr)
+        if let Some(expr) = expr {
+            let expr_r = self.visit_expr(expr);
+            self.restore_allocate(r);
+            self.instructions
+                .push(Instruction::Operator1(r, Operator1::Copy, expr_r));
         } else {
             self.restore_allocate(r);
             self.instructions
                 .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
-            r
         };
         self.exit();
         r
@@ -567,14 +569,16 @@ impl FunctionVisitor {
             Rule::AssignStmt => self.visit_assign_stmt(stmt),
             Rule::PutStmt => todo!(),
             Rule::AssertStmt => {
+                let level = self.save();
                 let r = self.visit_expr(stmt.into_inner().next().unwrap());
-                self.instructions.push(Instruction::Assert(r))
+                self.instructions.push(Instruction::Assert(r));
+                self.restore(level)
             }
             Rule::WhileStmt => self.visit_while_stmt(stmt),
             Rule::BreakStmt => self.push_control(Placeholder::JumpNegative),
             // in a while statement positive target is defined as `continue`-ing
             Rule::ContinueStmt => self.push_control(Placeholder::JumpPositive),
-            Rule::Expr => {
+            Rule::IfStmt | Rule::Expr => {
                 let level = self.save();
                 self.visit_expr(stmt);
                 self.restore(level)
@@ -586,15 +590,17 @@ impl FunctionVisitor {
     fn visit_var_stmt(&mut self, stmt: Pair<'_, Rule>) {
         let mut stmt = stmt.into_inner();
         let name = stmt.next().unwrap().as_str().to_owned();
-        let r = if let Some(expr) = stmt.next() {
-            self.visit_expr(expr)
-        } else {
-            let r = self.allocate();
+        let r = self.allocate();
+        if let Some(expr) = stmt.next() {
+            let expr_r = self.visit_expr(expr);
+            self.restore_allocate(r);
             self.instructions
-                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
-            r
+                .push(Instruction::Operator1(r, Operator1::Copy, expr_r))
+        } else {
+            self.instructions
+                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil))
         };
-        self.bind(name, r);
+        self.bind(name, r)
     }
 
     fn visit_assign_stmt(&mut self, stmt: Pair<'_, Rule>) {

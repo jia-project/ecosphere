@@ -61,14 +61,14 @@ make merge_sort(v) {
 fn main() {
     println!("{PROG}");
     let instructions = parse(PROG);
-    for instruction in &*instructions {
+    for (i, instruction) in instructions.iter().enumerate() {
         if let Instruction::MakeFunction(context_names, name, arity, instructions) = instruction {
             println!("{context_names:?}.{name}/{arity}:");
-            for instruction in &**instructions {
-                println!("  {instruction:?}")
+            for (i, instruction) in instructions.iter().enumerate() {
+                println!("  {i:<4}: {instruction:?}")
             }
         } else {
-            println!("{instruction:?}")
+            println!("{i:<4}: {instruction:?}")
         }
     }
 

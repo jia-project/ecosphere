@@ -73,7 +73,7 @@ Stmt = _{
     | BreakStmt
     | ContinueStmt
     | ReturnStmt
-    | IfExpr // allow omit semicolon for expr ending with blockexpr
+    | IfStmt // allow omit semicolon for expr ending with blockexpr
     | Expr ~ ";"
 }
 
@@ -99,6 +99,8 @@ WhileStmt = { "while" ~ Expr ~ BlockExpr }
 BreakStmt = { "break" ~ ";" }
 
 ContinueStmt = { "continue" ~ ";" }
+
+IfStmt = { IfExpr }
 
 ReturnStmt = { "return" ~ Expr? ~ ";" }
 
