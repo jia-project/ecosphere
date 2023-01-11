@@ -37,8 +37,8 @@ PrimaryExpr = _{
     | String
 }
 
-BlockExpr = { "{" ~ Stmt* ~ ValueExpr? ~ "}" }
-ValueExpr = { Expr }
+BlockExpr = { "{" ~ BlockStmts ~ Expr? ~ "}" }
+BlockStmts = { Stmt* }
 
 IfExpr = { "if" ~ Expr ~ BlockExpr ~ ("else" ~ BlockExpr)? }
 
@@ -67,7 +67,7 @@ ProgramStmt = _{
 Stmt = _{
     VarStmt
     | AssignStmt
-    | SetStmt
+    | PutStmt
     | AssertStmt
     | WhileStmt
     | BreakStmt
@@ -90,7 +90,7 @@ VarStmt = { "var" ~ Ident ~ ("=" ~ Expr)? ~ ";" }
 
 AssignStmt = { Ident ~ "=" ~ Expr ~ ";" }
 
-SetStmt = { Expr ~ "set" ~ Ident ~ "=" ~ Expr ~ ";" }
+PutStmt = { Expr ~ "put" ~ Ident ~ "=" ~ Expr ~ ";" }
 
 AssertStmt = { "assert" ~ Expr ~ ";" }
 

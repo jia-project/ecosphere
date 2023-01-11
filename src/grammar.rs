@@ -15,9 +15,9 @@ pub struct Parser;
 
 pub fn parse(input: &str) -> Box<[Instruction]> {
     let program = Parser::parse(Rule::Program, input).unwrap();
-    let mut layers = Context::default();
+    let mut layers = FunctionVisitor::default();
     layers.enter();
-    let mut visitor = ProgramVisitor(Context::default());
+    let mut visitor = ProgramVisitor(FunctionVisitor::default());
     for pair in program {
         visitor.visit_program_stmt(pair)
     }
@@ -29,9 +29,7 @@ pub fn parse(input: &str) -> Box<[Instruction]> {
     visitor.0.instructions.into_boxed_slice()
 }
 
-struct ProgramVisitor(Context);
-
-struct FunctionVisitor(Context);
+struct ProgramVisitor(FunctionVisitor);
 
 enum Expr<'a> {
     Primary(Pair<'a, Rule>),
@@ -39,12 +37,21 @@ enum Expr<'a> {
     Operator2(Pair<'a, Rule>, Box<Expr<'a>>, Box<Expr<'a>>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Placeholder {
+    Jump(RegisterIndex),
+    JumpIf(RegisterIndex),     // fall through on negative
+    JumpUnless(RegisterIndex), // fall through on positive
+    JumpPositive,
+    JumpNegative,
+}
+
 #[derive(Default)]
-struct Context {
+struct FunctionVisitor {
     instructions: Vec<Instruction>,
     scopes: Vec<HashMap<String, RegisterIndex>>,
     register_level: RegisterIndex,
-    control_scopes: Vec<(Vec<usize>, Vec<usize>)>,
+    control_scopes: Vec<Vec<usize>>,
 }
 
 impl ProgramVisitor {
@@ -71,31 +78,29 @@ impl ProgramVisitor {
             .collect::<Vec<_>>();
         let arity = parameters.len();
 
-        let mut context = Context::default();
+        let mut context = FunctionVisitor::default();
         context.restore(arity as _);
         context.enter();
         for (i, parameter) in parameters.into_iter().enumerate() {
             context.bind(parameter, i as _);
         }
 
-        // newtype `FunctionVisitor` is not necessary for now
-        let mut visitor = FunctionVisitor(context);
-        visitor.0.visit_primary_expr(expr);
-        visitor.0.exit();
-        if !matches!(visitor.0.instructions.last(), Some(Instruction::Return(_))) {
-            let r = visitor.0.allocate();
+        let mut visitor = FunctionVisitor::default();
+        visitor.visit_primary_expr(expr);
+        visitor.exit();
+        if !matches!(visitor.instructions.last(), Some(Instruction::Return(_))) {
+            let r = visitor.allocate();
             visitor
-                .0
                 .instructions
                 .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
-            visitor.0.instructions.push(Instruction::Return(r));
+            visitor.instructions.push(Instruction::Return(r));
         }
 
         self.0.instructions.push(Instruction::MakeFunction(
             Box::new([]),
             name,
             arity,
-            visitor.0.instructions.into_boxed_slice(),
+            visitor.instructions.into_boxed_slice(),
         ))
     }
 
@@ -129,7 +134,7 @@ impl ProgramVisitor {
     }
 }
 
-impl Context {
+impl FunctionVisitor {
     fn allocate(&mut self) -> RegisterIndex {
         let r = self.register_level;
         self.register_level += 1;
@@ -184,33 +189,33 @@ impl Context {
         self.control_scopes.push(Default::default())
     }
 
-    fn jump_positive(&mut self, index: usize) {
-        self.control_scopes.last_mut().unwrap().0.push(index)
+    fn push_control(&mut self, placeholder: Placeholder) {
+        let index = self.instructions.len();
+        self.instructions
+            .push(Instruction::ParsingPlaceholder(placeholder));
+        self.control_scopes.last_mut().unwrap().push(index)
     }
 
-    fn jump_negative(&mut self, index: usize) {
-        self.control_scopes.last_mut().unwrap().1.push(index)
-    }
-
-    fn control_exit(&mut self, positive: usize, negative: usize, instructions: &mut [Instruction]) {
-        let (pos, neg) = self.control_scopes.pop().unwrap();
-        for index in pos {
-            if let Instruction::Jump(_, target, _) = &mut instructions[index] {
-                *target = positive
-            } else {
-                unreachable!()
-            }
+    fn control_exit(&mut self, positive: usize, negative: usize) {
+        for index in self.control_scopes.pop().unwrap() {
+            use Instruction::Jump as J;
+            use Instruction::ParsingPlaceholder as P;
+            use Placeholder::*;
+            let check = |target: usize| {
+                assert_ne!(target, usize::MAX);
+                target
+            };
+            let instruction = match self.instructions[index].clone() {
+                P(Jump(r)) => J(r, check(positive), check(negative)),
+                P(JumpIf(r)) => J(r, check(positive), index + 1),
+                P(JumpUnless(r)) => J(r, index + 1, check(negative)),
+                P(JumpPositive) => J(RegisterIndex::MAX, check(positive), positive),
+                P(JumpNegative) => J(RegisterIndex::MAX, check(negative), negative),
+                _ => unreachable!(),
+            };
+            self.instructions[index] = instruction
         }
-        for index in neg {
-            if let Instruction::Jump(_, _, target) = &mut instructions[index] {
-                *target = negative
-            } else {
-                unreachable!()
-            }
-        }
     }
-
-    fn jump_if(&mut self, r: RegisterIndex) {}
 
     fn visit_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
         let expr = PrattParser::new()
@@ -236,14 +241,18 @@ impl Context {
         match expr {
             Expr::Primary(expr) => self.visit_primary_expr(expr),
             Expr::Operator2(op, expr1, expr2) => {
+                match op.as_rule() {
+                    Rule::And => return self.visit_and_expr(*expr1, *expr2),
+                    Rule::Or => return self.visit_or_expr(*expr1, *expr2),
+                    _ => {}
+                }
+
                 let r = self.save();
                 let r1 = self.visit_expr_internal(*expr1);
                 let r2 = self.visit_expr_internal(*expr2);
                 let op = match op.as_rule() {
                     Rule::Add => Operator2::Add,
                     Rule::Sub => Operator2::Sub,
-                    Rule::And => Operator2::And,
-                    Rule::Or => Operator2::Or,
                     Rule::LessThan => Operator2::LessThan,
                     Rule::GreaterThan => Operator2::GreaterThan,
                     Rule::Equal => Operator2::Equal,
@@ -258,27 +267,33 @@ impl Context {
                 let r = self.save();
                 let r1 = self.visit_expr_internal(*expr);
 
-                if op.as_rule() == Rule::Call1 {
-                    let mut op = op.into_inner();
-                    let name = op.next().unwrap().as_str().to_owned();
-                    let arguments = op.next().unwrap();
+                match op.as_rule() {
+                    Rule::Inspect => {
+                        self.instructions.push(Instruction::Inspect(r1));
+                        return r1;
+                    }
+                    Rule::Call1 => {
+                        let mut op = op.into_inner();
+                        let name = op.next().unwrap().as_str().to_owned();
+                        let arguments = op.next().unwrap();
 
-                    let arguments = arguments
-                        .into_inner()
-                        .map(|argument| {
-                            assert_eq!(argument.as_rule(), Rule::Expr);
-                            self.visit_expr(argument)
-                        })
-                        .collect();
-                    self.restore_allocate(r);
-                    self.instructions
-                        .push(Instruction::Call(r, Box::new([r1]), name, arguments));
-                    return r;
-                }
-
-                if op.as_rule() == Rule::Inspect {
-                    self.instructions.push(Instruction::Inspect(r1));
-                    return r1;
+                        let arguments = arguments
+                            .into_inner()
+                            .map(|argument| {
+                                assert_eq!(argument.as_rule(), Rule::Expr);
+                                self.visit_expr(argument)
+                            })
+                            .collect();
+                        self.restore_allocate(r);
+                        self.instructions.push(Instruction::Call(
+                            r,
+                            Box::new([r1]),
+                            name,
+                            arguments,
+                        ));
+                        return r;
+                    }
+                    _ => {}
                 }
 
                 self.restore_allocate(r);
@@ -301,14 +316,72 @@ impl Context {
                     }
                     Rule::Is => {
                         let mut op = op.into_inner();
-                        let variant = op.next().unwrap().as_str();
-                        todo!()
+                        let variant = op.next().unwrap().as_str().to_owned();
+                        let name = op.next();
+
+                        self.instructions
+                            .push(Instruction::Is(r, r1, variant.clone()));
+                        if let Some(name) = name {
+                            // TODO check name binding can only be used in control flow expression
+                            let name = name.as_str().to_owned();
+                            // if expr is positive, fallthrough to next instruction in bind the name
+                            // otherwise, skip the next instruction
+                            let index = self.instructions.len();
+                            self.instructions
+                                .push(Instruction::Jump(r, index + 1, index + 2));
+                            let as_r = self.allocate();
+                            self.instructions.push(Instruction::As(as_r, r, variant));
+                            self.bind(name, as_r);
+                        }
+                        r
                     }
                     Rule::Match => todo!(),
                     _ => unreachable!(),
                 }
             }
         }
+    }
+
+    fn visit_shortcut(
+        &mut self,
+        expr1: Expr<'_>,
+        expr2: Expr<'_>,
+        placeholder: impl Fn(RegisterIndex) -> Placeholder,
+        after_all: bool,
+    ) -> RegisterIndex {
+        let r = self.allocate();
+        self.instructions.push(Instruction::MakeLiteralObject(
+            r,
+            InstructionLiteral::Bool(!after_all),
+        ));
+        self.control_enter();
+
+        let r1 = self.visit_expr_internal(expr1);
+        self.push_control(placeholder(r1));
+        self.restore_allocate(r);
+
+        let r2 = self.visit_expr_internal(expr2);
+        self.push_control(placeholder(r2));
+        self.restore_allocate(r);
+
+        self.instructions.push(Instruction::MakeLiteralObject(
+            r,
+            InstructionLiteral::Bool(after_all),
+        ));
+        // control exit in caller
+        r
+    }
+
+    fn visit_and_expr(&mut self, expr1: Expr<'_>, expr2: Expr<'_>) -> RegisterIndex {
+        let r = self.visit_shortcut(expr1, expr2, Placeholder::JumpUnless, true);
+        self.control_exit(usize::MAX, self.instructions.len());
+        r
+    }
+
+    fn visit_or_expr(&mut self, expr1: Expr<'_>, expr2: Expr<'_>) -> RegisterIndex {
+        let r = self.visit_shortcut(expr1, expr2, Placeholder::JumpIf, false);
+        self.control_exit(self.instructions.len(), usize::MAX);
+        r
     }
 
     fn visit_primary_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
@@ -358,6 +431,7 @@ impl Context {
                 let arguments = expr.next().unwrap();
                 self.visit_call_expr(context.into_inner(), name, arguments.into_inner())
             }
+            Rule::IfExpr => self.visit_if_expr(expr),
             _ => unreachable!(),
         }
     }
@@ -393,33 +467,23 @@ impl Context {
     }
 
     fn visit_block_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
-        let mut expr = expr.into_inner().peekable();
-        if expr.peek().is_none() {
-            let r = self.allocate();
+        let mut expr = expr.into_inner();
+        let stmts = expr.next().unwrap();
+        let expr = expr.next();
+
+        self.enter();
+        let r = self.save();
+        for stmt in stmts.into_inner() {
+            self.visit_stmt(stmt);
+            self.restore(r);
+        }
+        let r = if let Some(expr) = expr {
+            self.visit_expr(expr)
+        } else {
+            self.restore_allocate(r);
             self.instructions
                 .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
-            return r;
-        }
-        self.enter();
-        let level = self.save();
-        let mut item;
-        while {
-            item = expr.next().unwrap();
-            expr.peek().is_some()
-        } {
-            self.visit_stmt(item);
-            self.restore(level);
-        }
-        let r = if item.as_rule() == Rule::ValueExpr {
-            self.visit_expr(item)
-        } else {
-            self.visit_stmt(item);
-            self.restore_allocate(level);
-            self.instructions.push(Instruction::MakeLiteralObject(
-                level,
-                InstructionLiteral::Nil,
-            ));
-            level
+            r
         };
         self.exit();
         r
@@ -462,18 +526,54 @@ impl Context {
     }
 
     fn visit_if_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
-        todo!()
+        let mut expr = expr.into_inner();
+        let test = expr.next().unwrap();
+        let positive = expr.next().unwrap();
+        let negative = expr.next();
+
+        self.enter(); // scope for `is` expression in `test`
+        self.control_enter();
+
+        let r = self.visit_expr(test);
+        self.push_control(Placeholder::Jump(r));
+
+        let r = self.allocate();
+
+        let positive_index = self.instructions.len();
+        let positive_r = self.visit_block_expr(positive);
+        self.instructions
+            .push(Instruction::Operator1(r, Operator1::Copy, positive_r));
+        self.restore_allocate(r);
+
+        let negative_index = self.instructions.len();
+        if let Some(negative) = negative {
+            let negative_r = self.visit_block_expr(negative);
+            self.instructions
+                .push(Instruction::Operator1(r, Operator1::Copy, negative_r))
+        } else {
+            self.instructions
+                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil))
+        }
+        self.restore_allocate(r);
+
+        self.exit(); // `is` expression scope
+        self.control_exit(positive_index, negative_index);
+        r
     }
 
     fn visit_stmt(&mut self, stmt: Pair<'_, Rule>) {
         match stmt.as_rule() {
             Rule::VarStmt => self.visit_var_stmt(stmt),
             Rule::AssignStmt => self.visit_assign_stmt(stmt),
-            Rule::SetStmt => todo!(),
+            Rule::PutStmt => todo!(),
             Rule::AssertStmt => {
                 let r = self.visit_expr(stmt.into_inner().next().unwrap());
                 self.instructions.push(Instruction::Assert(r))
             }
+            Rule::WhileStmt => self.visit_while_stmt(stmt),
+            Rule::BreakStmt => self.push_control(Placeholder::JumpNegative),
+            // in a while statement positive target is defined as `continue`-ing
+            Rule::ContinueStmt => self.push_control(Placeholder::JumpPositive),
             Rule::Expr => {
                 let level = self.save();
                 self.visit_expr(stmt);
@@ -487,7 +587,7 @@ impl Context {
         let mut stmt = stmt.into_inner();
         let name = stmt.next().unwrap().as_str().to_owned();
         let r = if let Some(expr) = stmt.next() {
-            self.visit_assign_expr(expr)
+            self.visit_expr(expr)
         } else {
             let r = self.allocate();
             self.instructions
@@ -499,24 +599,33 @@ impl Context {
 
     fn visit_assign_stmt(&mut self, stmt: Pair<'_, Rule>) {
         let mut stmt = stmt.into_inner();
-        let name = stmt.next().unwrap().as_str();
+        let name = stmt.next().unwrap().as_str().to_owned();
         let expr = stmt.next().unwrap();
-        let r = self.visit_assign_expr(expr);
-        if !self.find_update(name, r) {
-            todo!() // update global
+        let r = self.visit_expr(expr);
+        if !self.find_update(&name, r) {
+            self.instructions.push(Instruction::Store(r, name))
         }
     }
 
-    fn visit_assign_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
-        let r = self.save();
-        let r1 = self.visit_expr(expr);
-        if r1 < r {
-            self.restore(r);
-            r1
-        } else {
-            self.restore_allocate(r);
-            self.instructions.push(Instruction::Operator1(r, Operator1::Copy, r1));
-            r
-        }
+    fn visit_while_stmt(&mut self, stmt: Pair<'_, Rule>) {
+        let mut stmt = stmt.into_inner();
+        let test = stmt.next().unwrap();
+        let expr = stmt.next().unwrap();
+
+        self.enter(); // scope for `is` expression in `test`
+        self.control_enter();
+        let continue_index = self.instructions.len();
+
+        let r = self.visit_expr(test);
+        self.push_control(Placeholder::JumpUnless(r));
+        let level = self.save();
+        assert_eq!(expr.as_rule(), Rule::BlockExpr);
+        self.visit_block_expr(expr);
+        self.restore(level);
+        self.push_control(Placeholder::JumpPositive);
+
+        self.exit(); // `is` expression scope
+        let negative_index = self.instructions.len();
+        self.control_exit(continue_index, negative_index)
     }
 }

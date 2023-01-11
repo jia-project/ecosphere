@@ -6,8 +6,9 @@ pub type RegisterIndex = u8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
-    MakeLiteralObject(RegisterIndex, InstructionLiteral),
-    MakeDataObject(RegisterIndex, String, Box<[(String, RegisterIndex)]>),
+    MakeType(String, TypeOperator, Box<[String]>),
+    // context type names, name, argument number, instructions
+    MakeFunction(Box<[String]>, String, usize, Box<[Instruction]>),
 
     Jump(RegisterIndex, usize, usize),
     Return(RegisterIndex),
@@ -18,10 +19,10 @@ pub enum Instruction {
         Box<[RegisterIndex]>, // argument object(s)
     ),
 
-    Inspect(RegisterIndex),
-    Assert(RegisterIndex),
+    // intrinsic operations
+    MakeLiteralObject(RegisterIndex, InstructionLiteral),
+    MakeDataObject(RegisterIndex, String, Box<[(String, RegisterIndex)]>),
     Load(RegisterIndex, String),
-    Store(String, RegisterIndex),
     Get(RegisterIndex, RegisterIndex, String),
     Set(RegisterIndex, String, RegisterIndex),
     Is(RegisterIndex, RegisterIndex, String),
@@ -30,17 +31,21 @@ pub enum Instruction {
     Operator1(RegisterIndex, Operator1, RegisterIndex),
     Operator2(RegisterIndex, Operator2, RegisterIndex, RegisterIndex),
 
-    MakeType(String, TypeOperator, Box<[String]>),
-    // context type names, name, argument number, instructions
-    MakeFunction(Box<[String]>, String, usize, Box<[Instruction]>),
-    //
+    // side effects
+    Inspect(RegisterIndex),
+    Assert(RegisterIndex),
+    Store(RegisterIndex, String),
+
+    // optimized instructions
     // AsOrJump(i, x, variant, target) ~>
     //   Is(t, x, variant); JumpUnless(t, target); As(i, x, variant)
+    ParsingPlaceholder(grammar::Placeholder),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstructionLiteral {
     Nil,
+    Bool(bool),
     Integer(i64),
     // float
     String(String),
@@ -54,6 +59,14 @@ pub enum TypeOperator {
 
 pub type TypeIndex = u32;
 
+// TODO reduce object size to 16 bytes if possible
+// potential layout:
+// * 4 bits tag
+// * 60 bits pointer without trailing zeros,
+// * + 32 bits type index * 32 bits item count
+//   + 64 bits length (for Box<str> and Box<[_]>)
+//   + 64 bits virtual table pointer (for Box<dyn _>)
+//   + 64 bits native
 #[derive(Default)]
 pub struct Object {
     // bits: std::sync::atomic::AtomicU8,
@@ -121,8 +134,6 @@ pub enum Operator1 {
 pub enum Operator2 {
     Add,
     Sub,
-    And,
-    Or,
     LessThan,
     GreaterThan,
     Equal,

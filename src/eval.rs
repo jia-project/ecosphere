@@ -223,9 +223,19 @@ impl Machine {
 
         use Instruction::*;
         match instruction {
+            ParsingPlaceholder(_) => unreachable!(),
+
             MakeLiteralObject(i, InstructionLiteral::Nil) => {
                 r[i] =
                     FrameRegister::Address(self.arena.allocate(ObjectData::Data(0, Box::new([]))))
+            }
+            MakeLiteralObject(i, InstructionLiteral::Bool(value)) => {
+                let type_index = 1 + u32::from(*value);
+                let data = self.arena.allocate(ObjectData::Data(0, Box::new([])));
+                r[i] = FrameRegister::Address(
+                    self.arena
+                        .allocate(ObjectData::Data(type_index, Box::new([data]))),
+                )
             }
             MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
                 r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Integer(*value)))
@@ -308,7 +318,7 @@ impl Machine {
             }
 
             Load(i, name) => todo!(),
-            Store(name, x) => todo!(),
+            Store(x, name) => todo!(),
             Inspect(x) => {
                 let repr = match r[x].view() {
                     ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
