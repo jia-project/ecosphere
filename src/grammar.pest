@@ -5,9 +5,9 @@ Program = _{ SOI ~ ProgramStmt* ~ EOI }
 
 
 Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
-    Infix = _{ Add | Sub | Mul | Div | Rem | And | Or | LessThan | GreaterThan | Equal }
+    Infix = _{ Add | Sub | Mul | Div | Rem | And | Or | Eq | Le | Ge | Lt | Gt }
     Prefix = _ { Sub | Not | Inspect }
-    Postfix = _ { Dot | Is | Match | As | Call1 }
+    Postfix = _ { Call1 | Dot | Is | Match | As }
 
     Add = { "+" }
     Sub = { "-" }
@@ -16,16 +16,18 @@ Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Pos
     Rem = { "%" }
     And = { "and" }
     Or = { "or" }
-    LessThan = { "<" }
-    GreaterThan = { ">" }
-    Equal = { "==" }
+    Lt = { "<" }
+    Gt = { ">" }
+    Eq = { "==" }
+    Le = { "<=" }
+    Ge = { ">=" }
     Inspect = { "inspect" }
     Not = { "not" }
     Dot = { "." ~ Ident }
     Is = { "is" ~ Ident ~ Ident? }
     Match = { "is" ~ "{" ~ "}" } // TODO
     As = { ".!" ~ Ident }
-    Call1 = { "." ~ CallArgs }
+    Call1 = { "." ~ Ident ~ CallArgs }
 
 PrimaryExpr = _{
     BlockExpr
@@ -56,9 +58,10 @@ Call0Expr = { PublicIdent ~ CallArgs }
 CallNExpr = { CallArgs ~ "." ~ Ident ~ CallArgs }
 CallArgs = { "(" ~ (Expr ~ ",")* ~ Expr? ~ ")" }
 
-DataExpr = { PublicIdent ~ DataItems }
+DataExpr = { PublicIdent ~ (DataItems | Fieldless) }
 DataItems = { "[" ~ (DataItem ~ ",")* ~ DataItem? ~ "]" }
-DataItem = { Ident ~ ("=" ~ (Expr | DataItems))? }
+DataItem = { Ident ~ "=" ~ (Expr | DataItems) }
+Fieldless = _{ "[" ~ Ident ~ "]" }
 
 
 ProgramStmt = _{
@@ -80,14 +83,17 @@ Stmt = _{
     | Expr ~ ";"
 }
 
-MakeFunctionStmt = { "make" ~ PublicIdent ~ "(" ~ MakeFunctionParams ~ ")" ~ BlockExpr }
-MakeFunctionParams = { (Ident ~ ",")* ~ Ident? }
+MakeFunctionStmt = { "make" ~ (PublicIdent | ContextAndName) ~ "(" ~ FunctionParams ~ ")" ~ BlockExpr }
+ContextAndName = { "(" ~ ContextParams ~ ")" ~ Ident }
+ContextParams = { (ContextParam ~ ",")* ~ ContextParam }
+ContextParam = { PublicIdent ~ Ident }
+FunctionParams = { (Ident ~ ",")* ~ Ident? }
 
-MakeTypeStmt = { "make" ~ PublicIdent ~ MakeTypeItems }
-MakeTypeItems = _{ "[" ~ (SumTypeItems | ProductTypeItems) ~ "]" }
+MakeTypeStmt = { "make" ~ PublicIdent ~ TypeItems }
+TypeItems = _{ "[" ~ (SumTypeItems | ProductTypeItems) ~ "]" }
 SumTypeItems = { "+"? ~ TypeItem ~ ("+" ~ TypeItem)* }
 ProductTypeItems = { "*"? ~ TypeItem ~ ("*" ~ TypeItem)* }
-TypeItem = { Ident ~ MakeTypeItems? }
+TypeItem = { Ident ~ TypeItems? }
 
 VarStmt = { "var" ~ Ident ~ ("=" ~ Expr)? ~ ";" }
 

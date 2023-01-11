@@ -138,7 +138,9 @@ pub enum Operator2 {
     Mul,
     Div,
     Rem,
-    LessThan,
-    GreaterThan,
-    Equal,
+    Lt,
+    Gt,
+    Eq,
+    Le,
+    Ge,
 }

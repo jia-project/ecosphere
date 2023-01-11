@@ -8,7 +8,7 @@ make Option [
     + Some
 ]
 
-make merge_sort(v) {
+make Array.merge_sort(v) {
     var MIN_RUN = 10;
 
     var len = v.length();
@@ -25,8 +25,7 @@ make merge_sort(v) {
                 while start > 0 and v.at(start) < v.at(start - 1) {
                     start = start - 1;
                 }
-                # polyfill of v.view(start, end).reverse()
-                reverse(v, start, end);
+                Array.reverse(v.view(start, end));
             } else {
                 while start > 0 and not v.at(start) < v.at(start - 1) {
                     start = start - 1;
@@ -36,9 +35,11 @@ make merge_sort(v) {
 
         while start > 0 and end - start < MIN_RUN {
             start = start - 1;
-            insert_head(v, start, end);
+            # v.view(start, end).insert_head()
+            Array.insert_head(v.view(start, end));
         }
 
+        # runs.push(...)
         runs.at(runs_len, Run[start = start, len = end - start]);
         runs_len = runs_len + 1;
         end = start;
@@ -46,10 +47,10 @@ make merge_sort(v) {
         while collapse(runs_start, runs_len) is Some r {
             var left = runs.at(r + 1);
             var right = runs.at(r);
-            merge(v, left.start, right.start + right.len, left.len);
+            merge(v.view(left.start, right.start + right.len), left.len);
             runs.at(r, Run[start = left.start, len = left.len + right.len]);
             # runs.remove(r + 1);
-            runs.swap(r + 1, runs.length() - 1);
+            Array.swap(runs, r + 1, runs_len - 1);
             runs_len = runs_len - 1;
         }
     }
@@ -57,4 +58,162 @@ make merge_sort(v) {
     assert runs_len == 1;
     assert runs.at(0).start == 0;
     assert runs.at(0).len == len;
+}
+
+make ArrayView [
+    * data
+    * offset
+    * length
+]
+
+make (Array a) view(offset, length) {
+    ArrayView[data = a, offset = offset, length = length]
+}
+
+make (ArrayView a) clone() {
+    (a.data).clone(a.offset, a.length)
+}
+
+make (ArrayView a) length() {
+    a.length
+}
+
+make (ArrayView a) at(p) {
+    (a.data).at(p + a.offset)  # check bounds?
+}
+
+make (ArrayView a) at(p, element) {
+    (a.data).at(p + a.offset, element);
+}
+
+make (ArrayView a) view(offset, length) {
+    assert offset + length <= a.length;
+    ArrayView[data = a.data, offset = offset + a.offset, length = length]
+}
+
+make Array.swap(a, i, j) {
+    var x = a.at(i);
+    a.at(i, a.at(j));
+    a.at(j, x);
+}
+
+make Array.reverse(a) {
+    var low = 0;
+    var high = a.length();
+    while low < high {
+        Array.swap(a, low, high);
+        low = low + 1;
+        high = high + 1;
+    }
+}
+
+make Array.insert_head(a) {
+    var len = a.length();
+    if len < 2 or a.at(1) > a.at(0) {
+        return;
+    }
+    var x = a.at(0);
+    var i = 1;
+    while i < len {
+        if x >= a.at(i + 1) {
+            break;
+        }
+        a.at(i - 1, a.at(i));
+        i = i + 1;
+    }
+    a.at(i, x);
+}
+
+make collapse(runs) {
+    var n = runs.length();
+    if n >= 2 
+        and (
+            runs.at(n - 1).start == 0 
+            or runs.at(n - 2).len <= runs.at(n - 1).len
+            or n >= 3 and runs.at(n - 3).len <= runs.at(n - 2).len + runs.at(n - 1).len
+            or n >= 4 and runs.at(n - 4).len <= runs.at(n - 3).len + runs.at(n - 2).len)
+    {
+        if n >= 3 and runs.at(n - 3).len < runs.at(n - 1).len {
+            Option[Some = n - 3]
+        } else {
+            Option[Some = n - 2]
+        }
+    } else {
+        Option[None]
+    }
+}
+
+make merge(a, mid) {
+    var len = a.length();
+    if mid <= len - mid {
+        # clone the left run (a[..mid]) and merge forwards
+        var short = a.view(0, mid).clone();
+        var long = a.view(mid, len - mid);
+        var short_i = 0;
+        var long_i = 0;
+        var short_len = short.length();
+        var long_len = long.length();
+
+        var i = 0;
+        var short_x = short.at(short_i);
+        var long_x = long.at(long_i);
+        while true {
+            if short_x <= long_x {
+                a.at(i, short_x);
+                short_i = short_i + 1;
+                if short_i == short_len {
+                    break;
+                }
+                short_x = short.at(short_i);
+            } else {
+                a.at(i, long_x);
+                long_i = long_i + 1;
+                if long_i == long_len {
+                    break;
+                }
+                long_x = long.at(long_i);
+            }
+            i = i + 1;
+        }
+        while short_i < short_len {
+            a.at(i, short.at(short_i));
+            short_i = short_i + 1;
+            i = i + 1;
+        }
+        assert i == len;
+    } else {
+        # clone the right run (a[mid..]) and merge backward
+        var short = a.view(mid, len - mid).clone();
+        var long = a.view(0, mid);
+        var short_j = short.len();  # use `*_j` to emphasize 1-offset
+        var long_j = long.len();
+
+        var j = len;
+        var short_x = short.at(short_j - 1);
+        var long_x = long.at(long_j - 1);
+        while true {
+            if short_x >= long_x {
+                a.at(j - 1, short_x);
+                short_j = short_j - 1;
+                if short_j == 0 {
+                    break;
+                }
+                short_x = short.at(short_j - 1);
+            } else {
+                a.at(j - 1, long_x);
+                long_j = long_j - 1;
+                if long_j == 0 {
+                    break;
+                }
+                long_x = long.at(long_j - 1);
+            }
+            j = j - 1;
+        }
+        while short_j > 0 {
+            a.at(j - 1, short.at(short_j - 1));
+            short_j = short_j - 1;
+            j = j - 1;
+        }
+        assert j == 0;
+    }
 }

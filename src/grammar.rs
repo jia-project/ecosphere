@@ -81,19 +81,33 @@ impl ProgramVisitor {
 
     fn visit_make_function_stmt(&mut self, stmt: Pair<'_, Rule>) {
         // TODO context parameters
-        let [name, parameters, expr] = split(stmt);
-        let parameters = parameters
-            .into_inner()
-            .map(|param| param.as_str().to_owned())
-            .collect::<Vec<_>>();
-        let arity = parameters.len();
-
+        let [dispatch, parameters, expr] = split(stmt);
         let mut visitor = FunctionVisitor::default();
         visitor.enter();
-        for parameter in parameters {
-            let r = visitor.allocate();
-            visitor.bind(parameter, r);
-        }
+
+        let mut context_parameters = Vec::new();
+        let name = match dispatch.as_rule() {
+            Rule::PublicIdent => dispatch,
+            Rule::ContextAndName => {
+                let [parameters, name] = split(dispatch);
+                for parameter in parameters.into_inner() {
+                    let [type_name, name] = split(parameter);
+                    context_parameters.push(type_name.as_str().to_owned());
+                    let r = visitor.allocate();
+                    visitor.bind(name.as_str().to_owned(), r);
+                }
+                name
+            }
+            _ => unreachable!(),
+        };
+
+        let arity = parameters
+            .into_inner()
+            .map(|name| {
+                let r = visitor.allocate();
+                visitor.bind(name.as_str().to_owned(), r);
+            })
+            .count();
         let r = visitor.visit_block_expr(expr);
         visitor.exit();
         // patch a `return;` if function is not ending with one
@@ -102,7 +116,7 @@ impl ProgramVisitor {
         }
 
         self.0.instructions.push(Instruction::MakeFunction(
-            Box::new([]),
+            context_parameters.into(),
             name.as_str().to_owned(),
             arity,
             visitor.instructions.into(),
@@ -203,9 +217,11 @@ impl FunctionVisitor {
             .op(Op::infix(Rule::And, Assoc::Left))
             .op(Op::prefix(Rule::Not))
             .op(Op::postfix(Rule::Is))
-            .op(Op::infix(Rule::LessThan, Assoc::Left)
-                | Op::infix(Rule::GreaterThan, Assoc::Left)
-                | Op::infix(Rule::Equal, Assoc::Left))
+            .op(Op::infix(Rule::Lt, Assoc::Left)
+                | Op::infix(Rule::Gt, Assoc::Left)
+                | Op::infix(Rule::Le, Assoc::Left)
+                | Op::infix(Rule::Ge, Assoc::Left)
+                | Op::infix(Rule::Eq, Assoc::Left))
             .op(Op::infix(Rule::Add, Assoc::Left) | Op::infix(Rule::Sub, Assoc::Left))
             .op(Op::infix(Rule::Mul, Assoc::Left)
                 | Op::infix(Rule::Div, Assoc::Left)
@@ -238,9 +254,11 @@ impl FunctionVisitor {
                     Rule::Mul => Operator2::Mul,
                     Rule::Div => Operator2::Div,
                     Rule::Rem => Operator2::Rem,
-                    Rule::LessThan => Operator2::LessThan,
-                    Rule::GreaterThan => Operator2::GreaterThan,
-                    Rule::Equal => Operator2::Equal,
+                    Rule::Lt => Operator2::Lt,
+                    Rule::Gt => Operator2::Gt,
+                    Rule::Eq => Operator2::Eq,
+                    Rule::Le => Operator2::Le,
+                    Rule::Ge => Operator2::Ge,
                     _ => unreachable!(),
                 };
                 let r = self.allocate();
@@ -407,8 +425,21 @@ impl FunctionVisitor {
     }
 
     fn visit_data_items(&mut self, name: String, items: Pair<'_, Rule>) -> RegisterIndex {
+        let items = items.into_inner();
+        // fieldless sum type variant
+        if matches!(items.peek(), Some(item) if item.as_rule() == Rule::Ident) {
+            let [variant] = <[_; 1]>::try_from(items.collect::<Vec<_>>()).unwrap();
+            let r = self.allocate();
+            self.instructions
+                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+            self.instructions.push(Instruction::MakeDataObject(
+                r,
+                name,
+                Box::new([(variant.as_str().to_owned(), r)]),
+            ));
+            return r;
+        }
         let data = items
-            .into_inner()
             .map(|item| {
                 let [item_name, value] = split(item);
                 let item_name = item_name.as_str();
@@ -521,6 +552,17 @@ impl FunctionVisitor {
             Rule::ContinueStmt => self.push_control(Placeholder::JumpPositive),
             Rule::IfStmt | Rule::Expr => {
                 self.visit_expr(stmt);
+            }
+            Rule::ReturnStmt => {
+                let r = if let Some(expr) = split_option::<0>(stmt).1 {
+                    self.visit_expr(expr)
+                } else {
+                    let r = self.allocate();
+                    self.instructions
+                        .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+                    r
+                };
+                self.instructions.push(Instruction::Return(r));
             }
             _ => unreachable!(),
         }
