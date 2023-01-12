@@ -604,7 +604,7 @@ unsafe impl ObjectAny for Machine {
         for frame in &mut self.frames {
             for register in &mut frame.registers {
                 if let FrameRegister::Address(address) = register {
-                    scanner.process(address)
+                    scanner.process_pointer(address)
                 }
             }
         }
