@@ -6,7 +6,7 @@ Program = _{ SOI ~ ProgramStmt* ~ EOI }
 
 Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
     Infix = _{ Add | Sub | Mul | Div | Rem | And | Or | Eq | Le | Ge | Lt | Gt }
-    Prefix = _ { Sub | Not | Inspect }
+    Prefix = _ { Neg | Not | Inspect }
     Postfix = _ { Call1 | Dot | Is | Match | As }
 
     Add = { "+" }
@@ -21,8 +21,11 @@ Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Pos
     Eq = { "==" }
     Le = { "<=" }
     Ge = { ">=" }
+
     Inspect = { "inspect" }
     Not = { "not" }
+    Neg = { "-" }
+
     Dot = { "." ~ Ident }
     Is = { "is" ~ Ident ~ Ident? }
     Match = { "is" ~ "{" ~ "}" } // TODO
@@ -112,6 +115,7 @@ ContinueStmt = { "continue" ~ ";" }
 IfStmt = { IfExpr }
 
 ReturnStmt = { "return" ~ Expr? ~ ";" }
+
 
 Ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 PublicIdent = @{ Ident ~ ("." ~ Ident)* }

@@ -84,7 +84,7 @@ pub enum ObjectData {
     // float
     String(Box<str>),
     // Box<[*mut Object]>
-    Data(TypeIndex, Box<[std::ptr::NonNull<Object>]>),
+    Typed(TypeIndex, Box<[std::ptr::NonNull<Object>]>),
 
     Any(Box<dyn ObjectAny>),
 }

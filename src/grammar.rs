@@ -36,13 +36,20 @@ enum Expr<'a> {
     Operator2(Pair<'a, Rule>, Box<Expr<'a>>, Box<Expr<'a>>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placeholder {
-    Jump(RegisterIndex),
-    JumpIf(RegisterIndex),     // fall through on negative
-    JumpUnless(RegisterIndex), // fall through on positive
-    JumpPositive,
-    JumpNegative,
+    // Jump(RegisterIndex),
+    JumpIf(RegisterIndex),     // fallthrough on negative
+    JumpUnless(RegisterIndex), // fallthrough on positive
+    JumpContinue,
+    JumpBreak,
+    JumpEndIf,
+}
+
+enum ControlScope {
+    If,
+    While,
+    Shortcut,
 }
 
 #[derive(Default)]
@@ -50,7 +57,7 @@ struct FunctionVisitor {
     instructions: Vec<Instruction>,
     scopes: Vec<HashMap<String, RegisterIndex>>,
     register_level: RegisterIndex,
-    control_scopes: Vec<Vec<usize>>,
+    control_scopes: Vec<(ControlScope, Vec<usize>)>,
 }
 
 fn split<const N: usize>(pair: Pair<'_, Rule>) -> [Pair<'_, Rule>; N] {
@@ -178,19 +185,35 @@ impl FunctionVisitor {
         None
     }
 
-    fn enter_control(&mut self) {
-        self.control_scopes.push(Default::default())
+    fn enter_control(&mut self, control_type: ControlScope) {
+        self.control_scopes.push((control_type, Default::default()))
     }
 
     fn push_control(&mut self, placeholder: Placeholder) {
         let index = self.instructions.len();
         self.instructions
             .push(Instruction::ParsingPlaceholder(placeholder));
-        self.control_scopes.last_mut().unwrap().push(index)
+        let mut scope = self.control_scopes.last_mut().unwrap();
+        'find: {
+            if matches!(
+                placeholder,
+                Placeholder::JumpBreak | Placeholder::JumpContinue
+            ) {
+                for s in self.control_scopes.iter_mut().rev() {
+                    if matches!(s.0, ControlScope::While) {
+                        scope = s;
+                        break 'find;
+                    }
+                }
+                panic!()
+            }
+        }
+        scope.1.push(index)
     }
 
     fn exit_control(&mut self, positive: usize, negative: usize) {
-        for index in self.control_scopes.pop().unwrap() {
+        let (control_type, indexes) = self.control_scopes.pop().unwrap();
+        for index in indexes {
             use Instruction::Jump as J;
             use Instruction::ParsingPlaceholder as P;
             use Placeholder::*;
@@ -199,11 +222,21 @@ impl FunctionVisitor {
                 target
             };
             let instruction = match self.instructions[index].clone() {
-                P(Jump(r)) => J(r, check(positive), check(negative)),
+                // P(Jump(r)) => J(r, check(positive), check(negative)),
                 P(JumpIf(r)) => J(r, check(positive), index + 1),
                 P(JumpUnless(r)) => J(r, index + 1, check(negative)),
-                P(JumpPositive) => J(RegisterIndex::MAX, check(positive), positive),
-                P(JumpNegative) => J(RegisterIndex::MAX, check(negative), negative),
+                P(JumpContinue) => {
+                    assert!(matches!(control_type, ControlScope::While));
+                    J(RegisterIndex::MAX, check(positive), positive)
+                }
+                P(JumpBreak) => {
+                    assert!(matches!(control_type, ControlScope::While));
+                    J(RegisterIndex::MAX, check(negative), negative)
+                }
+                P(JumpEndIf) => {
+                    assert!(matches!(control_type, ControlScope::If));
+                    J(RegisterIndex::MAX, check(positive), positive)
+                }
                 _ => unreachable!(),
             };
             self.instructions[index] = instruction
@@ -226,7 +259,7 @@ impl FunctionVisitor {
             .op(Op::infix(Rule::Mul, Assoc::Left)
                 | Op::infix(Rule::Div, Assoc::Left)
                 | Op::infix(Rule::Rem, Assoc::Left))
-            // .op(Op::prefix(Rule::Sub))
+            .op(Op::prefix(Rule::Neg))
             .op(Op::postfix(Rule::Dot) | Op::postfix(Rule::As) | Op::postfix(Rule::Call1))
             .map_primary(Expr::Primary)
             .map_infix(|lhs, op, rhs| Expr::Operator2(op, Box::new(lhs), Box::new(rhs)))
@@ -298,7 +331,7 @@ impl FunctionVisitor {
                             .push(Instruction::Operator1(r, Operator1::Not, r1));
                         r
                     }
-                    Rule::Sub => todo!(),
+                    Rule::Neg => todo!(),
                     Rule::Dot => {
                         let component = split::<1>(op)[0].as_str().to_owned();
                         self.instructions.push(Instruction::Get(r, r1, component));
@@ -347,7 +380,7 @@ impl FunctionVisitor {
             r,
             InstructionLiteral::Bool(!after_all),
         ));
-        self.enter_control();
+        self.enter_control(ControlScope::Shortcut);
         let r1 = self.visit_expr_internal(expr1);
         self.push_control(placeholder(r1));
         let r2 = self.visit_expr_internal(expr2);
@@ -508,17 +541,18 @@ impl FunctionVisitor {
         let ([test, positive], negative) = split_option(expr);
 
         self.enter(); // scope for `is` expression in `test`
-        self.enter_control();
+        self.enter_control(ControlScope::If);
 
         let r = self.visit_expr(test);
-        self.push_control(Placeholder::Jump(r));
+        // positive target: after else block, negative target: else block
+        self.push_control(Placeholder::JumpUnless(r));
 
         let r = self.allocate();
 
         let positive_r = self.visit_block_expr(positive);
         self.instructions
             .push(Instruction::Operator1(r, Operator1::Copy, positive_r));
-        self.push_control(Placeholder::JumpPositive);
+        self.push_control(Placeholder::JumpEndIf);
 
         let negative_index = self.instructions.len();
         if let Some(negative) = negative {
@@ -547,9 +581,8 @@ impl FunctionVisitor {
                 self.instructions.push(Instruction::Assert(r));
             }
             Rule::WhileStmt => self.visit_while_stmt(stmt),
-            Rule::BreakStmt => self.push_control(Placeholder::JumpNegative),
-            // in a while statement positive target is defined as `continue`-ing
-            Rule::ContinueStmt => self.push_control(Placeholder::JumpPositive),
+            Rule::BreakStmt => self.push_control(Placeholder::JumpBreak),
+            Rule::ContinueStmt => self.push_control(Placeholder::JumpContinue),
             Rule::IfStmt | Rule::Expr => {
                 self.visit_expr(stmt);
             }
@@ -596,14 +629,17 @@ impl FunctionVisitor {
 
     fn visit_while_stmt(&mut self, stmt: Pair<'_, Rule>) {
         let [test, expr] = split(stmt);
-        self.enter(); // scope for `is` expression in `test`
-        self.enter_control();
+
+        // scope for `is` expression in `test`
+        self.enter();
+        // positive target: before test expression, negative target: after block expression
+        self.enter_control(ControlScope::While);
         let continue_index = self.instructions.len();
 
         let r = self.visit_expr(test);
         self.push_control(Placeholder::JumpUnless(r));
         self.visit_block_expr(expr);
-        self.push_control(Placeholder::JumpPositive);
+        self.push_control(Placeholder::JumpContinue);
 
         self.exit(); // `is` expression scope
         let negative_index = self.instructions.len();

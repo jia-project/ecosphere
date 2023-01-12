@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     iter::repeat_with,
     mem::MaybeUninit,
@@ -17,7 +18,7 @@ use crate::{
 struct Symbol {
     type_names: HashMap<String, usize>,
     types: Vec<SymbolType>,
-    function_dispatches: HashMap<(Box<[TypeIndex]>, usize), HashMap<String, usize>>,
+    function_dispatches: HashMap<(Cow<'static, [TypeIndex]>, Cow<'static, str>, usize), usize>,
 }
 
 impl Default for Symbol {
@@ -93,7 +94,7 @@ struct Frame {
 }
 
 impl Frame {
-    const REGISTER_COUNT: usize = 64;
+    const REGISTER_COUNT: usize = 256;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -170,11 +171,13 @@ impl Machine {
     }
 
     fn run(&mut self, mut functions: Vec<Box<[Instruction]>>) {
-        let mut function;
         'control: while !self.is_finished() {
-            function = &functions[self.frames.last().unwrap().function_index];
-            for instruction in &function[self.frames.last().unwrap().program_counter..] {
-                self.frames.last_mut().unwrap().program_counter += 1;
+            let depth = self.frames.len();
+            for instruction in &functions[self.frames.last().unwrap().function_index]
+                [self.frames.last().unwrap().program_counter..]
+            {
+                let counter = self.frames.last().unwrap().program_counter + 1;
+                self.frames.last_mut().unwrap().program_counter = counter;
 
                 if matches!(instruction, Instruction::MakeFunction(..)) {
                     self.make_function(instruction.clone(), &mut functions);
@@ -187,9 +190,11 @@ impl Machine {
                 }
 
                 self.arena.mutate_enter();
-                let control = self.execute(instruction);
+                self.execute(instruction);
                 self.arena.mutate_exit();
-                if control {
+                if self.frames.len() != depth
+                    || self.frames.last().unwrap().program_counter != counter
+                {
                     continue 'control;
                 }
             }
@@ -213,9 +218,7 @@ impl Machine {
         let present = self
             .symbol
             .function_dispatches
-            .entry((context_types, n_argument))
-            .or_default()
-            .insert(name, index);
+            .insert((context_types, name.into(), n_argument), index);
         assert!(present.is_none());
         functions.push(instructions);
     }
@@ -245,14 +248,14 @@ impl Machine {
 
             MakeLiteralObject(i, InstructionLiteral::Nil) => {
                 r[i] =
-                    FrameRegister::Address(self.arena.allocate(ObjectData::Data(0, Box::new([]))))
+                    FrameRegister::Address(self.arena.allocate(ObjectData::Typed(0, Box::new([]))));
             }
             MakeLiteralObject(i, InstructionLiteral::Bool(value)) => {
                 let type_index = 1 + u32::from(*value);
-                let data = self.arena.allocate(ObjectData::Data(0, Box::new([])));
+                let data = self.arena.allocate(ObjectData::Typed(0, Box::new([])));
                 r[i] = FrameRegister::Address(
                     self.arena
-                        .allocate(ObjectData::Data(type_index, Box::new([data]))),
+                        .allocate(ObjectData::Typed(type_index, Box::new([data]))),
                 )
             }
             MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
@@ -270,19 +273,19 @@ impl Machine {
                 let data = match &self.symbol.types[type_index] {
                     SymbolType::Product { components, .. } => {
                         let mut data =
-                            repeat_with(|| self.arena.allocate(ObjectData::Data(0, Box::new([]))))
+                            repeat_with(|| self.arena.allocate(ObjectData::Typed(0, Box::new([]))))
                                 .take(components.len())
                                 .collect::<Box<_>>();
                         for (name, x) in items.iter() {
                             data[components[name]] = r[x].escape(&mut self.arena);
                         }
-                        ObjectData::Data(type_index as _, data)
+                        ObjectData::Typed(type_index as _, data)
                     }
                     SymbolType::Sum { variant_names, .. } => {
                         let [(name, x)] = &**items else {
                             panic!()
                         };
-                        ObjectData::Data(
+                        ObjectData::Typed(
                             variant_names[name],
                             Box::new([r[x].escape(&mut self.arena)]), //
                         )
@@ -296,7 +299,7 @@ impl Machine {
                 let target = if positive == negative {
                     *positive
                 } else {
-                    let ObjectData::Data(type_index, _) = r[x].view() else {
+                    let ObjectData::Typed(type_index, _) = r[x].view() else {
                         panic!()
                     };
                     let SymbolType::SumVariant { test, .. } = self.symbol.types[*type_index as usize] else {
@@ -323,7 +326,7 @@ impl Machine {
                     let x = &mut r[x];
                     context.push(match x.view() {
                         ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
-                        ObjectData::Data(type_index, _) => *type_index,
+                        ObjectData::Typed(type_index, _) => *type_index,
                         ObjectData::Integer(_) => Self::TYPE_INTEGER,
                         ObjectData::String(_) => Self::TYPE_STRING,
                         ObjectData::Any(_) => todo!(),
@@ -332,7 +335,7 @@ impl Machine {
                 }
                 xs.extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
                 let index = self.symbol.function_dispatches
-                    [&(context.into_boxed_slice(), argument_xs.len())][name];
+                    [&(context.into(), name.into(), argument_xs.len())];
                 self.push_frame(index, &xs, *i);
                 return true;
             }
@@ -345,7 +348,7 @@ impl Machine {
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
                     ObjectData::String(value) => format!("String {value}"),
-                    ObjectData::Data(type_index, _) => {
+                    ObjectData::Typed(type_index, _) => {
                         match &self.symbol.types[*type_index as usize] {
                             SymbolType::Product { name, .. } => format!("{name}[...]"),
                             SymbolType::SumVariant {
@@ -363,7 +366,7 @@ impl Machine {
                 );
             }
             Assert(x) => {
-                let ObjectData::Data(type_index, _) = r[x].view() else {
+                let ObjectData::Typed(type_index, _) = r[x].view() else {
                     panic!()
                 };
                 let SymbolType::SumVariant { test, ..} = &self.symbol.types[*type_index as usize] else {
@@ -372,7 +375,7 @@ impl Machine {
                 assert!(*test)
             }
             Get(i, x, name) => {
-                let ObjectData::Data(type_index, data) = r[x].view() else {
+                let ObjectData::Typed(type_index, data) = r[x].view() else {
                     panic!()
                 };
                 let SymbolType::Product{components,..} = &self.symbol.types[*type_index as usize] else {
@@ -382,7 +385,7 @@ impl Machine {
             }
             Set(x, name, y) => {
                 let y = r[y].escape(&mut self.arena);
-                let ObjectData::Data(type_index,  data) = r[x].view_mut() else {
+                let ObjectData::Typed(type_index,  data) = r[x].view_mut() else {
                     panic!()
                 };
                 let SymbolType::Product{components,..} = &self.symbol.types[*type_index as usize] else {
@@ -391,21 +394,21 @@ impl Machine {
                 data[components[name]] = y
             }
             Is(i, x, name) => {
-                let ObjectData::Data(type_index, _) = r[x].view() else {
+                let ObjectData::Typed(type_index, _) = r[x].view() else {
                     panic!()
                 };
                 let SymbolType::SumVariant{name: n, ..} = &self.symbol.types[*type_index as usize] else {
                     panic!()
                 };
                 let type_index = 1 + u32::from(name == n);
-                let data = self.arena.allocate(ObjectData::Data(0, Box::new([])));
+                let data = self.arena.allocate(ObjectData::Typed(0, Box::new([])));
                 r[i] = FrameRegister::Address(
                     self.arena
-                        .allocate(ObjectData::Data(type_index, Box::new([data]))),
+                        .allocate(ObjectData::Typed(type_index, Box::new([data]))),
                 )
             }
             As(i, x, name) => {
-                let ObjectData::Data(type_index, data) = r[x].view() else {
+                let ObjectData::Typed(type_index, data) = r[x].view() else {
                     panic!()
                 };
                 assert!(
@@ -413,13 +416,17 @@ impl Machine {
                 );
                 r[i] = FrameRegister::Address(data[0]) // more check?
             }
-            Operator1(..) => unreachable!(),
+            Operator1(i, op, x) => unreachable!(),
             Operator2(i, op, x, y) => {
                 use {crate::Operator2::*, ObjectData::*};
                 let object = {
                     match (op, r[x].view(), r[y].view()) {
                         (Add, Integer(x), Integer(y)) => Integer(*x + *y),
-                        (Add, String(x), String(y)) => String((x.to_string() + y).into()),
+                        (Sub, Integer(x), Integer(y)) => Integer(*x - *y),
+                        (Mul, Integer(x), Integer(y)) => Integer(*x * *y),
+                        (Div, Integer(x), Integer(y)) => Integer(*x / *y),
+                        (Rem, Integer(x), Integer(y)) => Integer(*x % *y),
+                        (Add, String(x), String(y)) => String([&**x, &**y].concat().into()),
                         _ => panic!(),
                     }
                 };
