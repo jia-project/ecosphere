@@ -129,6 +129,7 @@ impl Object {
 pub enum Operator1 {
     Copy,
     Not,
+    Neg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +142,7 @@ pub enum Operator2 {
     Lt,
     Gt,
     Eq,
+    Ne,
     Le,
     Ge,
 }

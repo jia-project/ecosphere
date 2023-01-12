@@ -290,6 +290,7 @@ impl FunctionVisitor {
                     Rule::Lt => Operator2::Lt,
                     Rule::Gt => Operator2::Gt,
                     Rule::Eq => Operator2::Eq,
+                    Rule::Ne => Operator2::Ne,
                     Rule::Le => Operator2::Le,
                     Rule::Ge => Operator2::Ge,
                     _ => unreachable!(),
@@ -331,7 +332,11 @@ impl FunctionVisitor {
                             .push(Instruction::Operator1(r, Operator1::Not, r1));
                         r
                     }
-                    Rule::Neg => todo!(),
+                    Rule::Neg => {
+                        self.instructions
+                            .push(Instruction::Operator1(r, Operator1::Neg, r1));
+                        r
+                    }
                     Rule::Dot => {
                         let component = split::<1>(op)[0].as_str().to_owned();
                         self.instructions.push(Instruction::Get(r, r1, component));

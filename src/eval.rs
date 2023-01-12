@@ -32,26 +32,32 @@ impl Default for Symbol {
         type_names.insert(s("String"), Machine::TYPE_STRING as usize);
         type_names.insert(s("Array"), Machine::TYPE_ARRAY as usize);
 
-        type_names.insert(s("Nil"), types.len());
-        types.push(SymbolType::Product {
-            name: s("Nil"),
-            components: Default::default(),
-        });
-
         let mut variant_names = HashMap::new();
         variant_names.insert(s("False"), types.len() as u32);
         types.push(SymbolType::SumVariant {
             type_name: s("Bool"),
             name: s("False"),
-            test: false,
         });
         variant_names.insert(s("True"), types.len() as _);
         types.push(SymbolType::SumVariant {
             type_name: s("Bool"),
             name: s("True"),
-            test: true,
         });
         type_names.insert(s("Bool"), types.len());
+        types.push(SymbolType::Sum { variant_names });
+
+        let mut variant_names = HashMap::new();
+        variant_names.insert(s("None"), types.len() as u32);
+        types.push(SymbolType::SumVariant {
+            type_name: s("Option"),
+            name: s("None"),
+        });
+        variant_names.insert(s("Some"), types.len() as _);
+        types.push(SymbolType::SumVariant {
+            type_name: s("Option"),
+            name: s("Some"),
+        });
+        type_names.insert(s("Option"), types.len());
         types.push(SymbolType::Sum { variant_names });
 
         Self {
@@ -75,7 +81,6 @@ enum SymbolType {
     SumVariant {
         type_name: String,
         name: String,
-        test: bool,
     },
 }
 
@@ -224,10 +229,10 @@ impl Machine {
     }
 
     fn is_finished(&self) -> bool {
-        self.frames.is_empty() // extra conditions like flags
+        self.frames.is_empty() // extra conditions, such as canceled
     }
 
-    fn execute(&mut self, instruction: &Instruction) -> bool {
+    fn execute(&mut self, instruction: &Instruction) {
         struct R<'a>(&'a mut Vec<Frame>);
         impl Index<&usize> for R<'_> {
             type Output = FrameRegister;
@@ -248,11 +253,11 @@ impl Machine {
 
             MakeLiteralObject(i, InstructionLiteral::Nil) => {
                 r[i] =
-                    FrameRegister::Address(self.arena.allocate(ObjectData::Typed(0, Box::new([]))));
+                    FrameRegister::Address(self.arena.allocate(ObjectData::Typed(2, Box::new([]))));
             }
             MakeLiteralObject(i, InstructionLiteral::Bool(value)) => {
-                let type_index = 1 + u32::from(*value);
-                let data = self.arena.allocate(ObjectData::Typed(0, Box::new([])));
+                let type_index = u32::from(*value);
+                let data = self.arena.allocate(ObjectData::Typed(2, Box::new([])));
                 r[i] = FrameRegister::Address(
                     self.arena
                         .allocate(ObjectData::Typed(type_index, Box::new([data]))),
@@ -296,19 +301,19 @@ impl Machine {
             }
 
             Jump(x, positive, negative) => {
-                let target = if positive == negative {
-                    *positive
+                let target = *if positive == negative {
+                    positive
                 } else {
                     let ObjectData::Typed(type_index, _) = r[x].view() else {
                         panic!()
                     };
-                    let SymbolType::SumVariant { test, .. } = self.symbol.types[*type_index as usize] else {
-                        panic!()
-                    };
-                    *if test { positive } else { negative }
+                    match *type_index {
+                        0 => negative,
+                        1 => positive,
+                        _ => panic!(),
+                    }
                 };
                 self.frames.last_mut().unwrap().program_counter = target;
-                return true;
             }
             Return(x) => {
                 let x = r[x].escape(&mut self.arena);
@@ -316,8 +321,7 @@ impl Machine {
                 if !self.is_finished() {
                     let mut r = R(&mut self.frames);
                     r[&frame.return_register] = FrameRegister::Address(x);
-                } //
-                return true;
+                }
             }
             Call(i, context_xs, name, argument_xs) => {
                 let mut xs = Vec::new();
@@ -337,7 +341,6 @@ impl Machine {
                 let index = self.symbol.function_dispatches
                     [&(context.into(), name.into(), argument_xs.len())];
                 self.push_frame(index, &xs, *i);
-                return true;
             }
 
             Load(i, name) => todo!(),
@@ -369,10 +372,7 @@ impl Machine {
                 let ObjectData::Typed(type_index, _) = r[x].view() else {
                     panic!()
                 };
-                let SymbolType::SumVariant { test, ..} = &self.symbol.types[*type_index as usize] else {
-                    panic!()
-                };
-                assert!(*test)
+                assert_eq!(*type_index, 1);
             }
             Get(i, x, name) => {
                 let ObjectData::Typed(type_index, data) = r[x].view() else {
@@ -416,9 +416,31 @@ impl Machine {
                 );
                 r[i] = FrameRegister::Address(data[0]) // more check?
             }
-            Operator1(i, op, x) => unreachable!(),
+            Operator1(i, op, x) => {
+                use {crate::Operator1::*, ObjectData::*};
+                let mut b = |value: bool| {
+                    let nil = self.arena.allocate(Typed(2, Box::new([])));
+                    Typed(TypeIndex::from(value), Box::new([nil]))
+                };
+                let object = match (op, r[x].view()) {
+                    (Copy, _) => {
+                        // TODO escape for large inline objects
+                        r[i] = r[x].clone();
+                        return;
+                    }
+                    (Not, Typed(0, _)) => b(true),
+                    (Not, Typed(1, _)) => b(false),
+                    (Neg, Integer(x)) => Integer(-x),
+                    _ => panic!(),
+                };
+                r[i] = FrameRegister::Address(self.arena.allocate(object));
+            }
             Operator2(i, op, x, y) => {
                 use {crate::Operator2::*, ObjectData::*};
+                let mut b = |value: bool| {
+                    let nil = self.arena.allocate(Typed(2, Box::new([])));
+                    Typed(TypeIndex::from(value), Box::new([nil]))
+                };
                 let object = {
                     match (op, r[x].view(), r[y].view()) {
                         (Add, Integer(x), Integer(y)) => Integer(*x + *y),
@@ -426,6 +448,12 @@ impl Machine {
                         (Mul, Integer(x), Integer(y)) => Integer(*x * *y),
                         (Div, Integer(x), Integer(y)) => Integer(*x / *y),
                         (Rem, Integer(x), Integer(y)) => Integer(*x % *y),
+                        (Lt, Integer(x), Integer(y)) => b(x < y),
+                        (Gt, Integer(x), Integer(y)) => b(x > y),
+                        (Eq, Integer(x), Integer(y)) => b(x == y),
+                        (Ne, Integer(x), Integer(y)) => b(x != y),
+                        (Le, Integer(x), Integer(y)) => b(x <= y),
+                        (Ge, Integer(x), Integer(y)) => b(x >= y),
                         (Add, String(x), String(y)) => String([&**x, &**y].concat().into()),
                         _ => panic!(),
                     }
@@ -454,7 +482,6 @@ impl Machine {
                             self.symbol.types.push(SymbolType::SumVariant {
                                 type_name: name.clone(),
                                 name: variant.clone(),
-                                test: i != 0, //
                             });
                         }
                         let type_index = self.symbol.types.len();
@@ -468,7 +495,6 @@ impl Machine {
             }
             MakeFunction(..) => unreachable!(),
         }
-        false
     }
 }
 

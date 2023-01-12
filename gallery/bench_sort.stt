@@ -185,8 +185,8 @@ make merge(a, mid) {
         # clone the right run (a[mid..]) and merge backward
         var short = a.view(mid, len - mid).clone();
         var long = a.view(0, mid);
-        var short_j = short.len();  # use `*_j` to emphasize 1-offset
-        var long_j = long.len();
+        var short_j = short.length();  # use `*_j` to emphasize 1-offset
+        var long_j = long.length();
 
         var j = len;
         var short_x = short.at(short_j - 1);
