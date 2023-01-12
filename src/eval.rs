@@ -241,8 +241,8 @@ impl Machine {
         machine.write(Machine {
             symbol: Default::default(),
             frames: Default::default(),
+            instant_zero: arena.instant_zero(),
             arena,
-            instant_zero: Instant::now(),
         });
         // port unstable `assume_init`
         let mut machine = unsafe { Box::from_raw(Box::into_raw(machine) as *mut Self) };
@@ -604,7 +604,7 @@ unsafe impl ObjectAny for Machine {
         for frame in &mut self.frames {
             for register in &mut frame.registers {
                 if let FrameRegister::Address(address) = register {
-                    scanner.process_pointer(address)
+                    scanner.process_pointer(address);
                 }
             }
         }

@@ -1,13 +1,14 @@
 use std::{
     collections::BTreeMap,
     iter::repeat_with,
-    ptr::{copy, null_mut, NonNull},
+    ptr::{copy_nonoverlapping, null_mut, write, NonNull},
     slice,
     sync::{
         atomic::{AtomicI8, Ordering},
         Arc, Mutex,
     },
     thread::panicking,
+    time::Instant,
 };
 
 use crate::{Object, ObjectAny, ObjectData};
@@ -19,6 +20,7 @@ struct ArenaShared {
     mutate_status: AtomicI8,
     slabs: Mutex<BTreeMap<*mut Object, Slab>>,
     roots: Mutex<Vec<Box<dyn ObjectAny>>>,
+    instant_zero: Instant,
 }
 
 pub struct ArenaUser {
@@ -69,6 +71,7 @@ impl Default for Arena {
             ),
             mutate_status: AtomicI8::new(0),
             roots: Default::default(),
+            instant_zero: Instant::now(),
         }))
     }
 }
@@ -157,6 +160,7 @@ impl ArenaShared {
     }
 
     fn collect(&self) {
+        let collect_zero = Instant::now();
         // collector enter
         while self
             .mutate_status
@@ -166,7 +170,7 @@ impl ArenaShared {
 
         let mut slabs = self.slabs.try_lock().unwrap();
         // to space is large enough to hold objects from all other slabs
-        let mut to_slab = Slab::new(64 * (32 << 10), SlabStatus::To);
+        let mut to_slab = Slab::new(Arena::SLAB_COUNT * Arena::SLAB_SIZE, SlabStatus::To);
         let mut scanner = ObjectScanner {
             slabs: &slabs,
             to_slab: unsafe { slice::from_raw_parts_mut(to_slab.parts.0, to_slab.parts.1) },
@@ -177,6 +181,7 @@ impl ArenaShared {
             root.on_scan(&mut scanner);
         }
         scanner.collect();
+        let alive_len = scanner.process_len;
         // marked as `Full` to
         // * avoid mutators allocating objects into it, which may exceed `to_slab` capacity in next collection
         // * make sure every object in to space will be collected in next collection, so we keep only one huge to space slab at a time
@@ -203,6 +208,14 @@ impl ArenaShared {
         // collector exit
         let swapped = self.mutate_status.swap(0, Ordering::SeqCst);
         assert_eq!(swapped, -1);
+
+        let now = Instant::now();
+        println!(
+            "[{:>9.3?}] Collected Time {:?} Alive {}",
+            now - self.instant_zero,
+            now - collect_zero,
+            alive_len
+        );
     }
 }
 
@@ -223,14 +236,17 @@ impl ObjectScanner<'_> {
     }
 
     fn copy(&mut self, object: *mut Object) -> NonNull<Object> {
+        // the slab with maximum index that is not over `object` is the slab `object` belongs to
         let object_slab = self.slabs.range(..=object).last().unwrap().1;
         match object_slab.status {
             SlabStatus::Available | SlabStatus::Released => unreachable!(),
             SlabStatus::Full => {
                 let to = &mut self.to_slab[self.allocate_len];
                 self.allocate_len += 1;
-                unsafe { copy(object, to as _, 1) }
-                unsafe { &mut *object }.data = ObjectData::Forwarded(to.into());
+                unsafe {
+                    copy_nonoverlapping(object, to as _, 1);
+                    write(&mut (*object).data as _, ObjectData::Forwarded(to.into()));
+                }
                 // will be processed later
                 to.into()
             }
@@ -258,8 +274,8 @@ impl ObjectScanner<'_> {
 
     pub fn process_pointer(&mut self, pointer: &mut NonNull<Object>) {
         let pointed = unsafe { pointer.as_mut() };
-        if let ObjectData::Forwarded(to) = pointed.data {
-            *pointer = to;
+        if let ObjectData::Forwarded(to) = &pointed.data {
+            *pointer = *to;
         } else {
             *pointer = self.copy(pointed);
         }
@@ -292,6 +308,7 @@ impl ArenaUser {
         if self.allocate_len == self.slab.parts.1 {
             // very not cool to do this
             self.shared.clone().switch_slab(self);
+            self.allocate_len = 0;
         }
         let slab = unsafe { slice::from_raw_parts_mut(self.slab.parts.0, self.slab.parts.1) };
         let object = &mut slab[self.allocate_len];
@@ -306,5 +323,9 @@ impl ArenaUser {
 
     pub fn mutate_exit(&self) {
         self.shared.mutate_exit()
+    }
+
+    pub fn instant_zero(&self) -> Instant {
+        self.shared.instant_zero
     }
 }
