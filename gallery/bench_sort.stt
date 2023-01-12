@@ -71,6 +71,8 @@ make (Array a) view(offset, length) {
 }
 
 make (ArrayView a) clone() {
+    # technically this equals `Array.new(a.length)` then copy per element
+    # I choose not to because even Java "cheat" on this with native method
     (a.data).clone(a.offset, a.length)
 }
 
@@ -216,4 +218,17 @@ make merge(a, mid) {
         }
         assert j == 0;
     }
+}
+
+var a = Array.new(16);
+var i = 0;
+while i < 16 {
+    a.at(i, i + 1);
+    i = i + 1;
+}
+inspect a;
+var i = 0;
+while i < 16 {
+    inspect a.at(i);
+    i = i + 1;
 }

@@ -5,20 +5,28 @@ use std::{
     mem::MaybeUninit,
     ops::{Index, IndexMut},
     ptr::NonNull,
+    sync::Arc,
     time::Instant,
 };
 
 use crate::{
     arena::{Arena, ArenaUser},
-    Instruction, InstructionLiteral, Object, ObjectAny, ObjectData, RegisterIndex, TypeIndex,
-    TypeOperator,
+    CastData, Instruction, InstructionLiteral, Object, ObjectAny, ObjectData, RegisterIndex,
+    TypeIndex, TypeOperator,
 };
 
 #[derive(Clone)]
 struct Symbol {
     type_names: HashMap<String, usize>,
     types: Vec<SymbolType>,
-    function_dispatches: HashMap<(Cow<'static, [TypeIndex]>, Cow<'static, str>, usize), usize>,
+    function_dispatches: HashMap<DispatchKey, Dispatch>,
+}
+
+type DispatchKey = (Cow<'static, [TypeIndex]>, Cow<'static, str>, usize);
+#[derive(Clone)]
+enum Dispatch {
+    Index(usize),
+    Native(Arc<dyn Fn(&mut Machine, &[NonNull<Object>]) -> NonNull<Object> + Send + Sync>),
 }
 
 impl Default for Symbol {
@@ -60,11 +68,100 @@ impl Default for Symbol {
         type_names.insert(s("Option"), types.len());
         types.push(SymbolType::Sum { variant_names });
 
-        Self {
+        let mut symbol = Self {
             type_names,
             types,
             function_dispatches: Default::default(),
-        }
+        };
+
+        symbol.make_native_function([], s("Array.new"), 1, |machine, args| {
+            let &[len] = args else {
+                unreachable!()
+            };
+            let len = *unsafe { len.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+            let nil = machine.arena.allocate(ObjectData::Typed(2, Box::new([])));
+            machine
+                .arena
+                .allocate(ObjectData::Array(vec![nil; len].into()))
+        });
+        symbol.make_native_function([s("Array")], s("length"), 0, |machine, args| {
+            let &[a] = args else {
+                unreachable!()
+            };
+            let a = unsafe { a.as_ref() }
+                .cast_ref::<Box<[NonNull<Object>]>>()
+                .unwrap();
+            machine.arena.allocate(ObjectData::Integer(a.len() as _))
+        });
+        symbol.make_native_function([s("Array")], s("clone"), 2, |machine, args| {
+            let &[a, offset, length] = args else {
+                unreachable!()
+            };
+            let a = unsafe { a.as_ref() }
+                .cast_ref::<Box<[NonNull<Object>]>>()
+                .unwrap();
+            let offset = *unsafe { offset.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+            let length = *unsafe { length.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+            machine.arena.allocate(ObjectData::Array(
+                a[offset..offset + length].to_vec().into(),
+            ))
+        });
+        symbol.make_native_function([s("Array")], s("at"), 1, |_, args| {
+            let &[a, position] = args else {
+                unreachable!()
+            };
+            let a = unsafe { a.as_ref() }
+                .cast_ref::<Box<[NonNull<Object>]>>()
+                .unwrap();
+            let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+            a[position]
+        });
+        symbol.make_native_function([s("Array")], s("at"), 2, |machine, args| {
+            let &[mut a, position, element] = args else {
+                unreachable!()
+            };
+            let a = unsafe { a.as_mut() }
+                .cast_mut::<Box<[NonNull<Object>]>>()
+                .unwrap();
+            let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+            a[position] = element;
+            machine.arena.allocate(ObjectData::Typed(2, Box::new([])))
+        });
+        symbol
+    }
+}
+
+impl Symbol {
+    fn make_native_function(
+        &mut self,
+        context_types: impl IntoIterator<Item = String>,
+        name: String,
+        arity: usize,
+        function: impl Fn(&mut Machine, &[NonNull<Object>]) -> NonNull<Object> + Send + Sync + 'static,
+    ) {
+        self.make_dispatch(
+            context_types,
+            name,
+            arity,
+            Dispatch::Native(Arc::new(function)),
+        );
+    }
+
+    fn make_dispatch(
+        &mut self,
+        context_types: impl IntoIterator<Item = String>,
+        name: String,
+        arity: usize,
+        dispatch: Dispatch,
+    ) {
+        let context_types = context_types
+            .into_iter()
+            .map(|name| self.type_names[&name] as _)
+            .collect();
+        let present = self
+            .function_dispatches
+            .insert((context_types, name.into(), arity), dispatch);
+        assert!(present.is_none());
     }
 }
 
@@ -212,19 +309,15 @@ impl Machine {
     const TYPE_ARRAY: TypeIndex = TypeIndex::MAX - 3;
 
     fn make_function(&mut self, instruction: Instruction, functions: &mut Vec<Box<[Instruction]>>) {
-        let Instruction::MakeFunction(context_types, name, n_argument, instructions) = instruction else {
+        let Instruction::MakeFunction(context_types, name, arity, instructions) = instruction else {
             unreachable!()
         };
-        let context_types = context_types
-            .iter()
-            .map(|name| self.symbol.type_names[name] as _)
-            .collect();
-        let index = functions.len();
-        let present = self
-            .symbol
-            .function_dispatches
-            .insert((context_types, name.into(), n_argument), index);
-        assert!(present.is_none());
+        self.symbol.make_dispatch(
+            context_types.to_vec(),
+            name,
+            arity,
+            Dispatch::Index(functions.len()),
+        );
         functions.push(instructions);
     }
 
@@ -333,14 +426,21 @@ impl Machine {
                         ObjectData::Typed(type_index, _) => *type_index,
                         ObjectData::Integer(_) => Self::TYPE_INTEGER,
                         ObjectData::String(_) => Self::TYPE_STRING,
+                        ObjectData::Array(_) => Self::TYPE_ARRAY,
                         ObjectData::Any(_) => todo!(),
                     });
                     xs.push(x.escape(&mut self.arena));
                 }
                 xs.extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
-                let index = self.symbol.function_dispatches
-                    [&(context.into(), name.into(), argument_xs.len())];
-                self.push_frame(index, &xs, *i);
+                match &self.symbol.function_dispatches
+                    [&(context.into(), name.into(), argument_xs.len())]
+                {
+                    Dispatch::Index(index) => self.push_frame(*index, &xs, *i),
+                    Dispatch::Native(function) => {
+                        let result = function.clone()(self, &xs);
+                        R(&mut self.frames)[i] = FrameRegister::Address(result);
+                    }
+                }
             }
 
             Load(i, name) => todo!(),
@@ -351,6 +451,7 @@ impl Machine {
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
                     ObjectData::String(value) => format!("String {value}"),
+                    ObjectData::Array(value) => format!("Array[{}]", value.len()),
                     ObjectData::Typed(type_index, _) => {
                         match &self.symbol.types[*type_index as usize] {
                             SymbolType::Product { name, .. } => format!("{name}[...]"),
@@ -506,6 +607,42 @@ unsafe impl ObjectAny for Machine {
                     scanner.process(address)
                 }
             }
+        }
+    }
+}
+
+impl CastData for i64 {
+    fn cast_ref(data: &ObjectData) -> Option<&Self> {
+        if let ObjectData::Integer(value) = data {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn cast_mut(data: &mut ObjectData) -> Option<&mut Self> {
+        if let ObjectData::Integer(value) = data {
+            Some(value)
+        } else {
+            None
+        }
+    }
+}
+
+impl CastData for Box<[NonNull<Object>]> {
+    fn cast_ref(data: &ObjectData) -> Option<&Self> {
+        if let ObjectData::Array(value) = data {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn cast_mut(data: &mut ObjectData) -> Option<&mut Self> {
+        if let ObjectData::Array(value) = data {
+            Some(value)
+        } else {
+            None
         }
     }
 }

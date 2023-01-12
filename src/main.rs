@@ -16,11 +16,4 @@ fn main() {
     }
 
     Machine::run_initial(instructions);
-    Machine::run_initial(Box::new([
-        Instruction::MakeLiteralObject(0, shattuck::InstructionLiteral::Integer(40)),
-        Instruction::MakeLiteralObject(1, shattuck::InstructionLiteral::Integer(2)),
-        Instruction::Operator2(0, shattuck::Operator2::Add, 0, 1),
-        Instruction::Inspect(0),
-        Instruction::Return(0),
-    ]));
 }

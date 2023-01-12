@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicI8, Ordering},
         Arc, Mutex,
     },
+    thread::panicking,
 };
 
 use crate::{Object, ObjectAny, ObjectData};
@@ -134,6 +135,9 @@ impl ArenaShared {
 
 impl Drop for Arena {
     fn drop(&mut self) {
+        if panicking() {
+            return; // allow leaking in panic
+        }
         assert_eq!(self.0.mutate_status.load(Ordering::SeqCst), 0);
         for slab in Arc::get_mut(&mut self.0)
             .unwrap()
@@ -179,7 +183,7 @@ impl ObjectScanner<'_> {
         match &mut object.data {
             ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
             ObjectData::Integer(_) | ObjectData::String(_) => {}
-            ObjectData::Typed(_, data) => {
+            ObjectData::Array(data) | ObjectData::Typed(_, data) => {
                 for pointer in data.iter_mut() {
                     self.process(pointer)
                 }

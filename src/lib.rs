@@ -62,8 +62,8 @@ pub type TypeIndex = u32;
 
 // TODO reduce object size to 16 bytes if possible
 // potential layout:
-// * 4 bits tag
 // * 60 bits pointer without trailing zeros,
+// * 4 bits tag
 // * + 32 bits type index * 32 bits item count
 //   + 64 bits length (for Box<str> and Box<[_]>)
 //   + 64 bits virtual table pointer (for Box<dyn _>)
@@ -83,7 +83,7 @@ pub enum ObjectData {
     Integer(i64),
     // float
     String(Box<str>),
-    // Box<[*mut Object]>
+    Array(Box<[std::ptr::NonNull<Object>]>),
     Typed(TypeIndex, Box<[std::ptr::NonNull<Object>]>),
 
     Any(Box<dyn ObjectAny>),
