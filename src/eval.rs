@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     fmt::Debug,
-    iter::{repeat, repeat_with},
+    iter::repeat,
     mem::{take, MaybeUninit},
     ops::{Index, IndexMut},
     ptr::NonNull,
@@ -185,6 +185,7 @@ pub struct Machine {
     symbol: Symbol,
     arena: ArenaUser,
     frames: Vec<Frame>,
+    registers: Vec<FrameRegister>,
     names: HashMap<Box<str>, NonNull<Object>>,
     preallocate: MachineStatic,
     arguments: Vec<NonNull<Object>>,
@@ -217,7 +218,7 @@ impl MachineStatic {
 }
 
 struct Frame {
-    registers: [FrameRegister; Self::REGISTER_COUNT],
+    // registers: [FrameRegister; Self::REGISTER_COUNT],
     return_register: RegisterIndex,
     function_index: usize,
     program_counter: usize,
@@ -314,6 +315,7 @@ impl Machine {
         machine.write(Machine {
             symbol: Default::default(),
             frames: Default::default(),
+            registers: Default::default(),
             names: Default::default(),
             preallocate,
             arena,
@@ -332,17 +334,22 @@ impl Machine {
         // arguments: &[NonNull<Object>],
         return_register: RegisterIndex,
     ) {
-        let mut frame = Frame {
-            registers: repeat_with(Default::default)
-                .take(Frame::REGISTER_COUNT)
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap(),
+        let frame = Frame {
+            // registers: repeat_with(Default::default)
+            //     .take(Frame::REGISTER_COUNT)
+            //     .collect::<Vec<_>>()
+            //     .try_into()
+            //     .unwrap(),
             return_register,
             function_index: index,
             program_counter: 0,
         };
-        for (r, argument) in frame.registers[..self.arguments.len()]
+        let zero = self.frames.len() * Frame::REGISTER_COUNT;
+        if self.registers.len() <= zero {
+            self.registers
+                .resize_with(zero + Frame::REGISTER_COUNT, Default::default);
+        }
+        for (r, argument) in self.registers[zero..zero + self.arguments.len()]
             .iter_mut()
             .zip(&self.arguments)
         {
@@ -352,6 +359,7 @@ impl Machine {
     }
 
     fn run(&mut self, mut functions: Vec<Box<[Instruction]>>) {
+        self.arena.mutate_enter();
         'control: while !self.is_finished() {
             let depth = self.frames.len();
             for instruction in &functions[self.frames.last().unwrap().function_index]
@@ -370,9 +378,7 @@ impl Machine {
                     continue 'control;
                 }
 
-                self.arena.mutate_enter();
                 self.execute(instruction);
-                self.arena.mutate_exit();
                 if self.frames.len() != depth
                     || self.frames.last().unwrap().program_counter != counter
                 {
@@ -381,6 +387,7 @@ impl Machine {
             }
             unreachable!("function instructions not ending with Return")
         }
+        self.arena.mutate_exit();
     }
 
     const TYPE_INTEGER: TypeIndex = TypeIndex::MAX - 1;
@@ -405,21 +412,24 @@ impl Machine {
     }
 
     fn execute(&mut self, instruction: &Instruction) {
-        struct R<'a>(&'a mut Vec<Frame>);
+        struct R<'a>(&'a mut [FrameRegister], usize);
         impl Index<&RegisterIndex> for R<'_> {
             type Output = FrameRegister;
             fn index(&self, index: &RegisterIndex) -> &Self::Output {
                 #[allow(clippy::unnecessary_cast)]
-                &self.0.last().unwrap().registers[*index as usize]
+                &self.0[self.1 + *index as usize]
             }
         }
         impl IndexMut<&RegisterIndex> for R<'_> {
             fn index_mut(&mut self, index: &RegisterIndex) -> &mut Self::Output {
                 #[allow(clippy::unnecessary_cast)]
-                &mut self.0.last_mut().unwrap().registers[*index as usize]
+                &mut self.0[self.1 + *index as usize]
             }
         }
-        let mut r = R(&mut self.frames);
+        let mut r = R(
+            &mut self.registers,
+            (self.frames.len() - 1) * Frame::REGISTER_COUNT,
+        );
 
         use Instruction::*;
         match instruction {
@@ -475,7 +485,10 @@ impl Machine {
                 let x = take(&mut r[x]);
                 let frame = self.frames.pop().unwrap();
                 if !self.is_finished() {
-                    let mut r = R(&mut self.frames);
+                    let mut r = R(
+                        &mut self.registers,
+                        (self.frames.len() - 1) * Frame::REGISTER_COUNT,
+                    );
                     r[&frame.return_register] = x;
                 }
             }
@@ -501,7 +514,10 @@ impl Machine {
                     Dispatch::Index(index) => self.push_frame(*index, *i),
                     Dispatch::Native(function) => {
                         let result = function.clone()(self);
-                        R(&mut self.frames)[i] = FrameRegister::Address(result);
+                        R(
+                            &mut self.registers,
+                            (self.frames.len() - 1) * Frame::REGISTER_COUNT,
+                        )[i] = FrameRegister::Address(result);
                     }
                 }
                 self.arguments.drain(..);
@@ -670,13 +686,11 @@ unsafe impl ObjectAny for Machine {
         for address in &mut self.arguments {
             scanner.process_pointer(address);
         }
-        for frame in &mut self.frames {
-            for register in &mut frame.registers {
-                match register {
-                    FrameRegister::Vacant => {}
-                    FrameRegister::Address(address) => scanner.process_pointer(address),
-                    FrameRegister::Inline(object) => scanner.process(object),
-                }
+        for register in &mut self.registers[..self.frames.len() * Frame::REGISTER_COUNT] {
+            match register {
+                FrameRegister::Vacant => {}
+                FrameRegister::Address(address) => scanner.process_pointer(address),
+                FrameRegister::Inline(object) => scanner.process(object),
             }
         }
     }
