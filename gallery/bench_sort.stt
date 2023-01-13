@@ -239,11 +239,6 @@ while i < len {
     a.at(i, rng.next());
     i = i + 1;
 }
-# var i = 0;
-# while i < len {
-#     inspect a.at(i);
-#     i = i + 1;
-# }
 
 var sum1 = 0;
 var sum2 = 0;

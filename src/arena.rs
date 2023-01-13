@@ -77,7 +77,6 @@ impl Default for Arena {
 }
 
 impl Arena {
-    // slab size 32K * 32B (object size) = 1MB
     const SLAB_SIZE: usize = 32 << 10; // in terms of object count
     const SLAB_COUNT: usize = 64;
 
@@ -184,7 +183,7 @@ impl ArenaShared {
         let alive_len = scanner.process_len;
         // marked as `Full` to
         // * avoid mutators allocating objects into it, which may exceed `to_slab` capacity in next collection
-        // * make sure every object in to space will be collected in next collection, so we keep only one huge to space slab at a time
+        // * make sure we discard this slot in next collecting, so we keep only one huge to space slab at a time
         to_slab.status = SlabStatus::Full;
 
         slabs.retain(|_, slab| {
@@ -195,8 +194,12 @@ impl ArenaShared {
                 true
             }
         });
-        slabs.insert(to_slab.parts.0, to_slab);
-        let extend_len = Arena::SLAB_COUNT - slabs.len();
+        // size of next to space (A): slab count * slab size
+        // size of next to-be-collected (B): <= alive length + (extend length + slabs length) * slab size
+        // (only equal when all not-collecting slabs are correctly full)
+        // ensure A >= B
+        let extend_len =
+            (Arena::SLAB_COUNT * Arena::SLAB_SIZE - alive_len) / Arena::SLAB_SIZE - slabs.len();
         slabs.extend(
             repeat_with(|| {
                 let slab = Slab::new(Arena::SLAB_SIZE, SlabStatus::Available);
@@ -204,6 +207,7 @@ impl ArenaShared {
             })
             .take(extend_len),
         );
+        slabs.insert(to_slab.parts.0, to_slab);
 
         // collector exit
         let swapped = self.mutate_status.swap(0, Ordering::SeqCst);
@@ -211,7 +215,7 @@ impl ArenaShared {
 
         let now = Instant::now();
         println!(
-            "[{:>9.3?}] Collected Time {:?} Alive {}",
+            "[{:>9.3?}] Collected Stop {:?} Copy {}",
             now - self.instant_zero,
             now - collect_zero,
             alive_len
@@ -235,17 +239,22 @@ impl ObjectScanner<'_> {
         }
     }
 
-    fn copy(&mut self, object: *mut Object) -> NonNull<Object> {
+    fn copy(&mut self, object: &mut Object) -> NonNull<Object> {
         // the slab with maximum index that is not over `object` is the slab `object` belongs to
-        let object_slab = self.slabs.range(..=object).last().unwrap().1;
+        let object_slab = self.slabs.range(..=object as *mut _).last().unwrap().1;
+        assert!(object as *mut _ < unsafe { object_slab.parts.0.offset(object_slab.parts.1 as _) });
+        assert!(!matches!(
+            object.data,
+            ObjectData::Vacant | ObjectData::Forwarded(_)
+        ));
         match object_slab.status {
             SlabStatus::Available | SlabStatus::Released => unreachable!(),
             SlabStatus::Full => {
                 let to = &mut self.to_slab[self.allocate_len];
                 self.allocate_len += 1;
                 unsafe {
-                    copy_nonoverlapping(object, to as _, 1);
-                    write(&mut (*object).data as _, ObjectData::Forwarded(to.into()));
+                    copy_nonoverlapping(object, to, 1);
+                    write(&mut object.data, ObjectData::Forwarded(to.into()));
                 }
                 // will be processed later
                 to.into()
@@ -259,8 +268,8 @@ impl ObjectScanner<'_> {
         }
     }
 
-    fn process(&mut self, object: *mut Object) {
-        match &mut unsafe { &mut *object }.data {
+    pub fn process(&mut self, object: *mut Object) {
+        match unsafe { &mut (*object).data } {
             ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
             ObjectData::Integer(_) | ObjectData::String(_) => {}
             ObjectData::Array(data) | ObjectData::Typed(_, data) => {

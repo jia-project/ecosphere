@@ -1,8 +1,9 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
-    iter::repeat_with,
-    mem::MaybeUninit,
+    fmt::Debug,
+    iter::{repeat, repeat_with},
+    mem::{take, MaybeUninit},
     ops::{Index, IndexMut},
     ptr::NonNull,
     sync::Arc,
@@ -79,10 +80,9 @@ impl Default for Symbol {
                 unreachable!()
             };
             let len = *unsafe { len.as_ref() }.cast_ref::<i64>().unwrap() as usize;
-            let nil = machine.arena.allocate(ObjectData::Typed(2, Box::new([])));
             machine
                 .arena
-                .allocate(ObjectData::Array(vec![nil; len].into()))
+                .allocate(ObjectData::Array(vec![machine.preallocate.nil; len].into()))
         });
         symbol.make_native_function([s("Array")], s("length"), 0, |machine, args| {
             let &[a] = args else {
@@ -125,7 +125,7 @@ impl Default for Symbol {
                 .unwrap();
             let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
             a[position] = element;
-            machine.arena.allocate(ObjectData::Typed(2, Box::new([])))
+            machine.preallocate.nil
         });
         symbol
     }
@@ -194,11 +194,30 @@ struct MachineStatic {
     nil: NonNull<Object>,
     bool_true: NonNull<Object>,
     bool_false: NonNull<Object>,
-    integers: [NonNull<Object>; 256],
+    // integers: [NonNull<Object>; 256],
+}
+
+impl MachineStatic {
+    fn make(&self, literal: &InstructionLiteral) -> FrameRegister {
+        match literal {
+            InstructionLiteral::Nil => FrameRegister::Address(self.nil),
+            InstructionLiteral::Bool(true) => FrameRegister::Address(self.bool_true),
+            InstructionLiteral::Bool(false) => FrameRegister::Address(self.bool_false),
+            // InstructionLiteral::Integer(value) if (0..256).contains(value) => {
+            //     FrameRegister::Address(self.integers[*value as usize])
+            // }
+            InstructionLiteral::Integer(value) => FrameRegister::Inline(Object {
+                data: ObjectData::Integer(*value),
+            }),
+            InstructionLiteral::String(value) => FrameRegister::Inline(Object {
+                data: ObjectData::String(value.clone()),
+            }),
+        }
+    }
 }
 
 struct Frame {
-    registers: [FrameRegister; Self::REGISTER_COUNT], //
+    registers: [FrameRegister; Self::REGISTER_COUNT],
     return_register: RegisterIndex,
     function_index: usize,
     program_counter: usize,
@@ -208,12 +227,22 @@ impl Frame {
     const REGISTER_COUNT: usize = 256;
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default)]
 enum FrameRegister {
     #[default]
     Vacant,
     Address(NonNull<Object>),
-    // inline
+    Inline(Object),
+}
+
+impl Debug for FrameRegister {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Vacant => f.pad("FrameRegister::Vacant"),
+            Self::Address(address) => f.pad(&format!("FrameRegister::Address({address:?})")),
+            Self::Inline(_) => f.pad("FrameRegister::Inline(_)"),
+        }
+    }
 }
 
 impl FrameRegister {
@@ -221,7 +250,7 @@ impl FrameRegister {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => unsafe { &address.as_ref().data },
-            //
+            Self::Inline(object) => &object.data,
         }
     }
 
@@ -229,7 +258,7 @@ impl FrameRegister {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => unsafe { &mut address.as_mut().data },
-            //
+            Self::Inline(object) => &mut object.data,
         }
     }
 
@@ -237,7 +266,28 @@ impl FrameRegister {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => *address,
-            //
+            Self::Inline(_) => {
+                let Self::Inline(object) = take(self) else {
+                    unreachable!()
+                };
+                let address = arena.allocate(object.data);
+                *self = Self::Address(address);
+                address
+            }
+        }
+    }
+
+    fn copy(&mut self, arena: &mut ArenaUser) -> FrameRegister {
+        match self {
+            Self::Vacant => panic!(),
+            Self::Address(address) => Self::Address(*address),
+            Self::Inline(object) => match &object.data {
+                ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
+                ObjectData::Integer(value) => Self::Inline(Object {
+                    data: ObjectData::Integer(*value),
+                }),
+                _ => Self::Address(self.escape(arena)),
+            },
         }
     }
 }
@@ -248,17 +298,19 @@ impl Machine {
         let mut machine = Box::new(MaybeUninit::<Self>::uninit());
         let mut arena = unsafe { arena.add_user(machine.as_mut_ptr()) };
 
+        arena.mutate_enter();
         let nil = arena.allocate(ObjectData::Typed(2, Box::new([])));
         let preallocate = MachineStatic {
             nil,
             bool_false: arena.allocate(ObjectData::Typed(0, Box::new([nil]))),
             bool_true: arena.allocate(ObjectData::Typed(1, Box::new([nil]))),
-            integers: (0..256)
-                .map(|i| arena.allocate(ObjectData::Integer(i)))
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap(),
+            // integers: (0..256)
+            //     .map(|i| arena.allocate(ObjectData::Integer(i)))
+            //     .collect::<Vec<_>>()
+            //     .try_into()
+            //     .unwrap(),
         };
+        arena.mutate_exit();
         machine.write(Machine {
             symbol: Default::default(),
             frames: Default::default(),
@@ -370,36 +422,14 @@ impl Machine {
         match instruction {
             ParsingPlaceholder(_) => unreachable!(),
 
-            MakeLiteralObject(i, InstructionLiteral::Nil) => {
-                r[i] = FrameRegister::Address(self.preallocate.nil)
-            }
-            MakeLiteralObject(i, InstructionLiteral::Bool(true)) => {
-                r[i] = FrameRegister::Address(self.preallocate.bool_true)
-            }
-            MakeLiteralObject(i, InstructionLiteral::Bool(false)) => {
-                r[i] = FrameRegister::Address(self.preallocate.bool_false)
-            }
-            MakeLiteralObject(i, InstructionLiteral::Integer(value))
-                if (0..256).contains(value) =>
-            {
-                r[i] = FrameRegister::Address(self.preallocate.integers[*value as usize])
-            }
-            MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
-                r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Integer(*value)))
-            }
-            MakeLiteralObject(i, InstructionLiteral::String(value)) => {
-                r[i] =
-                    FrameRegister::Address(self.arena.allocate(ObjectData::String(value.clone())))
-            }
-
+            MakeLiteralObject(i, literal) => r[i] = self.preallocate.make(literal),
             MakeDataObject(i, name, items) => {
                 let type_index = self.symbol.type_names[name];
                 let data = match &self.symbol.types[type_index] {
                     SymbolType::Product { components, .. } => {
-                        let mut data =
-                            repeat_with(|| self.arena.allocate(ObjectData::Typed(0, Box::new([]))))
-                                .take(components.len())
-                                .collect::<Box<_>>();
+                        let mut data = repeat(self.preallocate.nil)
+                            .take(components.len())
+                            .collect::<Box<_>>();
                         for (name, x) in items.iter() {
                             data[components[name]] = r[x].escape(&mut self.arena);
                         }
@@ -435,11 +465,11 @@ impl Machine {
                 self.frames.last_mut().unwrap().program_counter = target;
             }
             Return(x) => {
-                let x = r[x].escape(&mut self.arena);
+                let x = take(&mut r[x]);
                 let frame = self.frames.pop().unwrap();
                 if !self.is_finished() {
                     let mut r = R(&mut self.frames);
-                    r[&frame.return_register] = FrameRegister::Address(x);
+                    r[&frame.return_register] = x;
                 }
             }
             Call(i, context_xs, name, argument_xs) => {
@@ -530,12 +560,7 @@ impl Machine {
                 let SymbolType::SumVariant{name: n, ..} = &self.symbol.types[*type_index as usize] else {
                     panic!()
                 };
-                let type_index = 1 + u32::from(name == n);
-                let data = self.arena.allocate(ObjectData::Typed(0, Box::new([])));
-                r[i] = FrameRegister::Address(
-                    self.arena
-                        .allocate(ObjectData::Typed(type_index, Box::new([data]))),
-                )
+                r[i] = self.preallocate.make(&InstructionLiteral::Bool(n == name));
             }
             As(i, x, name) => {
                 let ObjectData::Typed(type_index, data) = r[x].view() else {
@@ -547,53 +572,39 @@ impl Machine {
                 r[i] = FrameRegister::Address(data[0]) // more check?
             }
             Operator1(i, op, x) => {
-                use {crate::Operator1::*, ObjectData::*};
-                let mut b = |value: bool| {
-                    let nil = self.arena.allocate(Typed(2, Box::new([])));
-                    Typed(TypeIndex::from(value), Box::new([nil]))
-                };
-                let object = match (op, r[x].view()) {
-                    (Copy, _) => {
-                        // TODO escape for large inline objects
-                        r[i] = r[x].clone();
-                        return;
-                    }
-                    (Not, Typed(0, _)) => b(true),
-                    (Not, Typed(1, _)) => b(false),
-                    (Neg, Integer(x)) => Integer(-x),
+                use {crate::Operator1::*, InstructionLiteral as L, ObjectData::*};
+                r[i] = match (op, r[x].view()) {
+                    (Copy, _) => r[x].copy(&mut self.arena),
+                    (Not, Typed(0, _)) => self.preallocate.make(&L::Bool(true)),
+                    (Not, Typed(1, _)) => self.preallocate.make(&L::Bool(false)),
+                    (Neg, Integer(x)) => self.preallocate.make(&L::Integer(-*x)),
                     _ => panic!(),
-                };
-                r[i] = FrameRegister::Address(self.arena.allocate(object));
+                }
             }
             Operator2(i, op, x, y) => {
-                use {crate::Operator2::*, ObjectData::*};
-                let mut b = |value: bool| {
-                    let nil = self.arena.allocate(Typed(2, Box::new([])));
-                    Typed(TypeIndex::from(value), Box::new([nil]))
-                };
-                let object = {
-                    match (op, r[x].view(), r[y].view()) {
-                        (Add, Integer(x), Integer(y)) => Integer(*x + *y),
-                        (Sub, Integer(x), Integer(y)) => Integer(*x - *y),
-                        (Mul, Integer(x), Integer(y)) => Integer(*x * *y),
-                        (Div, Integer(x), Integer(y)) => Integer(*x / *y),
-                        (Rem, Integer(x), Integer(y)) => Integer(*x % *y),
-                        (Lt, Integer(x), Integer(y)) => b(x < y),
-                        (Gt, Integer(x), Integer(y)) => b(x > y),
-                        (Eq, Integer(x), Integer(y)) => b(x == y),
-                        (Ne, Integer(x), Integer(y)) => b(x != y),
-                        (Le, Integer(x), Integer(y)) => b(x <= y),
-                        (Ge, Integer(x), Integer(y)) => b(x >= y),
-                        (BitAnd, Integer(x), Integer(y)) => Integer(*x & *y),
-                        (BitOr, Integer(x), Integer(y)) => Integer(*x | *y),
-                        (BitXor, Integer(x), Integer(y)) => Integer(*x ^ *y),
-                        (Shl, Integer(x), Integer(y)) => Integer(*x << *y),
-                        (Shr, Integer(x), Integer(y)) => Integer(*x >> *y),
-                        (Add, String(x), String(y)) => String([&**x, &**y].concat().into()),
+                use {crate::Operator2::*, InstructionLiteral as L, ObjectData::*};
+                r[i] = self
+                    .preallocate
+                    .make(&match (op, r[x].view(), r[y].view()) {
+                        (Add, Integer(x), Integer(y)) => L::Integer(*x + *y),
+                        (Sub, Integer(x), Integer(y)) => L::Integer(*x - *y),
+                        (Mul, Integer(x), Integer(y)) => L::Integer(*x * *y),
+                        (Div, Integer(x), Integer(y)) => L::Integer(*x / *y),
+                        (Rem, Integer(x), Integer(y)) => L::Integer(*x % *y),
+                        (Lt, Integer(x), Integer(y)) => L::Bool(x < y),
+                        (Gt, Integer(x), Integer(y)) => L::Bool(x > y),
+                        (Eq, Integer(x), Integer(y)) => L::Bool(x == y),
+                        (Ne, Integer(x), Integer(y)) => L::Bool(x != y),
+                        (Le, Integer(x), Integer(y)) => L::Bool(x <= y),
+                        (Ge, Integer(x), Integer(y)) => L::Bool(x >= y),
+                        (BitAnd, Integer(x), Integer(y)) => L::Integer(*x & *y),
+                        (BitOr, Integer(x), Integer(y)) => L::Integer(*x | *y),
+                        (BitXor, Integer(x), Integer(y)) => L::Integer(*x ^ *y),
+                        (Shl, Integer(x), Integer(y)) => L::Integer(*x << *y),
+                        (Shr, Integer(x), Integer(y)) => L::Integer(*x >> *y),
+                        (Add, String(x), String(y)) => L::String([&**x, &**y].concat().into()),
                         _ => panic!(),
-                    }
-                };
-                r[i] = FrameRegister::Address(self.arena.allocate(object))
+                    })
             }
 
             MakeType(name, op, items) => {
@@ -640,16 +651,18 @@ unsafe impl ObjectAny for Machine {
         scanner.process_pointer(&mut self.preallocate.nil);
         scanner.process_pointer(&mut self.preallocate.bool_true);
         scanner.process_pointer(&mut self.preallocate.bool_false);
-        for address in &mut self.preallocate.integers {
-            scanner.process_pointer(address);
-        }
+        // for address in &mut self.preallocate.integers {
+        //     scanner.process_pointer(address);
+        // }
         for address in self.names.values_mut() {
             scanner.process_pointer(address);
         }
         for frame in &mut self.frames {
             for register in &mut frame.registers {
-                if let FrameRegister::Address(address) = register {
-                    scanner.process_pointer(address);
+                match register {
+                    FrameRegister::Vacant => {}
+                    FrameRegister::Address(address) => scanner.process_pointer(address),
+                    FrameRegister::Inline(object) => scanner.process(object),
                 }
             }
         }

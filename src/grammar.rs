@@ -629,12 +629,14 @@ impl FunctionVisitor {
 
     fn visit_var_stmt(&mut self, stmt: Pair<'_, Rule>) {
         let ([name], expr) = split_option(stmt);
-        let r = self.allocate();
+        let r;
         if let Some(expr) = expr {
             let expr_r = self.visit_expr(expr);
+            r = self.allocate();
             self.instructions
                 .push(Instruction::Operator1(r, Operator1::Copy, expr_r))
         } else {
+            r = self.allocate();
             self.instructions
                 .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil))
         };
