@@ -242,7 +242,7 @@ impl ObjectScanner<'_> {
     fn copy(&mut self, object: &mut Object) -> NonNull<Object> {
         // the slab with maximum index that is not over `object` is the slab `object` belongs to
         let object_slab = self.slabs.range(..=object as *mut _).last().unwrap().1;
-        assert!(object as *mut _ < unsafe { object_slab.parts.0.offset(object_slab.parts.1 as _) });
+        assert!(object as *mut _ < unsafe { object_slab.parts.0.add(object_slab.parts.1) });
         assert!(!matches!(
             object.data,
             ObjectData::Vacant | ObjectData::Forwarded(_)
@@ -269,6 +269,10 @@ impl ObjectScanner<'_> {
     }
 
     pub fn process(&mut self, object: *mut Object) {
+        self.process2(object) // suppress public safe function with unsafe deref lint
+    }
+
+    fn process2(&mut self, object: *mut Object) {
         match unsafe { &mut (*object).data } {
             ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
             ObjectData::Integer(_) | ObjectData::String(_) => {}
@@ -315,7 +319,7 @@ impl Drop for Arena {
 impl ArenaUser {
     pub fn allocate(&mut self, data: ObjectData) -> NonNull<Object> {
         if self.allocate_len == self.slab.parts.1 {
-            // very not cool to do this
+            // very not cool to clone and pass `self` but fine
             self.shared.clone().switch_slab(self);
             // dbg!(self.slab.parts);
             self.allocate_len = 0;

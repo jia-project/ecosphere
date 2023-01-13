@@ -238,9 +238,9 @@ enum FrameRegister {
 impl Debug for FrameRegister {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Vacant => f.pad("FrameRegister::Vacant"),
-            Self::Address(address) => f.pad(&format!("FrameRegister::Address({address:?})")),
-            Self::Inline(_) => f.pad("FrameRegister::Inline(_)"),
+            Self::Vacant => f.pad("Vacant"),
+            Self::Address(address) => f.pad(&format!("Address({address:?})")),
+            Self::Inline(_) => f.pad("Inline(_)"),
         }
     }
 }
@@ -430,6 +430,10 @@ impl Machine {
                         let mut data = repeat(self.preallocate.nil)
                             .take(components.len())
                             .collect::<Box<_>>();
+                        // make sure an interleaving GC not result in stall pointer
+                        for (_, x) in &**items {
+                            r[x].escape(&mut self.arena);
+                        }
                         for (name, x) in &**items {
                             data[components[name]] = r[x].escape(&mut self.arena);
                         }

@@ -222,12 +222,13 @@ make XorShiftRng [
     * w
 ]
 
+mask = (1 << 32) - 1;
 make (XorShiftRng s) next() {
-    var t = (s.x ^ (s.x << 11)) & ((1 << 32) - 1);
+    var t = (s.x ^ (s.x << 11)) & mask;
     s put x = s.y;
     s put y = s.z;
     s put z = s.w;
-    s put w = (s.w ^ (s.w >> 19) ^ (t ^ (t >> 8))) & ((1 << 32) - 1);
+    s put w = (s.w ^ (s.w >> 19) ^ (t ^ (t >> 8))) & mask;
     s.w
 }
 
@@ -243,7 +244,7 @@ while i < len {
 var sum1 = 0;
 var sum2 = 0;
 var i = 0;
-var mask = (1 << 32) - 1;
+var mask = mask;
 inspect a;
 while i < len {
     sum1 = (sum1 + a.at(i)) & mask;
