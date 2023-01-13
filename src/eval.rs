@@ -27,7 +27,7 @@ type DispatchKey = (Cow<'static, [TypeIndex]>, Cow<'static, str>, usize);
 #[derive(Clone)]
 enum Dispatch {
     Index(usize),
-    Native(Arc<dyn Fn(&mut Machine, &[NonNull<Object>]) -> NonNull<Object> + Send + Sync>),
+    Native(Arc<dyn Fn(&mut Machine) -> NonNull<Object> + Send + Sync>),
 }
 
 impl Default for Symbol {
@@ -75,8 +75,8 @@ impl Default for Symbol {
             function_dispatches: Default::default(),
         };
 
-        symbol.make_native_function([], s("Array.new"), 1, |machine, args| {
-            let &[len] = args else {
+        symbol.make_native_function([], s("Array.new"), 1, |machine| {
+            let &[len] = &*machine.arguments else {
                 unreachable!()
             };
             let len = *unsafe { len.as_ref() }.cast_ref::<i64>().unwrap() as usize;
@@ -84,8 +84,8 @@ impl Default for Symbol {
                 .arena
                 .allocate(ObjectData::Array(vec![machine.preallocate.nil; len].into()))
         });
-        symbol.make_native_function([s("Array")], s("length"), 0, |machine, args| {
-            let &[a] = args else {
+        symbol.make_native_function([s("Array")], s("length"), 0, |machine| {
+            let &[a] = &*machine.arguments else {
                 unreachable!()
             };
             let a = unsafe { a.as_ref() }
@@ -93,8 +93,8 @@ impl Default for Symbol {
                 .unwrap();
             machine.arena.allocate(ObjectData::Integer(a.len() as _))
         });
-        symbol.make_native_function([s("Array")], s("clone"), 2, |machine, args| {
-            let &[a, offset, length] = args else {
+        symbol.make_native_function([s("Array")], s("clone"), 2, |machine| {
+            let &[a, offset, length] = &*machine.arguments else {
                 unreachable!()
             };
             let a = unsafe { a.as_ref() }
@@ -106,8 +106,8 @@ impl Default for Symbol {
                 a[offset..offset + length].to_vec().into(),
             ))
         });
-        symbol.make_native_function([s("Array")], s("at"), 1, |_, args| {
-            let &[a, position] = args else {
+        symbol.make_native_function([s("Array")], s("at"), 1, |machine| {
+            let &[a, position] = &*machine.arguments else {
                 unreachable!()
             };
             let a = unsafe { a.as_ref() }
@@ -116,8 +116,8 @@ impl Default for Symbol {
             let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
             a[position]
         });
-        symbol.make_native_function([s("Array")], s("at"), 2, |machine, args| {
-            let &[mut a, position, element] = args else {
+        symbol.make_native_function([s("Array")], s("at"), 2, |machine| {
+            let &[mut a, position, element] = &*machine.arguments else {
                 unreachable!()
             };
             let a = unsafe { a.as_mut() }
@@ -137,7 +137,7 @@ impl Symbol {
         context_types: impl IntoIterator<Item = Box<str>>,
         name: Box<str>,
         arity: usize,
-        function: impl Fn(&mut Machine, &[NonNull<Object>]) -> NonNull<Object> + Send + Sync + 'static,
+        function: impl Fn(&mut Machine) -> NonNull<Object> + Send + Sync + 'static,
     ) {
         self.make_dispatch(
             context_types,
@@ -183,11 +183,11 @@ enum SymbolType {
 
 pub struct Machine {
     symbol: Symbol,
+    arena: ArenaUser,
     frames: Vec<Frame>,
     names: HashMap<Box<str>, NonNull<Object>>,
     preallocate: MachineStatic,
-    arena: ArenaUser,
-    instant_zero: Instant,
+    arguments: Vec<NonNull<Object>>,
 }
 
 struct MachineStatic {
@@ -316,20 +316,20 @@ impl Machine {
             frames: Default::default(),
             names: Default::default(),
             preallocate,
-            instant_zero: arena.instant_zero(),
             arena,
+            arguments: Default::default(),
         });
         // port unstable `assume_init`
         let mut machine = unsafe { Box::from_raw(Box::into_raw(machine) as *mut Self) };
 
-        machine.push_frame(0, &[], RegisterIndex::MAX);
+        machine.push_frame(0, RegisterIndex::MAX);
         machine.run(vec![instructions]);
     }
 
     fn push_frame(
         &mut self,
         index: usize,
-        arguments: &[NonNull<Object>],
+        // arguments: &[NonNull<Object>],
         return_register: RegisterIndex,
     ) {
         let mut frame = Frame {
@@ -342,7 +342,10 @@ impl Machine {
             function_index: index,
             program_counter: 0,
         };
-        for (r, argument) in frame.registers[..arguments.len()].iter_mut().zip(arguments) {
+        for (r, argument) in frame.registers[..self.arguments.len()]
+            .iter_mut()
+            .zip(&self.arguments)
+        {
             *r = FrameRegister::Address(*argument);
         }
         self.frames.push(frame);
@@ -477,15 +480,6 @@ impl Machine {
                 }
             }
             Call(i, context_xs, name, argument_xs) => {
-                // make sure that if a GC will happen during one of escaping, we are passing all arguments with after-collected addresses
-                for x in &**context_xs {
-                    r[x].escape(&mut self.arena);
-                }
-                for x in &**argument_xs {
-                    r[x].escape(&mut self.arena);
-                }
-
-                let mut xs = Vec::new();
                 let mut context = Vec::new();
                 for x in &**context_xs {
                     let x = &mut r[x];
@@ -497,18 +491,20 @@ impl Machine {
                         ObjectData::Array(_) => Self::TYPE_ARRAY,
                         ObjectData::Any(_) => todo!(),
                     });
-                    xs.push(x.escape(&mut self.arena));
+                    self.arguments.push(x.escape(&mut self.arena));
                 }
-                xs.extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
+                self.arguments
+                    .extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
                 match &self.symbol.function_dispatches
                     [&(context.into(), (&**name).into(), argument_xs.len())]
                 {
-                    Dispatch::Index(index) => self.push_frame(*index, &xs, *i),
+                    Dispatch::Index(index) => self.push_frame(*index, *i),
                     Dispatch::Native(function) => {
-                        let result = function.clone()(self, &xs);
+                        let result = function.clone()(self);
                         R(&mut self.frames)[i] = FrameRegister::Address(result);
                     }
                 }
+                self.arguments.drain(..);
             }
 
             Load(i, name) => r[i] = FrameRegister::Address(self.names[name]),
@@ -538,7 +534,7 @@ impl Machine {
                 };
                 println!(
                     "[{:>9.3?}] {:x?} {repr}",
-                    Instant::now() - self.instant_zero,
+                    Instant::now() - self.arena.instant_zero(),
                     r[x]
                 );
             }
@@ -669,6 +665,9 @@ unsafe impl ObjectAny for Machine {
         //     scanner.process_pointer(address);
         // }
         for address in self.names.values_mut() {
+            scanner.process_pointer(address);
+        }
+        for address in &mut self.arguments {
             scanner.process_pointer(address);
         }
         for frame in &mut self.frames {
