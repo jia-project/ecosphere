@@ -231,15 +231,26 @@ make (XorShiftRng s) next() {
     s.w
 }
 
-var a = Array.new(16);
+var len = 1 << 20;
+var a = Array.new(len);
 var rng = XorShiftRng [x = 1, y = 2, z = 3, w = 4];
 var i = 0;
-while i < 16 {
+while i < len {
     a.at(i, rng.next());
     i = i + 1;
 }
+# var i = 0;
+# while i < len {
+#     inspect a.at(i);
+#     i = i + 1;
+# }
+
+var sum1 = 0;
+var sum2 = 0;
 var i = 0;
-while i < 16 {
-    inspect a.at(i);
+while i < len {
+    sum1 = (sum1 + a.at(i)) & ((1 << 32) - 1);
+    sum2 = (sum1 + sum2) & ((1 << 32) - 1);
     i = i + 1;
 }
+inspect (sum1 << 31) ^ sum2;

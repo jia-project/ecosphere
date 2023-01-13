@@ -12,17 +12,22 @@ class XorShiftRng:
         self.x = self.y
         self.y = self.z
         self.z = self.w
-        self.w = (self.w ^ (self.w >> 19) ^ (t ^ (t >> 8))) & ((1 << 32) -1)
+        self.w = (self.w ^ (self.w >> 19) ^ (t ^ (t >> 8))) & ((1 << 32) - 1)
         return self.w
 
 def main():
     rng = XorShiftRng(1, 2, 3, 4)
     xs = [rng.next() for _ in range(1 << 20)]
     zero_instant = time()
-    print(f"{time() - zero_instant:.6f}s Sort start")
-    xs.sort()
-    print(f"{time() - zero_instant:.6f}s Sort finish")
+    # print(f"{time() - zero_instant:.6f}s Sort start")
+    # xs.sort()
+    # print(f"{time() - zero_instant:.6f}s Sort finish")
 
+    sum1, sum2 = 0, 0
+    for x in xs:
+        sum1 = (sum1 + x) & ((1 << 32) - 1)
+        sum2 = (sum1 + sum2) & ((1 << 32) - 1)
+    print((sum1 << 31) ^ sum2)
 
 assert __name__ == '__main__'
 main()
