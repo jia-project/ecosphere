@@ -430,7 +430,7 @@ impl Machine {
                         let mut data = repeat(self.preallocate.nil)
                             .take(components.len())
                             .collect::<Box<_>>();
-                        for (name, x) in items.iter() {
+                        for (name, x) in &**items {
                             data[components[name]] = r[x].escape(&mut self.arena);
                         }
                         ObjectData::Typed(type_index as _, data)
@@ -473,9 +473,17 @@ impl Machine {
                 }
             }
             Call(i, context_xs, name, argument_xs) => {
+                // make sure that if a GC will happen during one of escaping, we are passing all arguments with after-collected addresses
+                for x in &**context_xs {
+                    r[x].escape(&mut self.arena);
+                }
+                for x in &**argument_xs {
+                    r[x].escape(&mut self.arena);
+                }
+
                 let mut xs = Vec::new();
                 let mut context = Vec::new();
-                for x in context_xs.iter() {
+                for x in &**context_xs {
                     let x = &mut r[x];
                     context.push(match x.view() {
                         ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
@@ -510,7 +518,9 @@ impl Machine {
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
                     ObjectData::String(value) => format!("String {value}"),
-                    ObjectData::Array(value) => format!("Array[{}]", value.len()),
+                    ObjectData::Array(value) => {
+                        format!("Array[{:?}; {}]", value.as_ptr(), value.len())
+                    }
                     ObjectData::Typed(type_index, _) => {
                         match &self.symbol.types[*type_index as usize] {
                             SymbolType::Product { name, .. } => format!("{name}[...]"),

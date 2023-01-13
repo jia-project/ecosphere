@@ -243,9 +243,11 @@ while i < len {
 var sum1 = 0;
 var sum2 = 0;
 var i = 0;
+var mask = (1 << 32) - 1;
+inspect a;
 while i < len {
-    sum1 = (sum1 + a.at(i)) & ((1 << 32) - 1);
-    sum2 = (sum1 + sum2) & ((1 << 32) - 1);
+    sum1 = (sum1 + a.at(i)) & mask;
+    sum2 = (sum1 + sum2) & mask;
     i = i + 1;
 }
 inspect (sum1 << 31) ^ sum2;

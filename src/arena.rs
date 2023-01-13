@@ -317,6 +317,7 @@ impl ArenaUser {
         if self.allocate_len == self.slab.parts.1 {
             // very not cool to do this
             self.shared.clone().switch_slab(self);
+            // dbg!(self.slab.parts);
             self.allocate_len = 0;
         }
         let slab = unsafe { slice::from_raw_parts_mut(self.slab.parts.0, self.slab.parts.1) };
