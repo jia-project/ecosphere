@@ -6,27 +6,27 @@ pub type RegisterIndex = usize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
-    MakeType(String, TypeOperator, Box<[String]>),
+    MakeType(Box<str>, TypeOperator, Box<[Box<str>]>),
     // context type names, name, argument number, instructions
-    MakeFunction(Box<[String]>, String, usize, Box<[Instruction]>),
+    MakeFunction(Box<[Box<str>]>, Box<str>, usize, Box<[Instruction]>),
 
     Jump(RegisterIndex, usize, usize),
     Return(RegisterIndex),
     Call(
         RegisterIndex,
         Box<[RegisterIndex]>, // context object(s)
-        String,               // name
+        Box<str>,             // name
         Box<[RegisterIndex]>, // argument object(s)
     ),
 
     // intrinsic operations
     MakeLiteralObject(RegisterIndex, InstructionLiteral),
-    MakeDataObject(RegisterIndex, String, Box<[(String, RegisterIndex)]>),
-    Load(RegisterIndex, String),
-    Get(RegisterIndex, RegisterIndex, String),
-    Set(RegisterIndex, String, RegisterIndex),
-    Is(RegisterIndex, RegisterIndex, String),
-    As(RegisterIndex, RegisterIndex, String),
+    MakeDataObject(RegisterIndex, Box<str>, Box<[(Box<str>, RegisterIndex)]>),
+    Load(RegisterIndex, Box<str>),
+    Get(RegisterIndex, RegisterIndex, Box<str>),
+    Put(RegisterIndex, Box<str>, RegisterIndex),
+    Is(RegisterIndex, RegisterIndex, Box<str>),
+    As(RegisterIndex, RegisterIndex, Box<str>),
     // overloadable operations
     Operator1(RegisterIndex, Operator1, RegisterIndex),
     Operator2(RegisterIndex, Operator2, RegisterIndex, RegisterIndex),
@@ -34,7 +34,7 @@ pub enum Instruction {
     // side effects
     Inspect(RegisterIndex),
     Assert(RegisterIndex),
-    Store(RegisterIndex, String),
+    Store(RegisterIndex, Box<str>),
 
     // optimized instructions
     // AsOrJump(i, x, variant, target) ~>
@@ -49,7 +49,7 @@ pub enum InstructionLiteral {
     Bool(bool),
     Integer(i64),
     // float
-    String(String),
+    String(Box<str>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,4 +145,9 @@ pub enum Operator2 {
     Ne,
     Le,
     Ge,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }

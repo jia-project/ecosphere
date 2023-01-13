@@ -17,7 +17,7 @@ use crate::{
 
 #[derive(Clone)]
 struct Symbol {
-    type_names: HashMap<String, usize>,
+    type_names: HashMap<Box<str>, usize>,
     types: Vec<SymbolType>,
     function_dispatches: HashMap<DispatchKey, Dispatch>,
 }
@@ -33,7 +33,7 @@ impl Default for Symbol {
     fn default() -> Self {
         let mut type_names = HashMap::new();
         let mut types = Vec::new();
-        let s = String::from;
+        let s = <Box<str>>::from;
 
         // intrinsic types should be scoped with namespace
         type_names.insert(s("Integer"), Machine::TYPE_INTEGER as usize);
@@ -134,8 +134,8 @@ impl Default for Symbol {
 impl Symbol {
     fn make_native_function(
         &mut self,
-        context_types: impl IntoIterator<Item = String>,
-        name: String,
+        context_types: impl IntoIterator<Item = Box<str>>,
+        name: Box<str>,
         arity: usize,
         function: impl Fn(&mut Machine, &[NonNull<Object>]) -> NonNull<Object> + Send + Sync + 'static,
     ) {
@@ -149,8 +149,8 @@ impl Symbol {
 
     fn make_dispatch(
         &mut self,
-        context_types: impl IntoIterator<Item = String>,
-        name: String,
+        context_types: impl IntoIterator<Item = Box<str>>,
+        name: Box<str>,
         arity: usize,
         dispatch: Dispatch,
     ) {
@@ -158,9 +158,10 @@ impl Symbol {
             .into_iter()
             .map(|name| self.type_names[&name] as _)
             .collect();
-        let present = self
-            .function_dispatches
-            .insert((context_types, name.into(), arity), dispatch);
+        let present = self.function_dispatches.insert(
+            (context_types, String::from(&*name).into(), arity),
+            dispatch,
+        );
         assert!(present.is_none());
     }
 }
@@ -168,16 +169,16 @@ impl Symbol {
 #[derive(Clone)]
 enum SymbolType {
     Product {
-        name: String,
-        components: HashMap<String, usize>,
+        name: Box<str>,
+        components: HashMap<Box<str>, usize>,
     },
     Sum {
-        // name: String,
-        variant_names: HashMap<String, u32>,
+        // name: Box<str>,
+        variant_names: HashMap<Box<str>, u32>,
     },
     SumVariant {
-        type_name: String,
-        name: String,
+        type_name: Box<str>,
+        name: Box<str>,
     },
 }
 
@@ -327,15 +328,15 @@ impl Machine {
 
     fn execute(&mut self, instruction: &Instruction) {
         struct R<'a>(&'a mut Vec<Frame>);
-        impl Index<&usize> for R<'_> {
+        impl Index<&RegisterIndex> for R<'_> {
             type Output = FrameRegister;
-            fn index(&self, index: &usize) -> &Self::Output {
-                &self.0.last().unwrap().registers[*index]
+            fn index(&self, index: &RegisterIndex) -> &Self::Output {
+                &self.0.last().unwrap().registers[*index as usize]
             }
         }
-        impl IndexMut<&usize> for R<'_> {
-            fn index_mut(&mut self, index: &usize) -> &mut Self::Output {
-                &mut self.0.last_mut().unwrap().registers[*index]
+        impl IndexMut<&RegisterIndex> for R<'_> {
+            fn index_mut(&mut self, index: &RegisterIndex) -> &mut Self::Output {
+                &mut self.0.last_mut().unwrap().registers[*index as usize]
             }
         }
         let mut r = R(&mut self.frames);
@@ -433,7 +434,7 @@ impl Machine {
                 }
                 xs.extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
                 match &self.symbol.function_dispatches
-                    [&(context.into(), name.into(), argument_xs.len())]
+                    [&(context.into(), (&**name).into(), argument_xs.len())]
                 {
                     Dispatch::Index(index) => self.push_frame(*index, &xs, *i),
                     Dispatch::Native(function) => {
@@ -484,7 +485,7 @@ impl Machine {
                 };
                 r[i] = FrameRegister::Address(data[components[name]])
             }
-            Set(x, name, y) => {
+            Put(x, name, y) => {
                 let y = r[y].escape(&mut self.arena);
                 let ObjectData::Typed(type_index,  data) = r[x].view_mut() else {
                     panic!()
@@ -555,6 +556,11 @@ impl Machine {
                         (Ne, Integer(x), Integer(y)) => b(x != y),
                         (Le, Integer(x), Integer(y)) => b(x <= y),
                         (Ge, Integer(x), Integer(y)) => b(x >= y),
+                        (BitAnd, Integer(x), Integer(y)) => Integer(*x & *y),
+                        (BitOr, Integer(x), Integer(y)) => Integer(*x | *y),
+                        (BitXor, Integer(x), Integer(y)) => Integer(*x ^ *y),
+                        (Shl, Integer(x), Integer(y)) => Integer(*x << *y),
+                        (Shr, Integer(x), Integer(y)) => Integer(*x >> *y),
                         (Add, String(x), String(y)) => String([&**x, &**y].concat().into()),
                         _ => panic!(),
                     }
@@ -566,7 +572,8 @@ impl Machine {
                 match op {
                     TypeOperator::Product => {
                         let type_index = self.symbol.types.len();
-                        self.symbol.type_names.insert(name.clone(), type_index);
+                        let present = self.symbol.type_names.insert(name.clone(), type_index);
+                        assert!(present.is_none());
                         self.symbol.types.push(SymbolType::Product {
                             name: name.clone(),
                             components: items
@@ -586,7 +593,8 @@ impl Machine {
                             });
                         }
                         let type_index = self.symbol.types.len();
-                        self.symbol.type_names.insert(name.clone(), type_index);
+                        let present = self.symbol.type_names.insert(name.clone(), type_index);
+                        assert!(present.is_none());
                         self.symbol.types.push(SymbolType::Sum {
                             // name: name.clone(),
                             variant_names,

@@ -5,7 +5,11 @@ Program = _{ SOI ~ ProgramStmt* ~ EOI }
 
 
 Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Postfix* )* }
-    Infix = _{ Add | Sub | Mul | Div | Rem | And | Or | Eq | Ne | Le | Ge | Lt | Gt }
+    Infix = _{ 
+        Add | Sub | Mul | Div | Rem 
+        | BitAnd | BitOr | BitXor | Shl | Shr 
+        | And | Or | Eq | Ne | Le | Ge | Lt | Gt 
+    }
     Prefix = _ { Neg | Not | Inspect }
     Postfix = _ { Call1 | Dot | Is | Match | As }
 
@@ -14,6 +18,11 @@ Expr = { Prefix* ~ PrimaryExpr ~ Postfix* ~ (Infix ~ Prefix* ~ PrimaryExpr ~ Pos
     Mul = { "*" }
     Div = { "/" }
     Rem = { "%" }
+    BitAnd = { "&" }
+    BitOr = { "|" }
+    BitXor = { "^" }
+    Shl = { "<<" }
+    Shr = { ">>" }
     And = { "and" }
     Or = { "or" }
     Lt = { "<" }

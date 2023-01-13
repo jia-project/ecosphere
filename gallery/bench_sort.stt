@@ -3,11 +3,6 @@ make Run [
     * len
 ]
 
-make Option [
-    + None
-    + Some
-]
-
 make Array.merge_sort(v) {
     var MIN_RUN = 10;
 
@@ -220,13 +215,29 @@ make merge(a, mid) {
     }
 }
 
+make XorShiftRng [
+    * x
+    * y
+    * z
+    * w
+]
+
+make (XorShiftRng s) next() {
+    var t = (s.x ^ (s.x << 11)) & ((1 << 32) - 1);
+    s put x = s.y;
+    s put y = s.z;
+    s put z = s.w;
+    s put w = (s.w ^ (s.w >> 19) ^ (t ^ (t >> 8))) & ((1 << 32) - 1);
+    s.w
+}
+
 var a = Array.new(16);
+var rng = XorShiftRng [x = 1, y = 2, z = 3, w = 4];
 var i = 0;
 while i < 16 {
-    a.at(i, i + 1);
+    a.at(i, rng.next());
     i = i + 1;
 }
-inspect a;
 var i = 0;
 while i < 16 {
     inspect a.at(i);
