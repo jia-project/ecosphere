@@ -150,7 +150,7 @@ impl Symbol {
     fn make_dispatch(
         &mut self,
         context_types: impl IntoIterator<Item = Box<str>>,
-        name: Box<str>,
+        name: impl Into<String>,
         arity: usize,
         dispatch: Dispatch,
     ) {
@@ -158,10 +158,9 @@ impl Symbol {
             .into_iter()
             .map(|name| self.type_names[&name] as _)
             .collect();
-        let present = self.function_dispatches.insert(
-            (context_types, String::from(&*name).into(), arity),
-            dispatch,
-        );
+        let present = self
+            .function_dispatches
+            .insert((context_types, name.into().into(), arity), dispatch);
         assert!(present.is_none());
     }
 }
@@ -185,8 +184,17 @@ enum SymbolType {
 pub struct Machine {
     symbol: Symbol,
     frames: Vec<Frame>,
+    names: HashMap<Box<str>, NonNull<Object>>,
+    preallocate: MachineStatic,
     arena: ArenaUser,
     instant_zero: Instant,
+}
+
+struct MachineStatic {
+    nil: NonNull<Object>,
+    bool_true: NonNull<Object>,
+    bool_false: NonNull<Object>,
+    integers: [NonNull<Object>; 256],
 }
 
 struct Frame {
@@ -238,15 +246,30 @@ impl Machine {
     pub fn run_initial(instructions: Box<[Instruction]>) {
         let arena = Arena::default();
         let mut machine = Box::new(MaybeUninit::<Self>::uninit());
-        let arena = unsafe { arena.add_user(machine.as_mut_ptr()) };
+        let mut arena = unsafe { arena.add_user(machine.as_mut_ptr()) };
+
+        let nil = arena.allocate(ObjectData::Typed(2, Box::new([])));
+        let preallocate = MachineStatic {
+            nil,
+            bool_false: arena.allocate(ObjectData::Typed(0, Box::new([nil]))),
+            bool_true: arena.allocate(ObjectData::Typed(1, Box::new([nil]))),
+            integers: (0..256)
+                .map(|i| arena.allocate(ObjectData::Integer(i)))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        };
         machine.write(Machine {
             symbol: Default::default(),
             frames: Default::default(),
+            names: Default::default(),
+            preallocate,
             instant_zero: arena.instant_zero(),
             arena,
         });
         // port unstable `assume_init`
         let mut machine = unsafe { Box::from_raw(Box::into_raw(machine) as *mut Self) };
+
         machine.push_frame(0, &[], RegisterIndex::MAX);
         machine.run(vec![instructions]);
     }
@@ -331,11 +354,13 @@ impl Machine {
         impl Index<&RegisterIndex> for R<'_> {
             type Output = FrameRegister;
             fn index(&self, index: &RegisterIndex) -> &Self::Output {
+                #[allow(clippy::unnecessary_cast)]
                 &self.0.last().unwrap().registers[*index as usize]
             }
         }
         impl IndexMut<&RegisterIndex> for R<'_> {
             fn index_mut(&mut self, index: &RegisterIndex) -> &mut Self::Output {
+                #[allow(clippy::unnecessary_cast)]
                 &mut self.0.last_mut().unwrap().registers[*index as usize]
             }
         }
@@ -346,25 +371,25 @@ impl Machine {
             ParsingPlaceholder(_) => unreachable!(),
 
             MakeLiteralObject(i, InstructionLiteral::Nil) => {
-                r[i] =
-                    FrameRegister::Address(self.arena.allocate(ObjectData::Typed(2, Box::new([]))));
+                r[i] = FrameRegister::Address(self.preallocate.nil)
             }
-            MakeLiteralObject(i, InstructionLiteral::Bool(value)) => {
-                let type_index = u32::from(*value);
-                let data = self.arena.allocate(ObjectData::Typed(2, Box::new([])));
-                r[i] = FrameRegister::Address(
-                    self.arena
-                        .allocate(ObjectData::Typed(type_index, Box::new([data]))),
-                )
+            MakeLiteralObject(i, InstructionLiteral::Bool(true)) => {
+                r[i] = FrameRegister::Address(self.preallocate.bool_true)
+            }
+            MakeLiteralObject(i, InstructionLiteral::Bool(false)) => {
+                r[i] = FrameRegister::Address(self.preallocate.bool_false)
+            }
+            MakeLiteralObject(i, InstructionLiteral::Integer(value))
+                if (0..256).contains(value) =>
+            {
+                r[i] = FrameRegister::Address(self.preallocate.integers[*value as usize])
             }
             MakeLiteralObject(i, InstructionLiteral::Integer(value)) => {
                 r[i] = FrameRegister::Address(self.arena.allocate(ObjectData::Integer(*value)))
             }
             MakeLiteralObject(i, InstructionLiteral::String(value)) => {
-                r[i] = FrameRegister::Address(
-                    self.arena
-                        .allocate(ObjectData::String(value.clone().into())),
-                )
+                r[i] =
+                    FrameRegister::Address(self.arena.allocate(ObjectData::String(value.clone())))
             }
 
             MakeDataObject(i, name, items) => {
@@ -444,8 +469,11 @@ impl Machine {
                 }
             }
 
-            Load(i, name) => todo!(),
-            Store(x, name) => todo!(),
+            Load(i, name) => r[i] = FrameRegister::Address(self.names[name]),
+            Store(x, name) => {
+                self.names
+                    .insert(name.clone(), r[x].escape(&mut self.arena));
+            }
             Inspect(x) => {
                 let repr = match r[x].view() {
                     ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
@@ -609,6 +637,15 @@ impl Machine {
 
 unsafe impl ObjectAny for Machine {
     fn on_scan(&mut self, scanner: &mut crate::arena::ObjectScanner<'_>) {
+        scanner.process_pointer(&mut self.preallocate.nil);
+        scanner.process_pointer(&mut self.preallocate.bool_true);
+        scanner.process_pointer(&mut self.preallocate.bool_false);
+        for address in &mut self.preallocate.integers {
+            scanner.process_pointer(address);
+        }
+        for address in self.names.values_mut() {
+            scanner.process_pointer(address);
+        }
         for frame in &mut self.frames {
             for register in &mut frame.registers {
                 if let FrameRegister::Address(address) = register {
