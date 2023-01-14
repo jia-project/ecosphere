@@ -20,7 +20,7 @@ use crate::{
 struct Symbol {
     type_names: HashMap<Box<str>, usize>,
     types: Vec<SymbolType>,
-    function_dispatches: HashMap<DispatchKey, Dispatch>,
+    object_names: HashMap<Box<str>, NonNull<Object>>,
 }
 
 type DispatchKey = (Cow<'static, [TypeIndex]>, Cow<'static, str>, usize);
@@ -69,99 +69,11 @@ impl Default for Symbol {
         type_names.insert(s("Option"), types.len());
         types.push(SymbolType::Sum { variant_names });
 
-        let mut symbol = Self {
+        Self {
             type_names,
             types,
-            function_dispatches: Default::default(),
-        };
-
-        symbol.make_native_function([], s("Array.new"), 1, |machine| {
-            let &[len] = &*machine.arguments else {
-                unreachable!()
-            };
-            let len = *unsafe { len.as_ref() }.cast_ref::<i64>().unwrap() as usize;
-            machine
-                .arena
-                .allocate(ObjectData::Array(vec![machine.preallocate.nil; len].into()))
-        });
-        symbol.make_native_function([s("Array")], s("length"), 0, |machine| {
-            let &[a] = &*machine.arguments else {
-                unreachable!()
-            };
-            let a = unsafe { a.as_ref() }
-                .cast_ref::<Box<[NonNull<Object>]>>()
-                .unwrap();
-            machine.arena.allocate(ObjectData::Integer(a.len() as _))
-        });
-        symbol.make_native_function([s("Array")], s("clone"), 2, |machine| {
-            let &[a, offset, length] = &*machine.arguments else {
-                unreachable!()
-            };
-            let a = unsafe { a.as_ref() }
-                .cast_ref::<Box<[NonNull<Object>]>>()
-                .unwrap();
-            let offset = *unsafe { offset.as_ref() }.cast_ref::<i64>().unwrap() as usize;
-            let length = *unsafe { length.as_ref() }.cast_ref::<i64>().unwrap() as usize;
-            machine.arena.allocate(ObjectData::Array(
-                a[offset..offset + length].to_vec().into(),
-            ))
-        });
-        symbol.make_native_function([s("Array")], s("at"), 1, |machine| {
-            let &[a, position] = &*machine.arguments else {
-                unreachable!()
-            };
-            let a = unsafe { a.as_ref() }
-                .cast_ref::<Box<[NonNull<Object>]>>()
-                .unwrap();
-            let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
-            a[position]
-        });
-        symbol.make_native_function([s("Array")], s("at"), 2, |machine| {
-            let &[mut a, position, element] = &*machine.arguments else {
-                unreachable!()
-            };
-            let a = unsafe { a.as_mut() }
-                .cast_mut::<Box<[NonNull<Object>]>>()
-                .unwrap();
-            let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
-            a[position] = element;
-            machine.preallocate.nil
-        });
-        symbol
-    }
-}
-
-impl Symbol {
-    fn make_native_function(
-        &mut self,
-        context_types: impl IntoIterator<Item = Box<str>>,
-        name: Box<str>,
-        arity: usize,
-        function: impl Fn(&mut Machine) -> NonNull<Object> + Send + Sync + 'static,
-    ) {
-        self.make_dispatch(
-            context_types,
-            name,
-            arity,
-            Dispatch::Native(Arc::new(function)),
-        );
-    }
-
-    fn make_dispatch(
-        &mut self,
-        context_types: impl IntoIterator<Item = Box<str>>,
-        name: impl Into<String>,
-        arity: usize,
-        dispatch: Dispatch,
-    ) {
-        let context_types = context_types
-            .into_iter()
-            .map(|name| self.type_names[&name] as _)
-            .collect();
-        let present = self
-            .function_dispatches
-            .insert((context_types, name.into().into(), arity), dispatch);
-        assert!(present.is_none());
+            object_names: Default::default(),
+        }
     }
 }
 
@@ -186,7 +98,6 @@ pub struct Machine {
     arena: ArenaUser,
     frames: Vec<Frame>,
     registers: Vec<FrameRegister>,
-    names: HashMap<Box<str>, NonNull<Object>>,
     preallocate: MachineStatic,
     arguments: Vec<NonNull<Object>>,
 }
@@ -316,7 +227,6 @@ impl Machine {
             symbol: Default::default(),
             frames: Default::default(),
             registers: Default::default(),
-            names: Default::default(),
             preallocate,
             arena,
             arguments: Default::default(),
@@ -325,7 +235,7 @@ impl Machine {
         let mut machine = unsafe { Box::from_raw(Box::into_raw(machine) as *mut Self) };
 
         machine.push_frame(0, RegisterIndex::MAX);
-        machine.run(vec![instructions]);
+        machine.run(machine.make_function_dispatch(), vec![instructions]);
     }
 
     fn push_frame(
@@ -356,7 +266,11 @@ impl Machine {
         self.frames.push(frame);
     }
 
-    fn run(&mut self, mut functions: Vec<Box<[Instruction]>>) {
+    fn run(
+        &mut self,
+        mut function_dispatches: HashMap<DispatchKey, Dispatch>,
+        mut functions: Vec<Box<[Instruction]>>,
+    ) {
         self.arena.mutate_enter();
         'control: while !self.is_finished() {
             let depth = self.frames.len();
@@ -367,7 +281,11 @@ impl Machine {
                 self.frames.last_mut().unwrap().program_counter = counter;
 
                 if matches!(instruction, Instruction::MakeFunction(..)) {
-                    self.make_function(instruction.clone(), &mut functions);
+                    self.make_function(
+                        instruction.clone(),
+                        &mut function_dispatches,
+                        &mut functions,
+                    );
                     // continue;
                     // logically this is ok, but Rust does not allow it because
                     // we are in the middle of iterating `functions[...]`
@@ -376,7 +294,7 @@ impl Machine {
                     continue 'control;
                 }
 
-                self.execute(instruction);
+                self.execute(instruction, &function_dispatches);
                 if self.frames.len() != depth
                     || self.frames.last().unwrap().program_counter != counter
                 {
@@ -392,11 +310,34 @@ impl Machine {
     const TYPE_STRING: TypeIndex = TypeIndex::MAX - 2;
     const TYPE_ARRAY: TypeIndex = TypeIndex::MAX - 3;
 
-    fn make_function(&mut self, instruction: Instruction, functions: &mut Vec<Box<[Instruction]>>) {
+    fn make_dispatch(
+        &self,
+        function_dispatches: &mut HashMap<DispatchKey, Dispatch>,
+        context_types: impl IntoIterator<Item = Box<str>>,
+        name: impl Into<String>,
+        arity: usize,
+        dispatch: Dispatch,
+    ) {
+        let context_types = context_types
+            .into_iter()
+            .map(|name| self.symbol.type_names[&name] as _)
+            .collect();
+        let present =
+            function_dispatches.insert((context_types, name.into().into(), arity), dispatch);
+        assert!(present.is_none());
+    }
+
+    fn make_function(
+        &mut self,
+        instruction: Instruction,
+        function_dispatches: &mut HashMap<DispatchKey, Dispatch>,
+        functions: &mut Vec<Box<[Instruction]>>,
+    ) {
         let Instruction::MakeFunction(context_types, name, arity, instructions) = instruction else {
             unreachable!()
         };
-        self.symbol.make_dispatch(
+        self.make_dispatch(
+            function_dispatches,
             context_types.to_vec(),
             name,
             arity,
@@ -409,7 +350,11 @@ impl Machine {
         self.frames.is_empty() // extra conditions, such as canceled
     }
 
-    fn execute(&mut self, instruction: &Instruction) {
+    fn execute(
+        &mut self,
+        instruction: &Instruction,
+        function_dispatches: &HashMap<DispatchKey, Dispatch>,
+    ) {
         struct R<'a>(&'a mut [FrameRegister], usize);
         impl Index<&RegisterIndex> for R<'_> {
             type Output = FrameRegister;
@@ -522,12 +467,10 @@ impl Machine {
                 }
                 self.arguments
                     .extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
-                match &self.symbol.function_dispatches
-                    [&(context.into(), (&**name).into(), argument_xs.len())]
-                {
+                match &function_dispatches[&(context.into(), (&**name).into(), argument_xs.len())] {
                     Dispatch::Index(index) => self.push_frame(*index, *i),
                     Dispatch::Native(function) => {
-                        let result = function.clone()(self);
+                        let result = function(self);
                         R(
                             &mut self.registers,
                             (self.frames.len() - 1) * Frame::REGISTER_COUNT,
@@ -537,9 +480,10 @@ impl Machine {
                 self.arguments.drain(..);
             }
 
-            Load(i, name) => r[i] = FrameRegister::Address(self.names[name]),
+            Load(i, name) => r[i] = FrameRegister::Address(self.symbol.object_names[name]),
             Store(x, name) => {
-                self.names
+                self.symbol
+                    .object_names
                     .insert(name.clone(), r[x].escape(&mut self.arena));
             }
             Inspect(x, source) => {
@@ -684,6 +628,99 @@ impl Machine {
             MakeFunction(..) => unreachable!(),
         }
     }
+
+    fn make_function_dispatch(&self) -> HashMap<DispatchKey, Dispatch> {
+        let s = <Box<str>>::from;
+        fn n(
+            function: impl Fn(&mut Machine) -> NonNull<Object> + Send + Sync + 'static,
+        ) -> Dispatch {
+            Dispatch::Native(Arc::new(function))
+        }
+        let mut function_dispatches = Default::default();
+        self.make_dispatch(
+            &mut function_dispatches,
+            [],
+            s("Array.new"),
+            1,
+            n(|machine| {
+                let &[len] = &*machine.arguments else {
+                unreachable!()
+            };
+                let len = *unsafe { len.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+                machine
+                    .arena
+                    .allocate(ObjectData::Array(vec![machine.preallocate.nil; len].into()))
+            }),
+        );
+        self.make_dispatch(
+            &mut function_dispatches,
+            [s("Array")],
+            s("length"),
+            0,
+            n(|machine| {
+                let &[a] = &*machine.arguments else {
+                unreachable!()
+            };
+                let a = unsafe { a.as_ref() }
+                    .cast_ref::<Box<[NonNull<Object>]>>()
+                    .unwrap();
+                machine.arena.allocate(ObjectData::Integer(a.len() as _))
+            }),
+        );
+        self.make_dispatch(
+            &mut function_dispatches,
+            [s("Array")],
+            s("clone"),
+            2,
+            n(|machine| {
+                let &[a, offset, length] = &*machine.arguments else {
+                unreachable!()
+            };
+                let a = unsafe { a.as_ref() }
+                    .cast_ref::<Box<[NonNull<Object>]>>()
+                    .unwrap();
+                let offset = *unsafe { offset.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+                let length = *unsafe { length.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+                machine.arena.allocate(ObjectData::Array(
+                    a[offset..offset + length].to_vec().into(),
+                ))
+            }),
+        );
+        self.make_dispatch(
+            &mut function_dispatches,
+            [s("Array")],
+            s("at"),
+            1,
+            n(|machine| {
+                let &[a, position] = &*machine.arguments else {
+                unreachable!()
+            };
+                let a = unsafe { a.as_ref() }
+                    .cast_ref::<Box<[NonNull<Object>]>>()
+                    .unwrap();
+                let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+                a[position]
+            }),
+        );
+        self.make_dispatch(
+            &mut function_dispatches,
+            [s("Array")],
+            s("at"),
+            2,
+            n(|machine| {
+                let &[mut a, position, element] = &*machine.arguments else {
+                unreachable!()
+            };
+                let a = unsafe { a.as_mut() }
+                    .cast_mut::<Box<[NonNull<Object>]>>()
+                    .unwrap();
+                let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+                a[position] = element;
+                machine.preallocate.nil
+            }),
+        );
+        function_dispatches
+    }
 }
 
 unsafe impl ObjectAny for Machine {
@@ -694,7 +731,7 @@ unsafe impl ObjectAny for Machine {
         // for address in &mut self.preallocate.integers {
         //     scanner.process_pointer(address);
         // }
-        for address in self.names.values_mut() {
+        for address in self.symbol.object_names.values_mut() {
             scanner.process_pointer(address);
         }
         for address in &mut self.arguments {

@@ -5,6 +5,7 @@ edition = "2021"
 
 [profile.release]
 debug = true
+panic = "abort"
 
 [dependencies]
 pest = "2.5.2"
