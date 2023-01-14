@@ -99,7 +99,7 @@ pub struct Machine {
     frames: Vec<Frame>,
     registers: Vec<FrameRegister>,
     preallocate: MachineStatic,
-    arguments: Vec<NonNull<Object>>,
+    arguments: Vec<FrameRegister>,
 }
 
 struct MachineStatic {
@@ -162,18 +162,26 @@ impl Debug for FrameRegister {
 
 impl FrameRegister {
     fn view(&self) -> &ObjectData {
-        match self {
-            Self::Vacant => panic!(),
-            Self::Address(address) => unsafe { &address.as_ref().data },
-            Self::Inline(object) => &object.data,
-        }
+        &self.view2().data
     }
 
     fn view_mut(&mut self) -> &mut ObjectData {
+        &mut self.view2_mut().data
+    }
+
+    fn view2(&self) -> &Object {
         match self {
             Self::Vacant => panic!(),
-            Self::Address(address) => unsafe { &mut address.as_mut().data },
-            Self::Inline(object) => &mut object.data,
+            Self::Address(address) => unsafe { address.as_ref() },
+            Self::Inline(object) => object,
+        }
+    }
+
+    fn view2_mut(&mut self) -> &mut Object {
+        match self {
+            Self::Vacant => panic!(),
+            Self::Address(address) => unsafe { address.as_mut() },
+            Self::Inline(object) => object,
         }
     }
 
@@ -262,9 +270,9 @@ impl Machine {
             .resize_with(zero + Frame::REGISTER_COUNT, Default::default);
         for (r, argument) in self.registers[zero..zero + self.arguments.len()]
             .iter_mut()
-            .zip(&self.arguments)
+            .zip(self.arguments.drain(..))
         {
-            *r = FrameRegister::Address(*argument);
+            *r = argument;
         }
         self.frames.push(frame);
     }
@@ -457,8 +465,7 @@ impl Machine {
             Call(i, context_xs, name, argument_xs) => {
                 let mut context = Vec::new();
                 for x in &**context_xs {
-                    let x = &mut r[x];
-                    context.push(match x.view() {
+                    context.push(match r[x].view() {
                         ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
                         ObjectData::Typed(type_index, _) => *type_index,
                         ObjectData::Integer(_) => Self::TYPE_INTEGER,
@@ -466,12 +473,12 @@ impl Machine {
                         ObjectData::Array(_) => Self::TYPE_ARRAY,
                         ObjectData::Any(_) => todo!(),
                     });
-                    self.arguments.push(x.escape(&mut self.arena));
+                    self.arguments.push(r[x].copy(&mut self.arena));
                 }
                 // self.arguments
                 //     .extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
                 for x in &**argument_xs {
-                    self.arguments.push(r[x].escape(&mut self.arena));
+                    self.arguments.push(r[x].copy(&mut self.arena));
                 }
                 match function_dispatches.get(&(
                     context.into(),
@@ -488,7 +495,6 @@ impl Machine {
                         )[i] = FrameRegister::Address(result);
                     }
                 }
-                self.arguments.drain(..);
             }
 
             Load(i, name) => r[i] = FrameRegister::Address(self.symbol.object_names[name]),
@@ -654,10 +660,11 @@ impl Machine {
             s("Array.new"),
             1,
             n(|machine| {
-                let &[len] = &*machine.arguments else {
-                unreachable!()
-            };
-                let len = *unsafe { len.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+                // let &[len] = &*machine.arguments else {
+                //     unreachable!()
+                // };
+                let len = machine.arguments.pop().unwrap();
+                let len = *len.view2().cast_ref::<i64>().unwrap() as usize;
                 machine
                     .arena
                     .allocate(ObjectData::Array(vec![machine.preallocate.nil; len].into()))
@@ -669,12 +676,11 @@ impl Machine {
             s("length"),
             0,
             n(|machine| {
-                let &[a] = &*machine.arguments else {
-                unreachable!()
-            };
-                let a = unsafe { a.as_ref() }
-                    .cast_ref::<Box<[NonNull<Object>]>>()
-                    .unwrap();
+                // let &[a] = &*machine.arguments else {
+                //     unreachable!()
+                // };
+                let a = machine.arguments.pop().unwrap();
+                let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
                 machine.arena.allocate(ObjectData::Integer(a.len() as _))
             }),
         );
@@ -684,14 +690,17 @@ impl Machine {
             s("clone"),
             2,
             n(|machine| {
-                let &[a, offset, length] = &*machine.arguments else {
-                unreachable!()
-            };
-                let a = unsafe { a.as_ref() }
-                    .cast_ref::<Box<[NonNull<Object>]>>()
-                    .unwrap();
-                let offset = *unsafe { offset.as_ref() }.cast_ref::<i64>().unwrap() as usize;
-                let length = *unsafe { length.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+                // let &[a, offset, length] = &*machine.arguments else {
+                //     unreachable!()
+                // };
+                let (length, offset, a) = (
+                    machine.arguments.pop().unwrap(),
+                    machine.arguments.pop().unwrap(),
+                    machine.arguments.pop().unwrap(),
+                );
+                let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
+                let offset = *offset.view2().cast_ref::<i64>().unwrap() as usize;
+                let length = *length.view2().cast_ref::<i64>().unwrap() as usize;
                 machine.arena.allocate(ObjectData::Array(
                     a[offset..offset + length].to_vec().into(),
                 ))
@@ -703,13 +712,15 @@ impl Machine {
             s("at"),
             1,
             n(|machine| {
-                let &[a, position] = &*machine.arguments else {
-                unreachable!()
-            };
-                let a = unsafe { a.as_ref() }
-                    .cast_ref::<Box<[NonNull<Object>]>>()
-                    .unwrap();
-                let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
+                // let &[a, position] = &*machine.arguments else {
+                //     unreachable!()
+                // };
+                let (position, a) = (
+                    machine.arguments.pop().unwrap(),
+                    machine.arguments.pop().unwrap(),
+                );
+                let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
+                let position = *position.view2().cast_ref::<i64>().unwrap() as usize;
                 a[position]
             }),
         );
@@ -719,14 +730,17 @@ impl Machine {
             s("at"),
             2,
             n(|machine| {
-                let &[mut a, position, element] = &*machine.arguments else {
-                unreachable!()
-            };
-                let a = unsafe { a.as_mut() }
-                    .cast_mut::<Box<[NonNull<Object>]>>()
-                    .unwrap();
-                let position = *unsafe { position.as_ref() }.cast_ref::<i64>().unwrap() as usize;
-                a[position] = element;
+                // let &[a, position, element] = &*machine.arguments else {
+                //     unreachable!()
+                // };
+                let (mut element, position, mut a) = (
+                    machine.arguments.pop().unwrap(),
+                    machine.arguments.pop().unwrap(),
+                    machine.arguments.pop().unwrap(),
+                );
+                let a = a.view2_mut().cast_mut::<Box<[NonNull<Object>]>>().unwrap();
+                let position = *position.view2().cast_ref::<i64>().unwrap() as usize;
+                a[position] = element.escape(&mut machine.arena);
                 machine.preallocate.nil
             }),
         );
@@ -745,8 +759,12 @@ unsafe impl ObjectAny for Machine {
         for address in self.symbol.object_names.values_mut() {
             scanner.process_pointer(address);
         }
-        for address in &mut self.arguments {
-            scanner.process_pointer(address);
+        for register in &mut self.arguments {
+            match register {
+                FrameRegister::Vacant => unreachable!(),
+                FrameRegister::Address(address) => scanner.process_pointer(address),
+                FrameRegister::Inline(object) => scanner.process(object),
+            }
         }
         for register in &mut self.registers[..self.frames.len() * Frame::REGISTER_COUNT] {
             match register {
