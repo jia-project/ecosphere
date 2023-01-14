@@ -467,9 +467,10 @@ impl Machine {
                 }
                 self.arguments
                     .extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
-                match &function_dispatches[&(context.into(), (&**name).into(), argument_xs.len())] {
-                    Dispatch::Index(index) => self.push_frame(*index, *i),
-                    Dispatch::Native(function) => {
+                match function_dispatches.get(&(context.into(), (&**name).into(), argument_xs.len())) {
+                    None => panic!("No dispatch for (..).{name}/{}", argument_xs.len()),
+                    Some(Dispatch::Index(index)) => self.push_frame(*index, *i),
+                    Some(Dispatch::Native(function)) => {
                         let result = function(self);
                         R(
                             &mut self.registers,

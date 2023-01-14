@@ -9,7 +9,7 @@ make Array.merge_sort(v) {
     var len = v.length();
     # TODO insert sort for small list
 
-    var runs = Array.new(v / 10 + 1);  # maximum number of runs
+    var runs = Array.new(len / MIN_RUN + 1);  # maximum number of runs
     var runs_len = 0;
     var end = len;
     while end > 0 {
@@ -30,7 +30,6 @@ make Array.merge_sort(v) {
 
         while start > 0 and end - start < MIN_RUN {
             start = start - 1;
-            # v.view(start, end).insert_head()
             Array.insert_head(v.view(start, end));
         }
 
@@ -39,7 +38,7 @@ make Array.merge_sort(v) {
         runs_len = runs_len + 1;
         end = start;
 
-        while collapse(runs_start, runs_len) is Some r {
+        while collapse(runs.view(0, runs_len)) is Some r {
             var left = runs.at(r + 1);
             var right = runs.at(r);
             merge(v.view(left.start, right.start + right.len), left.len);
@@ -106,19 +105,21 @@ make Array.reverse(a) {
 
 make Array.insert_head(a) {
     var len = a.length();
-    if len < 2 or a.at(1) > a.at(0) {
+    if not (len >= 2 and a.at(1) < a.at(0)) {
         return;
     }
     var x = a.at(0);
-    var i = 1;
+    var d = 1;
+    var i = 2;
     while i < len {
-        if x >= a.at(i + 1) {
+        if not a.at(i) < x {
             break;
         }
         a.at(i - 1, a.at(i));
+        d = i;
         i = i + 1;
     }
-    a.at(i, x);
+    a.at(d, x);
 }
 
 make collapse(runs) {
@@ -144,74 +145,53 @@ make merge(a, mid) {
     var len = a.length();
     if mid <= len - mid {
         # clone the left run (a[..mid]) and merge forwards
-        var short = a.view(0, mid).clone();
-        var long = a.view(mid, len - mid);
-        var short_i = 0;
-        var long_i = 0;
-        var short_len = short.length();
-        var long_len = long.length();
-
+        var buf = a.view(0, mid).clone();
+        var left_i = 0;
+        var left_end = mid;
+        var right_i = mid;
+        var right_end = len;
         var i = 0;
-        var short_x = short.at(short_i);
-        var long_x = long.at(long_i);
-        while true {
-            if short_x <= long_x {
-                a.at(i, short_x);
-                short_i = short_i + 1;
-                if short_i == short_len {
-                    break;
-                }
-                short_x = short.at(short_i);
+        while left_i < left_end and right_i < right_end {
+            var to_copy;
+            if a.at(right_i) < buf.at(left_i) {
+                to_copy = a.at(right_i);
+                right_i = right_i + 1;
             } else {
-                a.at(i, long_x);
-                long_i = long_i + 1;
-                if long_i == long_len {
-                    break;
-                }
-                long_x = long.at(long_i);
+                to_copy = buf.at(left_i);
+                left_i = left_i + 1;
             }
+            a.at(i, to_copy);
             i = i + 1;
         }
-        while short_i < short_len {
-            a.at(i, short.at(short_i));
-            short_i = short_i + 1;
+        while left_i < left_end {
+            a.at(i, buf.at(left_i));
+            left_i = left_i + 1;
             i = i + 1;
         }
-        assert i == len;
     } else {
         # clone the right run (a[mid..]) and merge backward
-        var short = a.view(mid, len - mid).clone();
-        var long = a.view(0, mid);
-        var short_j = short.length();  # use `*_j` to emphasize 1-offset
-        var long_j = long.length();
-
-        var j = len;
-        var short_x = short.at(short_j - 1);
-        var long_x = long.at(long_j - 1);
-        while true {
-            if short_x >= long_x {
-                a.at(j - 1, short_x);
-                short_j = short_j - 1;
-                if short_j == 0 {
-                    break;
-                }
-                short_x = short.at(short_j - 1);
+        var buf = a.view(mid, len).clone();
+        var left_i = mid;
+        var left_end = 0;
+        var right_i = len - mid;
+        var right_end = 0;
+        var i = len;
+        while left_end < left_i and right_end < right_i {
+            var to_copy = if buf.at(right_i - 1) < a.at(left_i - 1) {
+                left_i = left_i - 1;
+                a.at(left_i);
             } else {
-                a.at(j - 1, long_x);
-                long_j = long_j - 1;
-                if long_j == 0 {
-                    break;
-                }
-                long_x = long.at(long_j - 1);
-            }
-            j = j - 1;
+                right_i = right_i - 1;
+                buf.at(right_i);
+            };
+            i = i - 1;
+            a.at(i, to_copy);
         }
-        while short_j > 0 {
-            a.at(j - 1, short.at(short_j - 1));
-            short_j = short_j - 1;
-            j = j - 1;
+        while right_end < right_i {
+            right_i = right_i - 1;
+            i = i - 1;
+            a.at(i, buf.at(right_i));
         }
-        assert j == 0;
     }
 }
 
@@ -289,4 +269,6 @@ while i < len {
     i = i + 1;
 }
 inspect "Generated";
+inspect hex(checksum(a));
+Array.merge_sort(a);
 inspect hex(checksum(a));
