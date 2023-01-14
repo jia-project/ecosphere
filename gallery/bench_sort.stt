@@ -20,7 +20,7 @@ make Array.merge_sort(v) {
                 while start > 0 and v.at(start) < v.at(start - 1) {
                     start = start - 1;
                 }
-                Array.reverse(v.view(start, end));
+                Array.reverse(v.view(start, end - start));
             } else {
                 while start > 0 and not v.at(start) < v.at(start - 1) {
                     start = start - 1;
@@ -30,7 +30,7 @@ make Array.merge_sort(v) {
 
         while start > 0 and end - start < MIN_RUN {
             start = start - 1;
-            Array.insert_head(v.view(start, end));
+            Array.insert_head(v.view(start, end - start));
         }
 
         # runs.push(...)
@@ -41,11 +41,11 @@ make Array.merge_sort(v) {
         while collapse(runs.view(0, runs_len)) is Some r {
             var left = runs.at(r + 1);
             var right = runs.at(r);
-            merge(v.view(left.start, right.start + right.len), left.len);
+            merge(v.view(left.start, left.len + right.len), left.len);
             runs.at(r, Run[start = left.start, len = left.len + right.len]);
             # runs.remove(r + 1);
-            Array.swap(runs, r + 1, runs_len - 1);
             runs_len = runs_len - 1;
+            Array.swap(runs, r + 1, runs_len);
         }
     }
 
@@ -61,6 +61,7 @@ make ArrayView [
 ]
 
 make (Array a) view(offset, length) {
+    assert offset + length <= a.length();
     ArrayView[data = a, offset = offset, length = length]
 }
 
@@ -95,11 +96,11 @@ make Array.swap(a, i, j) {
 
 make Array.reverse(a) {
     var low = 0;
-    var high = a.length();
+    var high = a.length() - 1;
     while low < high {
         Array.swap(a, low, high);
         low = low + 1;
-        high = high + 1;
+        high = high - 1;
     }
 }
 
@@ -109,6 +110,7 @@ make Array.insert_head(a) {
         return;
     }
     var x = a.at(0);
+    a.at(0, a.at(1));
     var d = 1;
     var i = 2;
     while i < len {
@@ -132,12 +134,12 @@ make collapse(runs) {
             or n >= 4 and runs.at(n - 4).len <= runs.at(n - 3).len + runs.at(n - 2).len)
     {
         if n >= 3 and runs.at(n - 3).len < runs.at(n - 1).len {
-            Option[Some = n - 3]
+            return Option[Some = n - 3];
         } else {
-            Option[Some = n - 2]
+            return Option[Some = n - 2];
         }
     } else {
-        Option[None]
+        return Option[None = 0];
     }
 }
 

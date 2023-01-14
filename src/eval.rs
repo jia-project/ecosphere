@@ -151,8 +151,11 @@ impl Debug for FrameRegister {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Vacant => f.pad("Vacant"),
-            Self::Address(address) => f.pad(&format!("Address({address:?})")),
-            Self::Inline(_) => f.pad("Inline(_)"),
+            Self::Address(address) => f.pad(&format!(
+                "Address({address:?}, {})",
+                unsafe { address.as_ref() }.type_name()
+            )),
+            Self::Inline(object) => f.pad(&format!("Inline({})", object.type_name())),
         }
     }
 }
@@ -467,7 +470,11 @@ impl Machine {
                 }
                 self.arguments
                     .extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
-                match function_dispatches.get(&(context.into(), (&**name).into(), argument_xs.len())) {
+                match function_dispatches.get(&(
+                    context.into(),
+                    (&**name).into(),
+                    argument_xs.len(),
+                )) {
                     None => panic!("No dispatch for (..).{name}/{}", argument_xs.len()),
                     Some(Dispatch::Index(index)) => self.push_frame(*index, *i),
                     Some(Dispatch::Native(function)) => {
@@ -513,11 +520,11 @@ impl Machine {
                     r[x]
                 );
             }
-            Assert(x) => {
+            Assert(x, source) => {
                 let ObjectData::Typed(type_index, _) = r[x].view() else {
                     panic!()
                 };
-                assert_eq!(*type_index, 1);
+                assert_eq!(*type_index, 1, "{source}");
             }
             Get(i, x, name) => {
                 let ObjectData::Typed(type_index, data) = r[x].view() else {
@@ -588,7 +595,7 @@ impl Machine {
                         (Shl, Integer(x), Integer(y)) => L::Integer(*x << *y),
                         (Shr, Integer(x), Integer(y)) => L::Integer(*x >> *y),
                         (Add, String(x), String(y)) => L::String([&**x, &**y].concat().into()),
-                        _ => panic!(),
+                        _ => panic!("{instruction:?} x = {:?} y = {:?}", r[x], r[y]),
                     })
             }
 

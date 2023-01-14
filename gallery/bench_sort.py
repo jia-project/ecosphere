@@ -60,8 +60,8 @@ def merge_sort(v):
                 v[left["start"] : right["start"] + right["len"]], left["len"]
             )
             runs[r] = {"start": left["start"], "len": left["len"] + right["len"]}
-            runs[r + 1], runs[runs_len - 1] = runs[runs_len - 1], runs[r + 1]
             runs_len -= 1
+            runs[r + 1], runs[runs_len] = runs[runs_len], runs[r + 1]
 
     assert runs_len == 1
     assert runs[0]["start"] == 0

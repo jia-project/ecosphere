@@ -33,7 +33,7 @@ pub enum Instruction {
 
     // side effects
     Inspect(RegisterIndex, Box<str>),
-    Assert(RegisterIndex),
+    Assert(RegisterIndex, Box<str>),
     Store(RegisterIndex, Box<str>),
 
     // optimized instructions
@@ -122,6 +122,18 @@ impl Object {
 
     pub fn cast_mut<T: CastData>(&mut self) -> Option<&mut T> {
         T::cast_mut(&mut self.data)
+    }
+
+    pub fn type_name(&self) -> &str {
+        match &self.data {
+            ObjectData::Vacant => "(Vacant)",
+            ObjectData::Forwarded(_) => "(Forwarded)",
+            ObjectData::Integer(_) => "Integer",
+            ObjectData::String(_) => "String",
+            ObjectData::Array(_) => "Array",
+            ObjectData::Typed(..) => "Typed",
+            ObjectData::Any(object) => object.type_name(),
+        }
     }
 }
 

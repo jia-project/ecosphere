@@ -378,7 +378,7 @@ impl FunctionVisitor {
                             self.instructions
                                 .push(Instruction::Jump(r, index + 1, index + 2));
                             let as_r = self.allocate();
-                            self.instructions.push(Instruction::As(as_r, r, variant));
+                            self.instructions.push(Instruction::As(as_r, r1, variant));
                             self.bind(name, as_r);
                         }
                         r
@@ -619,8 +619,9 @@ impl FunctionVisitor {
             }
             Rule::AssertStmt => {
                 let [expr] = split(stmt);
+                let source = expr.as_str().into();
                 let r = self.visit_expr(expr);
-                self.instructions.push(Instruction::Assert(r));
+                self.instructions.push(Instruction::Assert(r, source));
             }
             Rule::WhileStmt => self.visit_while_stmt(stmt),
             Rule::BreakStmt => self.push_control(Placeholder::JumpBreak),
