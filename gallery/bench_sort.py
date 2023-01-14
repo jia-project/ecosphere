@@ -143,16 +143,16 @@ def main():
     zero_instant = time()
     rng = XorShiftRng(1, 2, 3, 4)
     xs = [(1 << 60) + rng.next() for _ in range(1 << 20)]
-    print(f"{time() - zero_instant:.6f}s Generated")
+    print(f"[{time() - zero_instant:.6f}s] Generated")
     c = checksum(xs)
-    print(f"{time() - zero_instant:.6f}s Sort start Checksum {c:x}")
+    print(f"[{time() - zero_instant:.6f}s] Sort start Checksum {c:x}")
     if argv[1:] == ["native"]:
         xs.sort()
     else:
         merge_sort(xs)
-    print(f"{time() - zero_instant:.6f}s Sort finish")
+    print(f"[{time() - zero_instant:.6f}s] Sort finish")
     c = checksum(xs)
-    print(f"{time() - zero_instant:.6f}s Checksum {c:x}")
+    print(f"[{time() - zero_instant:.6f}s] Checksum {c:x}")
 
 
 assert __name__ == "__main__"

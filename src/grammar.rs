@@ -480,21 +480,20 @@ impl FunctionVisitor {
     }
 
     fn visit_data_items(&mut self, name: Box<str>, items: Pair<'_, Rule>) -> RegisterIndex {
-        let items = items.into_inner();
         // fieldless sum type variant
-        if matches!(items.peek(), Some(item) if item.as_rule() == Rule::Ident) {
-            let [variant] = <[_; 1]>::try_from(items.collect::<Vec<_>>()).unwrap();
+        if items.as_rule() == Rule::Ident {
             let r = self.allocate();
             self.instructions
                 .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
             self.instructions.push(Instruction::MakeTypedObject(
                 r,
                 name,
-                Box::new([(variant.as_str().into(), r)]),
+                Box::new([(items.as_str().into(), r)]),
             ));
             return r;
         }
         let data = items
+            .into_inner()
             .map(|item| {
                 let [item_name, value] = split(item);
                 let item_name = item_name.as_str();
@@ -626,9 +625,6 @@ impl FunctionVisitor {
             Rule::WhileStmt => self.visit_while_stmt(stmt),
             Rule::BreakStmt => self.push_control(Placeholder::JumpBreak),
             Rule::ContinueStmt => self.push_control(Placeholder::JumpContinue),
-            Rule::IfStmt | Rule::Expr => {
-                self.visit_expr(stmt);
-            }
             Rule::ReturnStmt => {
                 let r = if let Some(expr) = split_option::<0>(stmt).1 {
                     self.visit_expr(expr)
@@ -639,6 +635,12 @@ impl FunctionVisitor {
                     r
                 };
                 self.instructions.push(Instruction::Return(r));
+            }
+            Rule::Expr => {
+                self.visit_expr(stmt);
+            }
+            Rule::IfExpr => {
+                self.visit_if_expr(stmt);
             }
             _ => unreachable!(),
         }

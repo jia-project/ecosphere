@@ -126,20 +126,20 @@ make Array.insert_head(a) {
 
 make collapse(runs) {
     var n = runs.length();
-    if n >= 2 
+    if n >= 2
         and (
-            runs.at(n - 1).start == 0 
+            runs.at(n - 1).start == 0
             or runs.at(n - 2).len <= runs.at(n - 1).len
             or n >= 3 and runs.at(n - 3).len <= runs.at(n - 2).len + runs.at(n - 1).len
             or n >= 4 and runs.at(n - 4).len <= runs.at(n - 3).len + runs.at(n - 2).len)
     {
         if n >= 3 and runs.at(n - 3).len < runs.at(n - 1).len {
-            return Option[Some = n - 3];
+            Option[Some = n - 3]
         } else {
-            return Option[Some = n - 2];
+            Option[Some = n - 2]
         }
     } else {
-        return Option[None = 0];
+        Option[None]
     }
 }
 
