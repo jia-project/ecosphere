@@ -172,7 +172,7 @@ make merge(a, mid) {
         }
     } else {
         # clone the right run (a[mid..]) and merge backward
-        var buf = a.view(mid, len).clone();
+        var buf = a.view(mid, len - mid).clone();
         var left_i = mid;
         var left_end = 0;
         var right_i = len - mid;
@@ -181,10 +181,10 @@ make merge(a, mid) {
         while left_end < left_i and right_end < right_i {
             var to_copy = if buf.at(right_i - 1) < a.at(left_i - 1) {
                 left_i = left_i - 1;
-                a.at(left_i);
+                a.at(left_i)
             } else {
                 right_i = right_i - 1;
-                buf.at(right_i);
+                buf.at(right_i)
             };
             i = i - 1;
             a.at(i, to_copy);

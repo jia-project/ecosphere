@@ -468,8 +468,11 @@ impl Machine {
                     });
                     self.arguments.push(x.escape(&mut self.arena));
                 }
-                self.arguments
-                    .extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
+                // self.arguments
+                //     .extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
+                for x in &**argument_xs {
+                    self.arguments.push(r[x].escape(&mut self.arena));
+                }
                 match function_dispatches.get(&(
                     context.into(),
                     (&**name).into(),
