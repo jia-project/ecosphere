@@ -232,22 +232,61 @@ make (XorShiftRng s) next() {
     s.w
 }
 
+# fletcher-32
+# a 64 bit checksum should fit the 32 bit random number generated above better
+# but present it with 64 bit signed integer may cause problem
+# we are just checking for sorting, so checksum base on low 16 bit should be sufficient
+make checksum(xs) {
+    var modulus = (1 << 16) - 1;
+    var sum1 = 0;
+    var sum2 = 0;
+    var i = 0;
+    var len = xs.length();
+    while i < len {
+        sum1 = (sum1 + xs.at(i)) % modulus;
+        sum2 = (sum1 + sum2) % modulus;
+        i = i + 1;
+    }
+    (sum1 << 16) | sum2
+}
+
+make hex(x) {
+    if x == 0 {
+        return "0";
+    }
+    var digits = Array.new(16);
+    digits.at(0, "0");
+    digits.at(1, "1");
+    digits.at(2, "2");
+    digits.at(3, "3");
+    digits.at(4, "4");
+    digits.at(5, "5");
+    digits.at(6, "6");
+    digits.at(7, "7");
+    digits.at(8, "8");
+    digits.at(9, "9");
+    digits.at(10, "a");
+    digits.at(11, "b");
+    digits.at(12, "c");
+    digits.at(13, "d");
+    digits.at(14, "e");
+    digits.at(15, "f");
+    var s = "";
+    while x != 0 {
+        s = digits.at(x & 15) + s;
+        x = x >> 4;
+    }
+    s
+}
+
 var len = 1 << 20;
+var offset = 1 << 60;
 var a = Array.new(len);
 var rng = XorShiftRng [x = 1, y = 2, z = 3, w = 4];
 var i = 0;
 while i < len {
-    a.at(i, rng.next());
+    a.at(i, rng.next() + offset);
     i = i + 1;
 }
-
-var sum1 = 0;
-var sum2 = 0;
-var i = 0;
-var mask = mask;
-while i < len {
-    sum1 = (sum1 + a.at(i)) & mask;
-    sum2 = (sum1 + sum2) & mask;
-    i = i + 1;
-}
-inspect (sum1 << 31) ^ sum2;
+inspect "Generated";
+inspect hex(checksum(a));

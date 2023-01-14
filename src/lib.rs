@@ -32,7 +32,7 @@ pub enum Instruction {
     Operator2(RegisterIndex, Operator2, RegisterIndex, RegisterIndex),
 
     // side effects
-    Inspect(RegisterIndex),
+    Inspect(RegisterIndex, Box<str>),
     Assert(RegisterIndex),
     Store(RegisterIndex, Box<str>),
 

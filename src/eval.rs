@@ -542,7 +542,7 @@ impl Machine {
                 self.names
                     .insert(name.clone(), r[x].escape(&mut self.arena));
             }
-            Inspect(x) => {
+            Inspect(x, source) => {
                 let repr = match r[x].view() {
                     ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
 
@@ -563,7 +563,7 @@ impl Machine {
                     ObjectData::Any(value) => format!("(any) {}", value.type_name()),
                 };
                 println!(
-                    "[{:>9.3?}] {:x?} {repr}",
+                    "[{:>9.3?}] {source}  => {:x?} {repr}",
                     Instant::now() - self.arena.instant_zero(),
                     r[x]
                 );

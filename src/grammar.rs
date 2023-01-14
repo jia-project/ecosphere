@@ -258,7 +258,8 @@ impl FunctionVisitor {
                 | Op::infix(Rule::Gt, Assoc::Left)
                 | Op::infix(Rule::Le, Assoc::Left)
                 | Op::infix(Rule::Ge, Assoc::Left)
-                | Op::infix(Rule::Eq, Assoc::Left))
+                | Op::infix(Rule::Eq, Assoc::Left)
+                | Op::infix(Rule::Ne, Assoc::Left))
             .op(Op::infix(Rule::BitOr, Assoc::Left))
             .op(Op::infix(Rule::BitXor, Assoc::Left))
             .op(Op::infix(Rule::BitAnd, Assoc::Left))
@@ -317,7 +318,10 @@ impl FunctionVisitor {
                 let r1 = self.visit_expr_internal(*expr);
                 match op.as_rule() {
                     Rule::Inspect => {
-                        self.instructions.push(Instruction::Inspect(r1));
+                        self.instructions.push(Instruction::Inspect(
+                            r1,
+                            op.as_span().lines().collect::<Vec<_>>().join("\n").into(),
+                        ));
                         return r1;
                     }
                     Rule::Call1 => {

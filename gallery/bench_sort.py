@@ -15,19 +15,24 @@ class XorShiftRng:
         self.w = (self.w ^ (self.w >> 19) ^ (t ^ (t >> 8))) & ((1 << 32) - 1)
         return self.w
 
+def checksum(xs):
+    sum1, sum2 = 0, 0
+    for x in xs:
+        sum1 = (sum1 + x) % ((1 << 16) - 1)
+        sum2 = (sum1 + sum2) % ((1 << 16) - 1)
+    return (sum1 << 16) | sum2
+
 def main():
     zero_instant = time()
     rng = XorShiftRng(1, 2, 3, 4)
     xs = [(1 << 60) + rng.next() for _ in range(1 << 20)]
-    print(f"{time() - zero_instant:.6f}s Sort start")
+    print(f"{time() - zero_instant:.6f}s Generated")
+    c = checksum(xs)
+    print(f"{time() - zero_instant:.6f}s Sort start Checksum {c:x}")
     xs.sort()
     print(f"{time() - zero_instant:.6f}s Sort finish")
-
-    sum1, sum2 = 0, 0
-    for x in xs:
-        sum1 = (sum1 + x) & ((1 << 32) - 1)
-        sum2 = (sum1 + sum2) & ((1 << 32) - 1)
-    print((sum1 << 31) ^ sum2)
+    c = checksum(xs)
+    print(f"{time() - zero_instant:.6f}s Checksum {c:x}")
 
 assert __name__ == '__main__'
 main()

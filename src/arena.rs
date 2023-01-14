@@ -215,7 +215,7 @@ impl ArenaShared {
 
         let now = Instant::now();
         println!(
-            "[{:>9.3?}] Collected Stop {:?} Copy {}",
+            "[{:>9.3?}] collected Stop {:?} Copy {}",
             now - self.instant_zero,
             now - collect_zero,
             alive_len
