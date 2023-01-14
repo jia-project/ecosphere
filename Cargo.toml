@@ -10,3 +10,4 @@ panic = "abort"
 [dependencies]
 pest = "2.5.2"
 pest_derive = "2.5.2"
+rustc-hash = "1.1.0"

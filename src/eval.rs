@@ -1,6 +1,5 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
     fmt::Debug,
     iter::repeat,
     mem::{take, MaybeUninit},
@@ -15,6 +14,7 @@ use crate::{
     CastData, Instruction, InstructionLiteral, Object, ObjectAny, ObjectData, RegisterIndex,
     TypeIndex, TypeOperator,
 };
+type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
 #[derive(Clone)]
 struct Symbol {
@@ -32,7 +32,7 @@ enum Dispatch {
 
 impl Default for Symbol {
     fn default() -> Self {
-        let mut type_names = HashMap::new();
+        let mut type_names = HashMap::default();
         let mut types = Vec::new();
         let s = <Box<str>>::from;
 
@@ -41,7 +41,7 @@ impl Default for Symbol {
         type_names.insert(s("String"), Machine::TYPE_STRING as usize);
         type_names.insert(s("Array"), Machine::TYPE_ARRAY as usize);
 
-        let mut variant_names = HashMap::new();
+        let mut variant_names = HashMap::default();
         variant_names.insert(s("False"), types.len() as u32);
         types.push(SymbolType::SumVariant {
             type_name: s("Bool"),
@@ -55,7 +55,7 @@ impl Default for Symbol {
         type_names.insert(s("Bool"), types.len());
         types.push(SymbolType::Sum { variant_names });
 
-        let mut variant_names = HashMap::new();
+        let mut variant_names = HashMap::default();
         variant_names.insert(s("None"), types.len() as u32);
         types.push(SymbolType::SumVariant {
             type_name: s("Option"),
@@ -607,7 +607,7 @@ impl Machine {
                         })
                     }
                     TypeOperator::Sum => {
-                        let mut variant_names = HashMap::new();
+                        let mut variant_names = HashMap::default();
                         for (i, variant) in items.iter().enumerate() {
                             variant_names.insert(variant.clone(), i as _);
                             self.symbol.types.push(SymbolType::SumVariant {
