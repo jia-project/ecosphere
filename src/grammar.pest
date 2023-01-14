@@ -86,6 +86,7 @@ ProgramStmt = _{
 Stmt = _{
     VarStmt
     | AssignStmt
+    | MakeAssignStmt
     | PutStmt
     | AssertStmt
     | WhileStmt
@@ -111,6 +112,8 @@ TypeItem = { Ident ~ TypeItems? }
 VarStmt = { "var" ~ Ident ~ ("=" ~ Expr)? ~ ";" }
 
 AssignStmt = { Ident ~ "=" ~ Expr ~ ";" }
+
+MakeAssignStmt = { "make" ~ PublicIdent ~ "=" ~ Expr ~ ";" }
 
 PutStmt = { Expr ~ "put" ~ Ident ~ "=" ~ Expr ~ ";" }
 

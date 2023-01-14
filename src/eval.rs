@@ -345,10 +345,8 @@ impl Machine {
             program_counter: 0,
         };
         let zero = self.frames.len() * Frame::REGISTER_COUNT;
-        if self.registers.len() <= zero {
-            self.registers
-                .resize_with(zero + Frame::REGISTER_COUNT, Default::default);
-        }
+        self.registers
+            .resize_with(zero + Frame::REGISTER_COUNT, Default::default);
         for (r, argument) in self.registers[zero..zero + self.arguments.len()]
             .iter_mut()
             .zip(&self.arguments)
@@ -436,34 +434,37 @@ impl Machine {
             ParsingPlaceholder(_) => unreachable!(),
 
             MakeLiteralObject(i, literal) => r[i] = self.preallocate.make(literal),
-            MakeDataObject(i, name, items) => {
+            MakeTypedObject(i, name, items) => {
                 let type_index = self.symbol.type_names[name];
-                let data = match &self.symbol.types[type_index] {
+                match &self.symbol.types[type_index] {
                     SymbolType::Product { components, .. } => {
-                        let mut data = repeat(self.preallocate.nil)
-                            .take(components.len())
-                            .collect::<Box<_>>();
-                        // make sure an interleaving GC not result in stall pointer
-                        for (_, x) in &**items {
-                            r[x].escape(&mut self.arena);
-                        }
+                        let data = ObjectData::Typed(
+                            type_index as _,
+                            repeat(self.preallocate.nil)
+                                .take(components.len())
+                                .collect::<Box<_>>(),
+                        );
+                        r[i] = FrameRegister::Address(self.arena.allocate(data));
                         for (name, x) in &**items {
-                            data[components[name]] = r[x].escape(&mut self.arena);
+                            let x = r[x].escape(&mut self.arena);
+                            let ObjectData::Typed(_, data) = r[i].view_mut() else {
+                                unreachable!()
+                            };
+                            data[components[name]] = x;
                         }
-                        ObjectData::Typed(type_index as _, data)
                     }
                     SymbolType::Sum { variant_names, .. } => {
                         let [(name, x)] = &**items else {
                             panic!()
                         };
-                        ObjectData::Typed(
+                        let data = ObjectData::Typed(
                             variant_names[name],
                             Box::new([r[x].escape(&mut self.arena)]), //
-                        )
+                        );
+                        r[i] = FrameRegister::Address(self.arena.allocate(data));
                     }
                     SymbolType::SumVariant { .. } => panic!(),
-                };
-                r[i] = FrameRegister::Address(self.arena.allocate(data))
+                }
             }
 
             Jump(x, positive, negative) => {
@@ -482,14 +483,27 @@ impl Machine {
                 self.frames.last_mut().unwrap().program_counter = target;
             }
             Return(x) => {
-                let x = take(&mut r[x]);
+                let returned = take(&mut r[x]);
                 let frame = self.frames.pop().unwrap();
+                for (i, register) in self.registers[self.frames.len() * Frame::REGISTER_COUNT..]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    if matches!(register, FrameRegister::Vacant) && i != *x {
+                        // a safe optimization for now because any `Vacant` indicate every higher register is not used
+                        // if `Move` operation is added, make sure to distinguish `Vacant` and `Moved`
+                        break;
+                    }
+                    if matches!(register, FrameRegister::Address(_)) {
+                        take(register);
+                    }
+                }
                 if !self.is_finished() {
                     let mut r = R(
                         &mut self.registers,
                         (self.frames.len() - 1) * Frame::REGISTER_COUNT,
                     );
-                    r[&frame.return_register] = x;
+                    r[&frame.return_register] = returned;
                 }
             }
             Call(i, context_xs, name, argument_xs) => {

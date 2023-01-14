@@ -16,12 +16,12 @@ class XorShiftRng:
         return self.w
 
 def main():
-    rng = XorShiftRng(1, 2, 3, 4)
-    xs = [rng.next() for _ in range(1 << 20)]
     zero_instant = time()
-    # print(f"{time() - zero_instant:.6f}s Sort start")
-    # xs.sort()
-    # print(f"{time() - zero_instant:.6f}s Sort finish")
+    rng = XorShiftRng(1, 2, 3, 4)
+    xs = [(1 << 60) + rng.next() for _ in range(1 << 20)]
+    print(f"{time() - zero_instant:.6f}s Sort start")
+    xs.sort()
+    print(f"{time() - zero_instant:.6f}s Sort finish")
 
     sum1, sum2 = 0, 0
     for x in xs:

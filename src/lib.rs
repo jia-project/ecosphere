@@ -21,7 +21,7 @@ pub enum Instruction {
 
     // intrinsic operations
     MakeLiteralObject(RegisterIndex, InstructionLiteral),
-    MakeDataObject(RegisterIndex, Box<str>, Box<[(Box<str>, RegisterIndex)]>),
+    MakeTypedObject(RegisterIndex, Box<str>, Box<[(Box<str>, RegisterIndex)]>),
     Load(RegisterIndex, Box<str>),
     Get(RegisterIndex, RegisterIndex, Box<str>),
     Put(RegisterIndex, Box<str>, RegisterIndex),

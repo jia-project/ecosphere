@@ -222,7 +222,7 @@ make XorShiftRng [
     * w
 ]
 
-mask = (1 << 32) - 1;
+make mask = (1 << 32) - 1;
 make (XorShiftRng s) next() {
     var t = (s.x ^ (s.x << 11)) & mask;
     s put x = s.y;

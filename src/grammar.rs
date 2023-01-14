@@ -483,7 +483,7 @@ impl FunctionVisitor {
             let r = self.allocate();
             self.instructions
                 .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
-            self.instructions.push(Instruction::MakeDataObject(
+            self.instructions.push(Instruction::MakeTypedObject(
                 r,
                 name,
                 Box::new([(variant.as_str().into(), r)]),
@@ -508,7 +508,7 @@ impl FunctionVisitor {
             .collect();
         let r = self.allocate();
         self.instructions
-            .push(Instruction::MakeDataObject(r, name, data));
+            .push(Instruction::MakeTypedObject(r, name, data));
         r
     }
 
@@ -593,7 +593,19 @@ impl FunctionVisitor {
     fn visit_stmt(&mut self, stmt: Pair<'_, Rule>) {
         match stmt.as_rule() {
             Rule::VarStmt => self.visit_var_stmt(stmt),
-            Rule::AssignStmt => self.visit_assign_stmt(stmt),
+            Rule::AssignStmt => {
+                let [name, expr] = split(stmt);
+                let expr_r = self.visit_expr(expr);
+                let r = self.find(name.as_str()).unwrap();
+                self.instructions
+                    .push(Instruction::Operator1(r, Operator1::Copy, expr_r));
+            }
+            Rule::MakeAssignStmt => {
+                let [name, expr] = split(stmt);
+                let expr_r = self.visit_expr(expr);
+                self.instructions
+                    .push(Instruction::Store(expr_r, name.as_str().into()));
+            }
             Rule::PutStmt => {
                 let [data, component, expr] = split(stmt);
                 let r = self.visit_expr(data);
@@ -641,18 +653,6 @@ impl FunctionVisitor {
                 .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil))
         };
         self.bind(name.as_str().to_owned(), r)
-    }
-
-    fn visit_assign_stmt(&mut self, stmt: Pair<'_, Rule>) {
-        let [name, expr] = split(stmt);
-        let expr_r = self.visit_expr(expr);
-        if let Some(r) = self.find(name.as_str()) {
-            self.instructions
-                .push(Instruction::Operator1(r, Operator1::Copy, expr_r));
-        } else {
-            self.instructions
-                .push(Instruction::Store(expr_r, name.as_str().into()));
-        }
     }
 
     fn visit_while_stmt(&mut self, stmt: Pair<'_, Rule>) {
