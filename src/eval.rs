@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
     fmt::Debug,
-    iter::repeat,
     mem::{take, Discriminant, MaybeUninit},
     ops::{Index, IndexMut},
     ptr::NonNull,
@@ -99,7 +98,7 @@ pub struct Machine {
     arena: ArenaUser,
     frames: Vec<Frame>,
     registers: Vec<FrameRegister>,
-    preallocate: MachineStatic,
+    local: MachineStatic,
     arguments: Vec<FrameRegister>,
     return_register: RegisterIndex, // for native functions
     stats: HashMap<Discriminant<Instruction>, u32>,
@@ -241,7 +240,7 @@ impl Machine {
             symbol: Default::default(),
             frames: Default::default(),
             registers: Default::default(),
-            preallocate,
+            local: preallocate,
             arena,
             arguments: Default::default(),
             return_register: RegisterIndex::MAX,
@@ -258,7 +257,11 @@ impl Machine {
     }
 
     fn push_frame(&mut self, index: usize, return_register: RegisterIndex) {
-        let frame_offset = self.registers.len();
+        let frame_offset = self
+            .frames
+            .last()
+            .map(|frame| frame.offset + Frame::REGISTER_COUNT)
+            .unwrap_or_default();
         let frame = Frame {
             offset: frame_offset,
             return_register,
@@ -389,18 +392,17 @@ impl Machine {
         match instruction {
             ParsingPlaceholder(_) => unreachable!(),
 
-            MakeLiteralObject(i, literal) => r[i] = self.preallocate.make(literal),
+            MakeLiteralObject(i, literal) => r[i] = self.local.make(literal),
             MakeTypedObject(i, name, items) => {
                 let type_index = self.symbol.type_names[name];
                 match &self.symbol.types[type_index] {
                     SymbolType::Product { components, .. } => {
-                        let data = ObjectData::Typed(
-                            type_index as _,
-                            repeat(self.preallocate.nil)
-                                .take(components.len())
-                                .collect::<Box<_>>(),
-                        );
+                        let data = ObjectData::Typed(type_index as _, Box::new([]));
                         r[i] = FrameRegister::Address(self.arena.allocate(data));
+                        *r[i].view_mut() = ObjectData::Typed(
+                            type_index as _,
+                            vec![self.local.nil; components.len()].into(),
+                        );
                         for (name, x) in &**items {
                             let x = r[x].escape(&mut self.arena);
                             let ObjectData::Typed(_, data) = r[i].view_mut() else {
@@ -413,11 +415,10 @@ impl Machine {
                         let [(name, x)] = &**items else {
                             panic!()
                         };
-                        let data = ObjectData::Typed(
-                            variant_names[name],
-                            Box::new([r[x].escape(&mut self.arena)]), //
-                        );
+                        let data = ObjectData::Typed(variant_names[name], Box::new([])); //
                         r[i] = FrameRegister::Address(self.arena.allocate(data));
+                        let data = r[x].escape(&mut self.arena);
+                        *r[i].view_mut() = ObjectData::Typed(variant_names[name], Box::new([data]));
                     }
                     SymbolType::SumVariant { .. } => panic!(),
                 }
@@ -554,7 +555,7 @@ impl Machine {
                 let SymbolType::SumVariant{name: n, ..} = &self.symbol.types[*type_index as usize] else {
                     panic!()
                 };
-                r[i] = self.preallocate.make(&Literal::Bool(n == name));
+                r[i] = self.local.make(&Literal::Bool(n == name));
             }
             As(i, x, name) => {
                 let ObjectData::Typed(type_index, data) = r[x].view() else {
@@ -569,36 +570,34 @@ impl Machine {
                 use {crate::instruction::Operator1::*, Literal as L, ObjectData::*};
                 r[i] = match (op, r[x].view()) {
                     (Copy, _) => r[x].copy(&mut self.arena),
-                    (Not, Typed(0, _)) => self.preallocate.make(&L::Bool(true)),
-                    (Not, Typed(1, _)) => self.preallocate.make(&L::Bool(false)),
-                    (Neg, Integer(x)) => self.preallocate.make(&L::Integer(-*x)),
+                    (Not, Typed(0, _)) => self.local.make(&L::Bool(true)),
+                    (Not, Typed(1, _)) => self.local.make(&L::Bool(false)),
+                    (Neg, Integer(x)) => self.local.make(&L::Integer(-*x)),
                     _ => panic!(),
                 }
             }
             Operator2(i, op, x, y) => {
                 use {crate::instruction::Operator2::*, Literal as L, ObjectData::*};
-                r[i] = self
-                    .preallocate
-                    .make(&match (op, r[x].view(), r[y].view()) {
-                        (Add, Integer(x), Integer(y)) => L::Integer(*x + *y),
-                        (Sub, Integer(x), Integer(y)) => L::Integer(*x - *y),
-                        (Mul, Integer(x), Integer(y)) => L::Integer(*x * *y),
-                        (Div, Integer(x), Integer(y)) => L::Integer(*x / *y),
-                        (Rem, Integer(x), Integer(y)) => L::Integer(*x % *y),
-                        (Lt, Integer(x), Integer(y)) => L::Bool(x < y),
-                        (Gt, Integer(x), Integer(y)) => L::Bool(x > y),
-                        (Eq, Integer(x), Integer(y)) => L::Bool(x == y),
-                        (Ne, Integer(x), Integer(y)) => L::Bool(x != y),
-                        (Le, Integer(x), Integer(y)) => L::Bool(x <= y),
-                        (Ge, Integer(x), Integer(y)) => L::Bool(x >= y),
-                        (BitAnd, Integer(x), Integer(y)) => L::Integer(*x & *y),
-                        (BitOr, Integer(x), Integer(y)) => L::Integer(*x | *y),
-                        (BitXor, Integer(x), Integer(y)) => L::Integer(*x ^ *y),
-                        (Shl, Integer(x), Integer(y)) => L::Integer(*x << *y),
-                        (Shr, Integer(x), Integer(y)) => L::Integer(*x >> *y),
-                        (Add, String(x), String(y)) => L::String([&**x, &**y].concat().into()),
-                        _ => panic!("{instruction:?} x = {:?} y = {:?}", r[x], r[y]),
-                    })
+                r[i] = self.local.make(&match (op, r[x].view(), r[y].view()) {
+                    (Add, Integer(x), Integer(y)) => L::Integer(*x + *y),
+                    (Sub, Integer(x), Integer(y)) => L::Integer(*x - *y),
+                    (Mul, Integer(x), Integer(y)) => L::Integer(*x * *y),
+                    (Div, Integer(x), Integer(y)) => L::Integer(*x / *y),
+                    (Rem, Integer(x), Integer(y)) => L::Integer(*x % *y),
+                    (Lt, Integer(x), Integer(y)) => L::Bool(x < y),
+                    (Gt, Integer(x), Integer(y)) => L::Bool(x > y),
+                    (Eq, Integer(x), Integer(y)) => L::Bool(x == y),
+                    (Ne, Integer(x), Integer(y)) => L::Bool(x != y),
+                    (Le, Integer(x), Integer(y)) => L::Bool(x <= y),
+                    (Ge, Integer(x), Integer(y)) => L::Bool(x >= y),
+                    (BitAnd, Integer(x), Integer(y)) => L::Integer(*x & *y),
+                    (BitOr, Integer(x), Integer(y)) => L::Integer(*x | *y),
+                    (BitXor, Integer(x), Integer(y)) => L::Integer(*x ^ *y),
+                    (Shl, Integer(x), Integer(y)) => L::Integer(*x << *y),
+                    (Shr, Integer(x), Integer(y)) => L::Integer(*x >> *y),
+                    (Add, String(x), String(y)) => L::String([&**x, &**y].concat().into()),
+                    _ => panic!("{instruction:?} x = {:?} y = {:?}", r[x], r[y]),
+                })
             }
 
             MakeType(name, op, items) => {
@@ -694,9 +693,9 @@ impl Machine {
                 // allocate with dummy data first, make sure that placeholder `nil` has correct address
                 // even it get copied in this `allocate`
                 // we should give `nil` a static address...
-                let mut array = machine.arena.allocate(ObjectData::Integer(0));
+                let mut array = machine.arena.allocate(ObjectData::Array(Box::new([])));
                 unsafe { array.as_mut() }.data =
-                    ObjectData::Array(vec![machine.preallocate.nil; len].into());
+                    ObjectData::Array(vec![machine.local.nil; len].into());
                 FrameRegister::Address(array)
             },
         );
@@ -706,7 +705,7 @@ impl Machine {
             s("length"),
             |machine, [a], []| {
                 let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
-                machine.preallocate.make(&Literal::Integer(a.len() as _))
+                machine.local.make(&Literal::Integer(a.len() as _))
             },
         );
         self.make_native_dispatch(
@@ -717,9 +716,10 @@ impl Machine {
                 let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
                 let offset = *offset.view2().cast_ref::<i64>().unwrap() as usize;
                 let length = *length.view2().cast_ref::<i64>().unwrap() as usize;
-                FrameRegister::Address(machine.arena.allocate(ObjectData::Array(
-                    a[offset..offset + length].to_vec().into(),
-                )))
+                let mut cloned = machine.arena.allocate(ObjectData::Array(Box::new([])));
+                unsafe { cloned.as_mut() }.data =
+                    ObjectData::Array(a[offset..offset + length].to_vec().into());
+                FrameRegister::Address(cloned)
             },
         );
         self.make_native_dispatch(
@@ -740,7 +740,7 @@ impl Machine {
                 let a = a.view2_mut().cast_mut::<Box<[NonNull<Object>]>>().unwrap();
                 let position = *position.view2().cast_ref::<i64>().unwrap() as usize;
                 a[position] = element.escape(&mut machine.arena);
-                machine.preallocate.make(&Literal::Nil)
+                machine.local.make(&Literal::Nil)
             },
         );
         function_dispatches
@@ -749,9 +749,9 @@ impl Machine {
 
 unsafe impl ObjectAny for Machine {
     fn on_scan(&mut self, scanner: &mut crate::arena::ObjectScanner<'_>) {
-        scanner.process_pointer(&mut self.preallocate.nil);
-        scanner.process_pointer(&mut self.preallocate.bool_true);
-        scanner.process_pointer(&mut self.preallocate.bool_false);
+        scanner.process_pointer(&mut self.local.nil);
+        scanner.process_pointer(&mut self.local.bool_true);
+        scanner.process_pointer(&mut self.local.bool_false);
         // for address in &mut self.preallocate.integers {
         //     scanner.process_pointer(address);
         // }
