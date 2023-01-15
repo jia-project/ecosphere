@@ -7,7 +7,10 @@ use pest::{
 };
 use pest_derive::Parser;
 
-use crate::{Instruction, InstructionLiteral, Operator1, Operator2, RegisterIndex, TypeOperator};
+use crate::{
+    instruction::{self, Literal::Nil, Operator1::Copy},
+    Instruction, RegisterIndex,
+};
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
@@ -23,7 +26,7 @@ pub fn parse(input: &str) -> Box<[Instruction]> {
     visitor
         .0
         .instructions
-        .push(Instruction::MakeLiteralObject(0, InstructionLiteral::Nil));
+        .push(Instruction::MakeLiteralObject(0, Nil));
     visitor.0.instructions.push(Instruction::Return(0));
     visitor.0.instructions.into()
 }
@@ -135,8 +138,8 @@ impl ProgramVisitor {
 
         fn visit(visitor: &mut ProgramVisitor, name: Box<str>, items: Pair<'_, Rule>) {
             let type_op = match items.as_rule() {
-                Rule::ProductTypeItems => TypeOperator::Product,
-                Rule::SumTypeItems => TypeOperator::Sum,
+                Rule::ProductTypeItems => instruction::TypeOperator::Product,
+                Rule::SumTypeItems => instruction::TypeOperator::Sum,
                 _ => unreachable!(),
             };
             let mut item_names = Vec::new();
@@ -290,23 +293,24 @@ impl FunctionVisitor {
 
                 let r1 = self.visit_expr_internal(*expr1);
                 let r2 = self.visit_expr_internal(*expr2);
+                use instruction::Operator2::*;
                 let op = match op.as_rule() {
-                    Rule::Add => Operator2::Add,
-                    Rule::Sub => Operator2::Sub,
-                    Rule::Mul => Operator2::Mul,
-                    Rule::Div => Operator2::Div,
-                    Rule::Rem => Operator2::Rem,
-                    Rule::Lt => Operator2::Lt,
-                    Rule::Gt => Operator2::Gt,
-                    Rule::Eq => Operator2::Eq,
-                    Rule::Ne => Operator2::Ne,
-                    Rule::Le => Operator2::Le,
-                    Rule::Ge => Operator2::Ge,
-                    Rule::BitAnd => Operator2::BitAnd,
-                    Rule::BitOr => Operator2::BitOr,
-                    Rule::BitXor => Operator2::BitXor,
-                    Rule::Shl => Operator2::Shl,
-                    Rule::Shr => Operator2::Shr,
+                    Rule::Add => Add,
+                    Rule::Sub => Sub,
+                    Rule::Mul => Mul,
+                    Rule::Div => Div,
+                    Rule::Rem => Rem,
+                    Rule::Lt => Lt,
+                    Rule::Gt => Gt,
+                    Rule::Eq => Eq,
+                    Rule::Ne => Ne,
+                    Rule::Le => Le,
+                    Rule::Ge => Ge,
+                    Rule::BitAnd => BitAnd,
+                    Rule::BitOr => BitOr,
+                    Rule::BitXor => BitXor,
+                    Rule::Shl => Shl,
+                    Rule::Shr => Shr,
                     _ => unreachable!(),
                 };
                 let r = self.allocate();
@@ -320,7 +324,12 @@ impl FunctionVisitor {
                     Rule::Inspect => {
                         self.instructions.push(Instruction::Inspect(
                             r1,
-                            op.as_span().lines().collect::<Vec<_>>().join("\n").into(),
+                            op.as_span()
+                                .lines()
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                                .trim_start()
+                                .into(),
                         ));
                         return r1;
                     }
@@ -345,13 +354,19 @@ impl FunctionVisitor {
                 let r = self.allocate();
                 match op.as_rule() {
                     Rule::Not => {
-                        self.instructions
-                            .push(Instruction::Operator1(r, Operator1::Not, r1));
+                        self.instructions.push(Instruction::Operator1(
+                            r,
+                            instruction::Operator1::Not,
+                            r1,
+                        ));
                         r
                     }
                     Rule::Neg => {
-                        self.instructions
-                            .push(Instruction::Operator1(r, Operator1::Neg, r1));
+                        self.instructions.push(Instruction::Operator1(
+                            r,
+                            instruction::Operator1::Neg,
+                            r1,
+                        ));
                         r
                     }
                     Rule::Dot => {
@@ -400,7 +415,7 @@ impl FunctionVisitor {
         let r = self.allocate();
         self.instructions.push(Instruction::MakeLiteralObject(
             r,
-            InstructionLiteral::Bool(!after_all),
+            instruction::Literal::Bool(!after_all),
         ));
         self.enter_control(ControlScope::Shortcut);
         let r1 = self.visit_expr_internal(expr1);
@@ -409,7 +424,7 @@ impl FunctionVisitor {
         self.push_control(placeholder(r2));
         self.instructions.push(Instruction::MakeLiteralObject(
             r,
-            InstructionLiteral::Bool(after_all),
+            instruction::Literal::Bool(after_all),
         ));
         // control exit in caller
         r
@@ -444,7 +459,7 @@ impl FunctionVisitor {
                 let r = self.allocate();
                 self.instructions.push(Instruction::MakeLiteralObject(
                     r,
-                    InstructionLiteral::Integer(expr.as_str().parse().unwrap()),
+                    instruction::Literal::Integer(expr.as_str().parse().unwrap()),
                 ));
                 r
             }
@@ -454,7 +469,7 @@ impl FunctionVisitor {
                 let r = self.allocate();
                 self.instructions.push(Instruction::MakeLiteralObject(
                     r,
-                    InstructionLiteral::String(value),
+                    instruction::Literal::String(value),
                 ));
                 r
             }
@@ -484,7 +499,7 @@ impl FunctionVisitor {
         if items.as_rule() == Rule::Ident {
             let r = self.allocate();
             self.instructions
-                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+                .push(Instruction::MakeLiteralObject(r, Nil));
             self.instructions.push(Instruction::MakeTypedObject(
                 r,
                 name,
@@ -526,7 +541,7 @@ impl FunctionVisitor {
         } else {
             let r = self.allocate();
             self.instructions
-                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+                .push(Instruction::MakeLiteralObject(r, Nil));
             r
         };
         self.exit();
@@ -574,17 +589,17 @@ impl FunctionVisitor {
 
         let positive_r = self.visit_block_expr(positive);
         self.instructions
-            .push(Instruction::Operator1(r, Operator1::Copy, positive_r));
+            .push(Instruction::Operator1(r, Copy, positive_r));
         self.push_control(Placeholder::JumpEndIf);
 
         let negative_index = self.instructions.len();
         if let Some(negative) = negative {
             let negative_r = self.visit_block_expr(negative);
             self.instructions
-                .push(Instruction::Operator1(r, Operator1::Copy, negative_r))
+                .push(Instruction::Operator1(r, Copy, negative_r))
         } else {
             self.instructions
-                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil))
+                .push(Instruction::MakeLiteralObject(r, Nil))
         }
 
         self.exit(); // `is` expression scope
@@ -601,7 +616,7 @@ impl FunctionVisitor {
                 let expr_r = self.visit_expr(expr);
                 let r = self.find(name.as_str()).unwrap();
                 self.instructions
-                    .push(Instruction::Operator1(r, Operator1::Copy, expr_r));
+                    .push(Instruction::Operator1(r, Copy, expr_r));
             }
             Rule::MakeAssignStmt => {
                 let [name, expr] = split(stmt);
@@ -631,7 +646,7 @@ impl FunctionVisitor {
                 } else {
                     let r = self.allocate();
                     self.instructions
-                        .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil));
+                        .push(Instruction::MakeLiteralObject(r, Nil));
                     r
                 };
                 self.instructions.push(Instruction::Return(r));
@@ -653,11 +668,11 @@ impl FunctionVisitor {
             let expr_r = self.visit_expr(expr);
             r = self.allocate();
             self.instructions
-                .push(Instruction::Operator1(r, Operator1::Copy, expr_r))
+                .push(Instruction::Operator1(r, Copy, expr_r))
         } else {
             r = self.allocate();
             self.instructions
-                .push(Instruction::MakeLiteralObject(r, InstructionLiteral::Nil))
+                .push(Instruction::MakeLiteralObject(r, Nil))
         };
         self.bind(name.as_str().to_owned(), r)
     }

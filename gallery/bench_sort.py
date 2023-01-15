@@ -62,6 +62,12 @@ def reverse(xs):
         high -= 1
 
 
+class Run:
+    def __init__(self, start, length):
+        self.start = start
+        self.length = length
+
+
 def merge_sort(v):
     MIN_RUN = 10
 
@@ -85,23 +91,21 @@ def merge_sort(v):
             start -= 1
             insert_head(ListView.of(v, start, end - start))
 
-        runs[runs_len] = {"start": start, "len": end - start}
+        runs[runs_len] = Run(start, end - start)
         runs_len += 1
         end = start
 
         while (r := collapse(ListView.of(runs, 0, runs_len))) is not None:
             left = runs[r + 1]
             right = runs[r]
-            merge(
-                ListView.of(v, left["start"], left["len"] + right["len"]), left["len"]
-            )
-            runs[r] = {"start": left["start"], "len": left["len"] + right["len"]}
+            merge(ListView.of(v, left.start, left.length + right.length), left.length)
+            runs[r] = Run(left.start, left.length + right.length)
             runs_len -= 1
             runs[r + 1], runs[runs_len] = runs[runs_len], runs[r + 1]
 
     assert runs_len == 1
-    assert runs[0]["start"] == 0
-    assert runs[0]["len"] == length
+    assert runs[0].start == 0
+    assert runs[0].length == length
 
 
 def insert_head(a):
@@ -162,12 +166,12 @@ def merge(a, mid):
 def collapse(runs):
     n = len(runs)
     if n >= 2 and (
-        runs[n - 1]["start"] == 0
-        or runs[n - 2]["len"] <= runs[n - 1]["len"]
-        or (n >= 3 and runs[n - 3]["len"] <= runs[n - 2]["len"] + runs[n - 1]["len"])
-        or (n >= 4 and runs[n - 4]["len"] <= runs[n - 3]["len"] + runs[n - 2]["len"])
+        runs[n - 1].start == 0
+        or runs[n - 2].length <= runs[n - 1].length
+        or (n >= 3 and runs[n - 3].length <= runs[n - 2].length + runs[n - 1].length)
+        or (n >= 4 and runs[n - 4].length <= runs[n - 3].length + runs[n - 2].length)
     ):
-        if n >= 3 and runs[n - 3]["len"] < runs[n - 1]["len"]:
+        if n >= 3 and runs[n - 3].length < runs[n - 1].length:
             return n - 3
         else:
             return n - 2
