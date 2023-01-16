@@ -1,7 +1,7 @@
 use std::{
-    collections::BTreeMap,
-    iter::repeat_with,
-    ptr::{copy_nonoverlapping, null_mut, write, NonNull},
+    alloc::{alloc, Layout},
+    mem::{replace, size_of},
+    ptr::{copy_nonoverlapping, write, NonNull},
     slice,
     sync::{
         atomic::{AtomicI8, Ordering},
@@ -18,15 +18,56 @@ pub struct Arena(Arc<ArenaShared>);
 struct ArenaShared {
     // >= 0 means number of active mutator, -1 means no mutator and collecting
     mutate_status: AtomicI8,
-    slabs: Mutex<BTreeMap<*mut Object, Slab>>,
+    space: Mutex<Space>,
     roots: Mutex<Vec<Box<dyn ObjectAny>>>,
     instant_zero: Instant,
 }
 
-pub struct ArenaUser {
+struct Space {
+    raw: Box<SpaceRaw>,
+    status: Box<[SlabStatus]>,
+}
+type SpaceRaw = [Object; Space::SLAB_COUNT * Space::SLAB_SIZE];
+
+impl Space {
+    const SLAB_SIZE: usize = 32 << 10; // in terms of size_of<Object>
+    const SLAB_COUNT: usize = 64;
+
+    fn slab(&self, index: usize) -> Slab {
+        let slab = &self.raw[index * Self::SLAB_SIZE..(index + 1) * Self::SLAB_SIZE];
+        Slab {
+            parts: (slab.as_ptr() as _, slab.len()),
+            status: self.status[index],
+        }
+    }
+
+    fn object_slab(&self, address: *const Object) -> Option<Slab> {
+        let raw = self.raw.as_ptr();
+        if (raw..unsafe { raw.add(Self::SLAB_COUNT * Self::SLAB_SIZE) }).contains(&address) {
+            Some(self.slab(unsafe { address.offset_from(raw) } as usize / Self::SLAB_SIZE))
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for Space {
+    fn default() -> Self {
+        let align = (size_of::<Object>() * Self::SLAB_SIZE).next_power_of_two();
+
+        let raw = unsafe { alloc(Layout::from_size_align(size_of::<SpaceRaw>(), align).unwrap()) };
+        assert_eq!(raw.align_offset(align), 0);
+        Self {
+            raw: unsafe { Box::from_raw(raw as _) },
+            status: vec![SlabStatus::Available; Self::SLAB_COUNT].into(),
+        }
+    }
+}
+
+pub struct ArenaClient {
     shared: Arc<ArenaShared>,
+    slab_index: usize,
     slab: Slab,
-    slab_index: *mut Object,
     allocate_len: usize,
 }
 
@@ -38,37 +79,15 @@ struct Slab {
 
 #[derive(Clone, Copy)]
 enum SlabStatus {
-    Available,  // no object allocated at all
-    Allocating, // no full yet, no need to copy out during collecting
-    Full,       // wait for collecting
-    To,         // to space during collecting
-    Released,   // inner allocation dropped
-}
-
-impl Slab {
-    fn new(object_count: usize, status: SlabStatus) -> Self {
-        let slab = repeat_with(Default::default)
-            .take(object_count)
-            .collect::<Box<[Object]>>();
-        let slab = Box::leak(slab);
-        Slab {
-            parts: (slab.as_mut_ptr(), slab.len()),
-            status,
-        }
-    }
+    Available,  // owned by `ArenaShared`
+    Allocating, // owned by some `ArenaClient`
+    Full,       // owned by `ArenaShared`
 }
 
 impl Default for Arena {
     fn default() -> Self {
         Self(Arc::new(ArenaShared {
-            slabs: Mutex::new(
-                repeat_with(|| {
-                    let slab = Slab::new(Arena::SLAB_SIZE, SlabStatus::Available);
-                    (slab.parts.0, slab)
-                })
-                .take(Arena::SLAB_COUNT)
-                .collect(),
-            ),
+            space: Mutex::new(Space::default()),
             mutate_status: AtomicI8::new(0),
             roots: Default::default(),
             instant_zero: Instant::now(),
@@ -77,12 +96,9 @@ impl Default for Arena {
 }
 
 impl Arena {
-    const SLAB_SIZE: usize = 32 << 10; // in terms of object count
-    const SLAB_COUNT: usize = 64;
-
     /// # Safety
     /// `root` must outlive every `allocate` call. This is trivial if all `allocate` calls are made by `root`.
-    pub unsafe fn add_user(&self, root: *mut impl ObjectAny) -> ArenaUser {
+    pub unsafe fn add_user(&self, root: *mut impl ObjectAny) -> ArenaClient {
         struct RootObject<T>(*mut T);
         unsafe impl<T: ObjectAny> ObjectAny for RootObject<T> {
             fn on_scan(&mut self, scanner: &mut crate::arena::ObjectScanner<'_>) {
@@ -92,12 +108,12 @@ impl Arena {
 
         // assert_eq!(self.0.mutate_status.load(Ordering::SeqCst), 0);
         let mut roots = self.0.roots.lock().unwrap();
-        let mut slabs = self.0.slabs.lock().unwrap();
+        let mut space = self.0.space.lock().unwrap();
         roots.push(Box::new(RootObject(root)));
-        let (slab_index, slab) = ArenaShared::select_slab(&mut slabs, null_mut()).unwrap();
-        ArenaUser {
+        let slab_index = ArenaShared::select_slab(&mut space, 0).unwrap();
+        ArenaClient {
             shared: self.0.clone(),
-            slab,
+            slab: space.slab(slab_index),
             slab_index,
             allocate_len: 0,
         }
@@ -124,38 +140,39 @@ impl ArenaShared {
         assert!(status > 0);
     }
 
-    fn switch_slab(&self, user: &mut ArenaUser) {
-        let mut slabs = self.slabs.lock().unwrap();
-        assert!(matches!(
-            slabs[&user.slab_index].status,
-            SlabStatus::Allocating
-        ));
-        slabs.get_mut(&user.slab_index).unwrap().status = SlabStatus::Full;
-        if let Some((slab_index, slab)) = Self::select_slab(&mut slabs, user.slab_index) {
-            user.slab_index = slab_index;
-            user.slab = slab;
-            return;
+    fn switch_slab(&self, index: &mut usize) -> Slab {
+        let mut space = self.space.lock().unwrap();
+        assert!(matches!(space.status[*index], SlabStatus::Allocating));
+        space.status[*index] = SlabStatus::Full;
+        if let Some(slab_index) = Self::select_slab(&mut space, *index + 1) {
+            *index = slab_index;
+            return space.slab(*index);
         }
 
-        drop(slabs);
+        drop(space);
         self.mutate_exit();
         self.collect();
         self.mutate_enter();
-        (user.slab_index, user.slab) =
-            Self::select_slab(&mut self.slabs.lock().unwrap(), null_mut()).unwrap();
+        let mut space = self.space.lock().unwrap();
+        *index = 0;
+        *index = Self::select_slab(&mut space, *index).unwrap();
+        space.slab(*index)
     }
 
-    fn select_slab(
-        slabs: &mut BTreeMap<*mut Object, Slab>,
-        index: *mut Object,
-    ) -> Option<(*mut Object, Slab)> {
-        for (slab_index, slab) in slabs.range_mut(index..) {
-            if matches!(slab.status, SlabStatus::Available) {
-                slab.status = SlabStatus::Allocating;
-                return Some((*slab_index, *slab));
-            }
-        }
-        None
+    fn select_slab(space: &mut Space, index: usize) -> Option<usize> {
+        space
+            .status
+            .iter_mut()
+            .skip(index)
+            .position(|status| {
+                if matches!(status, SlabStatus::Available) {
+                    *status = SlabStatus::Allocating;
+                    true
+                } else {
+                    false
+                }
+            })
+            .map(|i| i + index)
     }
 
     fn collect(&self) {
@@ -167,12 +184,11 @@ impl ArenaShared {
             .is_err()
         {}
 
-        let mut slabs = self.slabs.try_lock().unwrap();
-        // to space is large enough to hold objects from all other slabs
-        let mut to_slab = Slab::new(Arena::SLAB_COUNT * Arena::SLAB_SIZE, SlabStatus::To);
+        let mut space = self.space.try_lock().unwrap();
+        let mut to_space = Space::default();
         let mut scanner = ObjectScanner {
-            slabs: &slabs,
-            to_slab: unsafe { slice::from_raw_parts_mut(to_slab.parts.0, to_slab.parts.1) },
+            space: &mut space,
+            to_space: &mut to_space,
             allocate_len: 0,
             process_len: 0,
         };
@@ -181,33 +197,8 @@ impl ArenaShared {
         }
         scanner.collect();
         let alive_len = scanner.process_len;
-        // marked as `Full` to
-        // * avoid mutators allocating objects into it, which may exceed `to_slab` capacity in next collection
-        // * make sure we discard this slot in next collecting, so we keep only one huge to space slab at a time
-        to_slab.status = SlabStatus::Full;
-
-        slabs.retain(|_, slab| {
-            if matches!(slab.status, SlabStatus::Full) {
-                slab.release();
-                false
-            } else {
-                true
-            }
-        });
-        // size of next to space (A): slab count * slab size
-        // size of next to-be-collected (B): <= alive length + (extend length + slabs length) * slab size
-        // (only equal when all not-collecting slabs are correctly full)
-        // ensure A >= B
-        let extend_len =
-            (Arena::SLAB_COUNT * Arena::SLAB_SIZE - alive_len) / Arena::SLAB_SIZE - slabs.len();
-        slabs.extend(
-            repeat_with(|| {
-                let slab = Slab::new(Arena::SLAB_SIZE, SlabStatus::Available);
-                (slab.parts.0, slab)
-            })
-            .take(extend_len),
-        );
-        slabs.insert(to_slab.parts.0, to_slab);
+        drop(scanner);
+        let _space = replace(&mut *space, to_space);
 
         // collector exit
         let swapped = self.mutate_status.swap(0, Ordering::SeqCst);
@@ -224,8 +215,8 @@ impl ArenaShared {
 }
 
 pub struct ObjectScanner<'a> {
-    slabs: &'a BTreeMap<*mut Object, Slab>,
-    to_slab: &'a mut [Object],
+    space: &'a mut Space,
+    to_space: &'a mut Space,
     allocate_len: usize,
     process_len: usize,
 }
@@ -233,24 +224,21 @@ pub struct ObjectScanner<'a> {
 impl ObjectScanner<'_> {
     fn collect(&mut self) {
         while self.process_len < self.allocate_len {
-            let object = &mut self.to_slab[self.process_len] as _;
+            let object = &mut self.to_space.raw[self.process_len] as _;
             self.process(object);
             self.process_len += 1;
         }
     }
 
     fn copy(&mut self, object: &mut Object) -> NonNull<Object> {
-        // the slab with maximum index that is not over `object` is the slab `object` belongs to
-        let object_slab = self.slabs.range(..=object as *mut _).last().unwrap().1;
-        assert!(object as *mut _ < unsafe { object_slab.parts.0.add(object_slab.parts.1) });
-        assert!(!matches!(
-            object.data,
-            ObjectData::Vacant | ObjectData::Forwarded(_)
-        ));
+        let Some(object_slab) = self.space.object_slab(object) else {
+            assert!(self.to_space.object_slab(object).is_some());
+            return object.into();
+        };
         match object_slab.status {
-            SlabStatus::Available | SlabStatus::Released => unreachable!(),
+            SlabStatus::Available => unreachable!(),
             SlabStatus::Full => {
-                let to = &mut self.to_slab[self.allocate_len];
+                let to = &mut self.to_space.raw[self.allocate_len];
                 self.allocate_len += 1;
                 unsafe {
                     copy_nonoverlapping(object, to, 1);
@@ -259,7 +247,6 @@ impl ObjectScanner<'_> {
                 // will be processed later
                 to.into()
             }
-            SlabStatus::To => NonNull::new(object).unwrap(),
             SlabStatus::Allocating => {
                 // copy is skipped so process immediately
                 self.process(object);
@@ -295,35 +282,34 @@ impl ObjectScanner<'_> {
     }
 }
 
-impl Slab {
-    fn release(&mut self) {
-        assert!(!matches!(self.status, SlabStatus::Released));
-        self.status = SlabStatus::Released;
-        drop(unsafe { Box::from_raw(slice::from_raw_parts_mut(self.parts.0, self.parts.1)) })
+impl Drop for ObjectScanner<'_> {
+    fn drop(&mut self) {
+        assert_eq!(self.allocate_len, self.process_len);
+        for status in &mut self.to_space.status[..=self.allocate_len / Space::SLAB_SIZE] {
+            *status = SlabStatus::Full;
+        }
     }
 }
 
 impl Drop for Arena {
     fn drop(&mut self) {
-        if panicking() {
-            return; // allow leaking in panic
-        }
-        assert_eq!(self.0.mutate_status.load(Ordering::SeqCst), 0);
-        let slabs = Arc::get_mut(&mut self.0).unwrap().slabs.get_mut().unwrap();
-        while let Some((_, mut slab)) = slabs.pop_first() {
-            slab.release()
+        if !panicking() {
+            assert_eq!(self.0.mutate_status.load(Ordering::SeqCst), 0);
         }
     }
 }
 
-impl ArenaUser {
+impl ArenaClient {
     pub fn allocate(&mut self, data: ObjectData) -> NonNull<Object> {
         if self.allocate_len == self.slab.parts.1 {
-            // very not cool to clone and pass `self` but fine
-            self.shared.clone().switch_slab(self);
+            self.slab = self.shared.switch_slab(&mut self.slab_index);
             // dbg!(self.slab.parts);
             self.allocate_len = 0;
         }
+        // safety
+        // `slab` only get dangling by collecting, and (for now) collecting only happens when every client is in `switch_slab`
+        // because if not, mutate status will block collecting
+        // and finally slab will be correctly updated in `switch_slab`
         let slab = unsafe { slice::from_raw_parts_mut(self.slab.parts.0, self.slab.parts.1) };
         let object = &mut slab[self.allocate_len];
         object.data = data;
@@ -341,5 +327,15 @@ impl ArenaUser {
 
     pub fn instant_zero(&self) -> Instant {
         self.shared.instant_zero
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Space;
+
+    #[test]
+    fn new_space() {
+        let _ = Space::default();
     }
 }

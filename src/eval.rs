@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    arena::{Arena, ArenaUser},
+    arena::{Arena, ArenaClient},
     instruction::Literal,
     instruction::TypeOperator,
     CastData, Instruction, Object, ObjectAny, ObjectData, RegisterIndex, TypeIndex,
@@ -105,7 +105,7 @@ pub struct Machine {
 }
 
 struct MachineArena {
-    inner: ArenaUser,
+    inner: ArenaClient,
     objects: Vec<NonNull<Object>>,
 }
 
