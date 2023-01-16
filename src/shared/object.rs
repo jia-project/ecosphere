@@ -19,6 +19,7 @@ pub enum ObjectData {
     #[default]
     Vacant,
     Forwarded(std::ptr::NonNull<Object>),
+    Preallocate, // used in `eval`
 
     Integer(i64),
     // float
@@ -68,6 +69,7 @@ impl Object {
         match &self.data {
             ObjectData::Vacant => "(Vacant)",
             ObjectData::Forwarded(_) => "(Forwarded)",
+            ObjectData::Preallocate => "(Preallocate)",
             ObjectData::Integer(_) => "Integer",
             ObjectData::String(_) => "String",
             ObjectData::Array(_) => "Array",

@@ -95,13 +95,34 @@ enum SymbolType {
 
 pub struct Machine {
     symbol: Symbol,
-    arena: ArenaUser,
+    arena: MachineArena,
     frames: Vec<Frame>,
     registers: Vec<FrameRegister>,
     local: MachineStatic,
     arguments: Vec<FrameRegister>,
     return_register: RegisterIndex, // for native functions
     stats: HashMap<Discriminant<Instruction>, u32>,
+}
+
+struct MachineArena {
+    inner: ArenaUser,
+    objects: Vec<NonNull<Object>>,
+}
+
+impl MachineArena {
+    fn fill(&mut self) {
+        // make it adjustable or to a reasonable preset
+        while self.objects.len() < 16 {
+            let object = self.inner.allocate(ObjectData::Preallocate);
+            self.objects.push(object);
+        }
+    }
+
+    fn allocate(&mut self, data: ObjectData) -> NonNull<Object> {
+        let mut object = self.objects.pop().unwrap();
+        unsafe { object.as_mut() }.data = data;
+        object
+    }
 }
 
 struct MachineStatic {
@@ -187,7 +208,7 @@ impl FrameRegister {
         }
     }
 
-    fn escape(&mut self, arena: &mut ArenaUser) -> NonNull<Object> {
+    fn escape(&mut self, arena: &mut MachineArena) -> NonNull<Object> {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => *address,
@@ -202,7 +223,7 @@ impl FrameRegister {
         }
     }
 
-    fn copy(&mut self, arena: &mut ArenaUser) -> FrameRegister {
+    fn copy(&mut self, arena: &mut MachineArena) -> FrameRegister {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => Self::Address(*address),
@@ -225,7 +246,7 @@ impl Machine {
 
         arena.mutate_enter();
         let nil = arena.allocate(ObjectData::Typed(2, Box::new([])));
-        let preallocate = MachineStatic {
+        let local = MachineStatic {
             nil,
             bool_false: arena.allocate(ObjectData::Typed(0, Box::new([nil]))),
             bool_true: arena.allocate(ObjectData::Typed(1, Box::new([nil]))),
@@ -240,8 +261,11 @@ impl Machine {
             symbol: Default::default(),
             frames: Default::default(),
             registers: Default::default(),
-            local: preallocate,
-            arena,
+            local,
+            arena: MachineArena {
+                inner: arena,
+                objects: Default::default(),
+            },
             arguments: Default::default(),
             return_register: RegisterIndex::MAX,
             stats: Default::default(),
@@ -269,8 +293,10 @@ impl Machine {
             program_counter: 0,
         };
         // TODO allocate less registers if we know it's ok
-        self.registers
-            .resize_with(frame_offset + Frame::REGISTER_COUNT, Default::default);
+        if self.registers.len() < frame_offset + Frame::REGISTER_COUNT {
+            self.registers
+                .resize_with(frame_offset + Frame::REGISTER_COUNT, Default::default);
+        }
         for (r, argument) in self.registers[frame_offset..frame_offset + self.arguments.len()]
             .iter_mut()
             .zip(self.arguments.drain(..))
@@ -285,13 +311,12 @@ impl Machine {
         mut function_dispatches: HashMap<DispatchKey, Dispatch>,
         mut functions: Vec<Box<[Instruction]>>,
     ) {
-        self.arena.mutate_enter();
+        self.arena.inner.mutate_enter();
         'control: while !self.is_finished() {
             let depth = self.frames.len();
-            for instruction in &functions[self.frames.last().unwrap().function_index]
-                [self.frames.last().unwrap().program_counter..]
-            {
-                let counter = self.frames.last().unwrap().program_counter + 1;
+            let mut counter = self.frames.last_mut().unwrap().program_counter;
+            for instruction in &functions[self.frames.last().unwrap().function_index][counter..] {
+                counter += 1;
                 self.frames.last_mut().unwrap().program_counter = counter;
 
                 // *self.stats.entry(std::mem::discriminant(instruction)).or_default() += 1;
@@ -310,6 +335,7 @@ impl Machine {
                     continue 'control;
                 }
 
+                self.arena.fill();
                 self.execute(instruction, &function_dispatches);
                 if self.frames.len() != depth
                     || self.frames.last().unwrap().program_counter != counter
@@ -319,7 +345,7 @@ impl Machine {
             }
             unreachable!("function instructions not ending with Return")
         }
-        self.arena.mutate_exit();
+        self.arena.inner.mutate_exit();
     }
 
     const TYPE_INTEGER: TypeIndex = TypeIndex::MAX - 1;
@@ -397,28 +423,24 @@ impl Machine {
                 let type_index = self.symbol.type_names[name];
                 match &self.symbol.types[type_index] {
                     SymbolType::Product { components, .. } => {
-                        let data = ObjectData::Typed(type_index as _, Box::new([]));
-                        r[i] = FrameRegister::Address(self.arena.allocate(data));
-                        *r[i].view_mut() = ObjectData::Typed(
-                            type_index as _,
-                            vec![self.local.nil; components.len()].into(),
-                        );
+                        let mut data = <Box<[_]>>::from(vec![self.local.nil; components.len()]);
                         for (name, x) in &**items {
-                            let x = r[x].escape(&mut self.arena);
-                            let ObjectData::Typed(_, data) = r[i].view_mut() else {
-                                unreachable!()
-                            };
-                            data[components[name]] = x;
+                            data[components[name]] = r[x].escape(&mut self.arena);
                         }
+                        r[i] = FrameRegister::Address(
+                            self.arena
+                                .allocate(ObjectData::Typed(type_index as _, data)),
+                        );
                     }
                     SymbolType::Sum { variant_names, .. } => {
                         let [(name, x)] = &**items else {
                             panic!()
                         };
-                        let data = ObjectData::Typed(variant_names[name], Box::new([])); //
-                        r[i] = FrameRegister::Address(self.arena.allocate(data));
-                        let data = r[x].escape(&mut self.arena);
-                        *r[i].view_mut() = ObjectData::Typed(variant_names[name], Box::new([data]));
+                        let data = Box::new([r[x].escape(&mut self.arena)]); //
+                        r[i] = FrameRegister::Address(
+                            self.arena
+                                .allocate(ObjectData::Typed(variant_names[name], data)),
+                        );
                     }
                     SymbolType::SumVariant { .. } => panic!(),
                 }
@@ -461,7 +483,9 @@ impl Machine {
                 let mut context = Vec::new(); //
                 for x in &**context_xs {
                     context.push(match r[x].view() {
-                        ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
+                        ObjectData::Vacant | ObjectData::Forwarded(_) | ObjectData::Preallocate => {
+                            unreachable!()
+                        }
                         ObjectData::Typed(type_index, _) => *type_index,
                         ObjectData::Integer(_) => Self::TYPE_INTEGER,
                         ObjectData::String(_) => Self::TYPE_STRING,
@@ -470,11 +494,8 @@ impl Machine {
                     });
                     self.arguments.push(r[x].copy(&mut self.arena));
                 }
-                // self.arguments
-                //     .extend(argument_xs.iter().map(|x| r[x].escape(&mut self.arena)));
-                for x in &**argument_xs {
-                    self.arguments.push(r[x].copy(&mut self.arena));
-                }
+                self.arguments
+                    .extend(argument_xs.iter().map(|x| r[x].copy(&mut self.arena)));
                 let return_register = r.1 + *i;
                 match function_dispatches.get(&(
                     context.into(),
@@ -499,7 +520,9 @@ impl Machine {
             }
             Inspect(x, source) => {
                 let repr = match r[x].view() {
-                    ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
+                    ObjectData::Vacant | ObjectData::Forwarded(_) | ObjectData::Preallocate => {
+                        unreachable!()
+                    }
 
                     ObjectData::Integer(value) => format!("Integer {value}"),
                     ObjectData::String(value) => format!("String {value}"),
@@ -519,7 +542,7 @@ impl Machine {
                 };
                 println!(
                     "[{:>9.3?}] {source}  => {:x?} {repr}",
-                    Instant::now() - self.arena.instant_zero(),
+                    Instant::now() - self.arena.inner.instant_zero(),
                     r[x]
                 );
             }
@@ -690,13 +713,11 @@ impl Machine {
             s("Array.new"),
             |machine, [], [len]| {
                 let len = *len.view2().cast_ref::<i64>().unwrap() as usize;
-                // allocate with dummy data first, make sure that placeholder `nil` has correct address
-                // even it get copied in this `allocate`
-                // we should give `nil` a static address...
-                let mut array = machine.arena.allocate(ObjectData::Array(Box::new([])));
-                unsafe { array.as_mut() }.data =
-                    ObjectData::Array(vec![machine.local.nil; len].into());
-                FrameRegister::Address(array)
+                FrameRegister::Address(
+                    machine
+                        .arena
+                        .allocate(ObjectData::Array(vec![machine.local.nil; len].into())),
+                )
             },
         );
         self.make_native_dispatch(
@@ -716,10 +737,9 @@ impl Machine {
                 let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
                 let offset = *offset.view2().cast_ref::<i64>().unwrap() as usize;
                 let length = *length.view2().cast_ref::<i64>().unwrap() as usize;
-                let mut cloned = machine.arena.allocate(ObjectData::Array(Box::new([])));
-                unsafe { cloned.as_mut() }.data =
-                    ObjectData::Array(a[offset..offset + length].to_vec().into());
-                FrameRegister::Address(cloned)
+                FrameRegister::Address(machine.arena.allocate(ObjectData::Array(
+                    a[offset..offset + length].to_vec().into(),
+                )))
             },
         );
         self.make_native_dispatch(
@@ -756,6 +776,9 @@ unsafe impl ObjectAny for Machine {
         //     scanner.process_pointer(address);
         // }
         for address in self.symbol.object_names.values_mut() {
+            scanner.process_pointer(address);
+        }
+        for address in &mut self.arena.objects {
             scanner.process_pointer(address);
         }
         for register in &mut self.arguments {

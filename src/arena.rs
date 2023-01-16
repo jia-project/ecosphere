@@ -275,7 +275,7 @@ impl ObjectScanner<'_> {
     fn process2(&mut self, object: *mut Object) {
         match unsafe { &mut (*object).data } {
             ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
-            ObjectData::Integer(_) | ObjectData::String(_) => {}
+            ObjectData::Integer(_) | ObjectData::String(_) | ObjectData::Preallocate => {}
             ObjectData::Array(data) | ObjectData::Typed(_, data) => {
                 for pointer in data.iter_mut() {
                     self.process_pointer(pointer)
