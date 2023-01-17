@@ -1,341 +1,265 @@
 use std::{
-    alloc::{alloc, Layout},
-    mem::{replace, size_of},
-    ptr::{copy_nonoverlapping, write, NonNull},
-    slice,
+    iter::repeat_with,
+    mem::replace,
+    ptr::{copy_nonoverlapping, null_mut},
     sync::{
         atomic::{AtomicI8, Ordering},
         Arc, Mutex,
     },
-    thread::panicking,
-    time::Instant,
 };
 
-use crate::{Object, ObjectAny, ObjectData};
+use crate::{Object, TypeIndex};
 
-pub struct Arena(Arc<ArenaShared>);
-
-struct ArenaShared {
-    // >= 0 means number of active mutator, -1 means no mutator and collecting
-    mutate_status: AtomicI8,
+struct Arena {
+    virtuals: [Virtual; TypeIndex::MAX as usize + 1],
     space: Mutex<Space>,
-    roots: Mutex<Vec<Box<dyn ObjectAny>>>,
-    instant_zero: Instant,
+    roots: Mutex<Vec<Object>>,
+    rendezvous: AtomicI8,
+}
+
+#[derive(Clone, Copy)]
+pub struct Virtual {
+    visit: fn(*const Object, &mut CollectContext<'_>),
+    drop: fn(Object),
 }
 
 struct Space {
-    raw: Box<SpaceRaw>,
-    status: Box<[SlabStatus]>,
-}
-type SpaceRaw = [Object; Space::SLAB_COUNT * Space::SLAB_SIZE];
-
-impl Space {
-    const SLAB_SIZE: usize = 32 << 10; // in terms of size_of<Object>
-    const SLAB_COUNT: usize = 64;
-
-    fn slab(&self, index: usize) -> Slab {
-        let slab = &self.raw[index * Self::SLAB_SIZE..(index + 1) * Self::SLAB_SIZE];
-        Slab {
-            parts: (slab.as_ptr() as _, slab.len()),
-            status: self.status[index],
-        }
-    }
-
-    fn object_slab(&self, address: *const Object) -> Option<Slab> {
-        let raw = self.raw.as_ptr();
-        if (raw..unsafe { raw.add(Self::SLAB_COUNT * Self::SLAB_SIZE) }).contains(&address) {
-            Some(self.slab(unsafe { address.offset_from(raw) } as usize / Self::SLAB_SIZE))
-        } else {
-            None
-        }
-    }
+    objects: Box<[Object]>,
+    slab_len: usize,
 }
 
-impl Default for Space {
-    fn default() -> Self {
-        let align = (size_of::<Object>() * Self::SLAB_SIZE).next_power_of_two();
+pub struct ArenaBuilder(Arena);
+pub struct ArenaServer(Arc<Arena>);
 
-        let raw = unsafe { alloc(Layout::from_size_align(size_of::<SpaceRaw>(), align).unwrap()) };
-        assert_eq!(raw.align_offset(align), 0);
-        Self {
-            raw: unsafe { Box::from_raw(raw as _) },
-            status: vec![SlabStatus::Available; Self::SLAB_COUNT].into(),
-        }
+impl ArenaBuilder {
+    fn default_visit(_: *const Object, _: &mut CollectContext<'_>) {
+        unreachable!()
+    }
+
+    fn default_drop(_: Object) {
+        unreachable!()
+    }
+
+    fn drop_vacant(_: Object) {}
+
+    pub fn new() -> Self {
+        let objects = repeat_with(Default::default)
+            .take(64 << 10)
+            .collect::<Box<_>>();
+        let mut virtuals = [Virtual {
+            visit: Self::default_visit,
+            drop: Self::default_drop,
+        }; TypeIndex::MAX as usize + 1];
+        virtuals[0].drop = Self::drop_vacant;
+        Self(Arena {
+            virtuals,
+            space: Mutex::new(Space {
+                objects,
+                slab_len: 1 << 10,
+            }),
+            roots: Mutex::new(Default::default()),
+            rendezvous: AtomicI8::new(0),
+        })
+    }
+
+    pub fn register_visit(&mut self, index: TypeIndex, virt: Virtual) {
+        self.0.virtuals[index as usize] = virt;
+    }
+}
+
+impl From<ArenaBuilder> for ArenaServer {
+    fn from(value: ArenaBuilder) -> Self {
+        Self(Arc::new(value.0))
     }
 }
 
 pub struct ArenaClient {
-    shared: Arc<ArenaShared>,
-    slab_index: usize,
-    slab: Slab,
-    allocate_len: usize,
+    inner: Arc<Arena>,
+    slab: *mut Object,
+    slab_len: usize,
+    len: usize,
 }
 
-#[derive(Clone, Copy)]
-struct Slab {
-    parts: (*mut Object, usize),
-    status: SlabStatus,
+impl Arena {
+    fn add_client(self: Arc<Self>, root: Object) -> ArenaClient {
+        self.client_enter();
+        self.roots.lock().unwrap().push(root);
+        let (slab, slab_len) = self.switch_slab(null_mut()).unwrap();
+        ArenaClient {
+            inner: self,
+            slab,
+            slab_len,
+            len: 0,
+        }
+    }
 }
 
-#[derive(Clone, Copy)]
-enum SlabStatus {
-    Available,  // owned by `ArenaShared`
-    Allocating, // owned by some `ArenaClient`
-    Full,       // owned by `ArenaShared`
+impl Space {
+    fn end(&mut self) -> *mut Object {
+        unsafe { (*self.objects).as_mut_ptr().add(self.objects.len()) }
+    }
 }
 
-impl Default for Arena {
-    fn default() -> Self {
-        Self(Arc::new(ArenaShared {
-            space: Mutex::new(Space::default()),
-            mutate_status: AtomicI8::new(0),
-            roots: Default::default(),
-            instant_zero: Instant::now(),
-        }))
+impl ArenaServer {
+    pub fn add_client(&self, root: Object) -> ArenaClient {
+        self.0.clone().add_client(root)
+    }
+}
+
+impl ArenaClient {
+    pub unsafe fn preallocate(&mut self, len: usize) {
+        if len + self.len <= self.slab_len {
+            return;
+        }
+
+        // a little bit wasteful
+        if let Some((slab, _)) = self.inner.switch_slab(self.slab) {
+            self.slab = slab;
+            assert!(len <= self.slab_len);
+            self.len = 0;
+            return;
+        }
+
+        self.inner.client_exit();
+        self.inner.collect();
+        self.inner.client_enter();
+        (self.slab, self.slab_len) = self.inner.switch_slab(null_mut()).unwrap();
+        assert!(len <= self.slab_len);
+        self.len = 0;
+    }
+
+    pub fn allocate(&mut self) -> *mut Object {
+        assert!(self.len < self.slab_len);
+        let object = unsafe { self.slab.add(self.len) };
+        self.len += 1;
+        object
+    }
+}
+
+impl Drop for ArenaClient {
+    fn drop(&mut self) {
+        self.inner.client_exit()
     }
 }
 
 impl Arena {
-    /// # Safety
-    /// `root` must outlive every `allocate` call. This is trivial if all `allocate` calls are made by `root`.
-    pub unsafe fn add_user(&self, root: *mut impl ObjectAny) -> ArenaClient {
-        struct RootObject<T>(*mut T);
-        unsafe impl<T: ObjectAny> ObjectAny for RootObject<T> {
-            fn on_scan(&mut self, scanner: &mut crate::arena::ObjectScanner<'_>) {
-                unsafe { &mut *self.0 }.on_scan(scanner)
-            }
-        }
-
-        // assert_eq!(self.0.mutate_status.load(Ordering::SeqCst), 0);
-        let mut roots = self.0.roots.lock().unwrap();
-        let mut space = self.0.space.lock().unwrap();
-        roots.push(Box::new(RootObject(root)));
-        let slab_index = ArenaShared::select_slab(&mut space, 0).unwrap();
-        ArenaClient {
-            shared: self.0.clone(),
-            slab: space.slab(slab_index),
-            slab_index,
-            allocate_len: 0,
-        }
-    }
-}
-
-impl ArenaShared {
-    fn mutate_enter(&self) {
-        let mut status;
+    fn client_enter(&self) {
+        let mut value;
         while {
-            status = self.mutate_status.load(Ordering::SeqCst);
-            if status < 0 {
-                true
-            } else {
-                self.mutate_status
-                    .compare_exchange_weak(status, status + 1, Ordering::SeqCst, Ordering::SeqCst)
+            value = self.rendezvous.load(Ordering::SeqCst);
+            value < 0
+                || self
+                    .rendezvous
+                    .compare_exchange_weak(value, value + 1, Ordering::SeqCst, Ordering::SeqCst)
                     .is_err()
-            }
         } {}
     }
 
-    fn mutate_exit(&self) {
-        let status = self.mutate_status.fetch_sub(1, Ordering::SeqCst);
-        assert!(status > 0);
+    fn client_exit(&self) {
+        let value = self.rendezvous.fetch_sub(1, Ordering::SeqCst);
+        assert!(value > 0);
     }
 
-    fn switch_slab(&self, index: &mut usize) -> Slab {
-        let mut space = self.space.lock().unwrap();
-        assert!(matches!(space.status[*index], SlabStatus::Allocating));
-        space.status[*index] = SlabStatus::Full;
-        if let Some(slab_index) = Self::select_slab(&mut space, *index + 1) {
-            *index = slab_index;
-            return space.slab(*index);
+    fn drop_space(&self, space: Space) {
+        for object in space.objects.into_vec() {
+            (self.virtuals[object.1 as usize].drop)(object)
         }
-
-        drop(space);
-        self.mutate_exit();
-        self.collect();
-        self.mutate_enter();
-        let mut space = self.space.lock().unwrap();
-        *index = 0;
-        *index = Self::select_slab(&mut space, *index).unwrap();
-        space.slab(*index)
     }
 
-    fn select_slab(space: &mut Space, index: usize) -> Option<usize> {
-        space
-            .status
-            .iter_mut()
-            .skip(index)
-            .position(|status| {
-                if matches!(status, SlabStatus::Available) {
-                    *status = SlabStatus::Allocating;
-                    true
-                } else {
-                    false
-                }
-            })
-            .map(|i| i + index)
+    fn switch_slab(&self, mut slab: *mut Object) -> Option<(*mut Object, usize)> {
+        let mut space = self.space.lock().unwrap();
+        if slab.is_null() {
+            slab = (*space.objects).as_mut_ptr();
+        }
+        while slab < space.end() {
+            if unsafe { (*slab).1 == Object::VACANT } {
+                unsafe { (*slab).1 = Object::USED_SLAB };
+                return Some((slab, space.slab_len));
+            }
+        }
+        None
     }
 
     fn collect(&self) {
-        let collect_zero = Instant::now();
-        // collector enter
         while self
-            .mutate_status
+            .rendezvous
             .compare_exchange_weak(0, -1, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {}
 
-        let mut space = self.space.try_lock().unwrap();
-        let mut to_space = Space::default();
-        let mut scanner = ObjectScanner {
-            space: &mut space,
-            to_space: &mut to_space,
-            allocate_len: 0,
+        let mut space = self.space.lock().unwrap();
+        let mut context = CollectContext {
+            to_space: repeat_with(Default::default)
+                .take(space.objects.len())
+                .collect::<Box<_>>(),
+            len: 0,
             process_len: 0,
+            virtuals: &self.virtuals,
         };
-        for root in &mut *self.roots.try_lock().unwrap() {
-            root.on_scan(&mut scanner);
+        for root in &*self.roots.lock().unwrap() {
+            (self.virtuals[root.1 as usize].visit)(root, &mut context);
         }
-        scanner.collect();
-        let alive_len = scanner.process_len;
-        drop(scanner);
-        let _space = replace(&mut *space, to_space);
-
-        // collector exit
-        let swapped = self.mutate_status.swap(0, Ordering::SeqCst);
-        assert_eq!(swapped, -1);
-
-        let now = Instant::now();
-        println!(
-            "[{:>9.3?}] collected Stop {:?} Copy {}",
-            now - self.instant_zero,
-            now - collect_zero,
-            alive_len
+        while context.process_len < context.len {
+            let object = &context.to_space[context.process_len];
+            context.process_len += 1;
+            let visit = self.virtuals[object.1 as usize].visit;
+            visit(object, &mut context);
+        }
+        let slab_len = space.slab_len;
+        let space = replace(
+            &mut *space,
+            Space {
+                objects: context.to_space,
+                slab_len,
+            },
         );
+        self.drop_space(space);
+
+        let value = self.rendezvous.swap(0, Ordering::SeqCst);
+        assert_eq!(value, -1);
     }
 }
 
-pub struct ObjectScanner<'a> {
-    space: &'a mut Space,
-    to_space: &'a mut Space,
-    allocate_len: usize,
+pub struct CollectContext<'a> {
+    to_space: Box<[Object]>,
+    len: usize,
     process_len: usize,
+    virtuals: &'a [Virtual],
 }
 
-impl ObjectScanner<'_> {
-    fn collect(&mut self) {
-        while self.process_len < self.allocate_len {
-            let object = &mut self.to_space.raw[self.process_len] as _;
-            self.process(object);
-            self.process_len += 1;
+impl CollectContext<'_> {
+    pub fn process(&mut self, address: &mut *mut Object) {
+        let to_space = (*self.to_space).as_mut_ptr();
+        if (to_space..unsafe { to_space.add(self.to_space.len()) }).contains(address) {
+            return;
         }
+        *address = self.copy(*address);
     }
 
-    fn copy(&mut self, object: &mut Object) -> NonNull<Object> {
-        let Some(object_slab) = self.space.object_slab(object) else {
-            assert!(self.to_space.object_slab(object).is_some());
-            return object.into();
-        };
-        match object_slab.status {
-            SlabStatus::Available => unreachable!(),
-            SlabStatus::Full => {
-                let to = &mut self.to_space.raw[self.allocate_len];
-                self.allocate_len += 1;
-                unsafe {
-                    copy_nonoverlapping(object, to, 1);
-                    write(&mut object.data, ObjectData::Forwarded(to.into()));
-                }
-                // will be processed later
-                to.into()
-            }
-            SlabStatus::Allocating => {
-                // copy is skipped so process immediately
-                self.process(object);
-                NonNull::new(object).unwrap()
-            }
+    fn copy(&mut self, address: *mut Object) -> *mut Object {
+        assert!(self.len < self.to_space.len());
+        let cloned = &mut self.to_space[self.len];
+        self.len += 1;
+        unsafe {
+            copy_nonoverlapping(address, cloned, 1);
+            (*address).1 = Object::FORWARDED;
         }
-    }
-
-    pub fn process(&mut self, object: *mut Object) {
-        self.process2(object) // suppress public safe function with unsafe deref lint
-    }
-
-    fn process2(&mut self, object: *mut Object) {
-        match unsafe { &mut (*object).data } {
-            ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
-            ObjectData::Integer(_) | ObjectData::String(_) | ObjectData::Preallocate => {}
-            ObjectData::Array(data) | ObjectData::Typed(_, data) => {
-                for pointer in data.iter_mut() {
-                    self.process_pointer(pointer)
-                }
-            }
-            ObjectData::Any(object) => object.on_scan(self),
-        }
-    }
-
-    pub fn process_pointer(&mut self, pointer: &mut NonNull<Object>) {
-        let pointed = unsafe { pointer.as_mut() };
-        if let ObjectData::Forwarded(to) = &pointed.data {
-            *pointer = *to;
-        } else {
-            *pointer = self.copy(pointed);
-        }
-    }
-}
-
-impl Drop for ObjectScanner<'_> {
-    fn drop(&mut self) {
-        assert_eq!(self.allocate_len, self.process_len);
-        for status in &mut self.to_space.status[..=self.allocate_len / Space::SLAB_SIZE] {
-            *status = SlabStatus::Full;
-        }
+        let visit = self.virtuals[cloned.1 as usize].visit;
+        let cloned = cloned as *mut _;
+        visit(cloned, self);
+        cloned
     }
 }
 
 impl Drop for Arena {
     fn drop(&mut self) {
-        if !panicking() {
-            assert_eq!(self.0.mutate_status.load(Ordering::SeqCst), 0);
-        }
-    }
-}
-
-impl ArenaClient {
-    pub fn allocate(&mut self, data: ObjectData) -> NonNull<Object> {
-        if self.allocate_len == self.slab.parts.1 {
-            self.slab = self.shared.switch_slab(&mut self.slab_index);
-            // dbg!(self.slab.parts);
-            self.allocate_len = 0;
-        }
-        // safety
-        // `slab` only get dangling by collecting, and (for now) collecting only happens when every client is in `switch_slab`
-        // because if not, mutate status will block collecting
-        // and finally slab will be correctly updated in `switch_slab`
-        let slab = unsafe { slice::from_raw_parts_mut(self.slab.parts.0, self.slab.parts.1) };
-        let object = &mut slab[self.allocate_len];
-        object.data = data;
-        self.allocate_len += 1;
-        object.into()
-    }
-
-    pub fn mutate_enter(&self) {
-        self.shared.mutate_enter()
-    }
-
-    pub fn mutate_exit(&self) {
-        self.shared.mutate_exit()
-    }
-
-    pub fn instant_zero(&self) -> Instant {
-        self.shared.instant_zero
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Space;
-
-    #[test]
-    fn new_space() {
-        let _ = Space::default();
+        let space = replace(
+            &mut self.space,
+            Mutex::new(Space {
+                objects: Default::default(),
+                slab_len: 0,
+            }),
+        );
+        self.drop_space(space.into_inner().unwrap());
     }
 }
