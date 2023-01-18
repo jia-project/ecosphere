@@ -9,14 +9,14 @@ use pest_derive::Parser;
 
 use crate::{
     instruction::{self, Literal::Nil, Operator1::Copy},
-    Instruction, RegisterIndex,
+    Instruction, Module, RegisterIndex,
 };
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
 pub struct Parser;
 
-pub fn parse(input: &str) -> Box<[Instruction]> {
+pub fn parse(input: &str) -> Module {
     let mut visitor = ProgramVisitor(FunctionVisitor::default());
     visitor.0.enter();
     for pair in Parser::parse(Rule::Program, input).unwrap() {
@@ -28,7 +28,10 @@ pub fn parse(input: &str) -> Box<[Instruction]> {
         .instructions
         .push(Instruction::MakeLiteralObject(0, Nil));
     visitor.0.instructions.push(Instruction::Return(0));
-    visitor.0.instructions.into()
+    Module {
+        instructions: visitor.0.instructions.into(),
+        register_level: visitor.0.register_level,
+    }
 }
 
 struct ProgramVisitor(FunctionVisitor);
@@ -129,7 +132,10 @@ impl ProgramVisitor {
             context_parameters.into(),
             name.as_str().into(),
             arity,
-            visitor.instructions.into(),
+            Module {
+                instructions: visitor.instructions.into(),
+                register_level: visitor.register_level,
+            },
         ))
     }
 

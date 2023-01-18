@@ -13,7 +13,7 @@ use crate::{
     instruction::Literal,
     instruction::TypeOperator,
     shared::object::Object0,
-    Instruction, Object, RegisterIndex, TypeIndex,
+    Instruction, Module, Object, RegisterIndex, TypeIndex,
 };
 type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
@@ -244,7 +244,7 @@ pub struct Machine {
     registers: Vec<FrameRegister>,
     local: MachineStatic,
     arguments: Vec<FrameRegister>,
-    return_register: RegisterIndex, // for native functions
+    return_register: usize, // for native functions
     stats: HashMap<Discriminant<Instruction>, u32>,
 }
 
@@ -271,14 +271,11 @@ impl MachineStatic {
 }
 
 struct Frame {
-    offset: RegisterIndex,
-    return_register: RegisterIndex,
+    offset: usize,
+    len: usize,
+    return_register: usize,
     function_index: usize,
     program_counter: usize,
-}
-
-impl Frame {
-    const REGISTER_COUNT: usize = 256;
 }
 
 #[derive(Default)]
@@ -359,7 +356,7 @@ impl FrameRegister {
 }
 
 impl Machine {
-    pub fn run_initial(instructions: Box<[Instruction]>) {
+    pub fn run_initial(module: Module) {
         let mut arena_server = ArenaServer::new();
         arena_server.register_virtual(
             Self::INTEGER,
@@ -404,36 +401,31 @@ impl Machine {
             local,
             arena,
             arguments: Default::default(),
-            return_register: RegisterIndex::MAX,
+            return_register: usize::MAX,
             stats: Default::default(),
         };
         unsafe { arena_server.add_root(&mut machine, Self::visit) }
 
-        machine.push_frame(0, RegisterIndex::MAX);
-        machine.run(machine.native_dispatch(), vec![instructions]);
+        machine.push_frame(0, usize::MAX, 0, module.register_level);
+        machine.run(machine.native_dispatch(), vec![module]);
         if !machine.stats.is_empty() {
             println!("{:?}", machine.stats);
         }
     }
 
-    fn push_frame(&mut self, index: usize, return_register: RegisterIndex) {
-        let frame_offset = self
-            .frames
-            .last()
-            .map(|frame| frame.offset + Frame::REGISTER_COUNT)
-            .unwrap_or_default();
+    fn push_frame(&mut self, index: usize, return_register: usize, offset: usize, len: usize) {
         let frame = Frame {
-            offset: frame_offset,
+            offset,
+            len,
             return_register,
             function_index: index,
             program_counter: 0,
         };
         // TODO allocate less registers if we know it's ok
-        if self.registers.len() < frame_offset + Frame::REGISTER_COUNT {
-            self.registers
-                .resize_with(frame_offset + Frame::REGISTER_COUNT, Default::default);
+        if self.registers.len() < offset + len {
+            self.registers.resize_with(offset + len, Default::default);
         }
-        for (r, argument) in self.registers[frame_offset..frame_offset + self.arguments.len()]
+        for (r, argument) in self.registers[offset..offset + self.arguments.len()]
             .iter_mut()
             .zip(self.arguments.drain(..))
         {
@@ -445,13 +437,15 @@ impl Machine {
     fn run(
         &mut self,
         mut function_dispatches: HashMap<DispatchKey, Dispatch>,
-        mut functions: Vec<Box<[Instruction]>>,
+        mut functions: Vec<Module>,
     ) {
         let mut shall_allocate = true;
         'control: while !self.is_finished() {
             let depth = self.frames.len();
             let mut counter = self.frames.last_mut().unwrap().program_counter;
-            for instruction in &functions[self.frames.last().unwrap().function_index][counter..] {
+            for instruction in
+                &functions[self.frames.last().unwrap().function_index].instructions[counter..]
+            {
                 counter += 1;
                 self.frames.last_mut().unwrap().program_counter = counter;
 
@@ -474,7 +468,7 @@ impl Machine {
                 if shall_allocate {
                     unsafe { self.arena.preallocate(16) }
                 }
-                shall_allocate = self.execute(instruction, &function_dispatches);
+                shall_allocate = self.execute(instruction, &function_dispatches, &functions);
                 if self.frames.len() != depth
                     || self.frames.last().unwrap().program_counter != counter
                 {
@@ -506,9 +500,9 @@ impl Machine {
         &mut self,
         instruction: Instruction,
         function_dispatches: &mut HashMap<DispatchKey, Dispatch>,
-        functions: &mut Vec<Box<[Instruction]>>,
+        functions: &mut Vec<Module>,
     ) {
-        let Instruction::MakeFunction(context_types, name, arity, instructions) = instruction else {
+        let Instruction::MakeFunction(context_types, name, arity, module) = instruction else {
             unreachable!()
         };
         self.make_dispatch(
@@ -518,7 +512,7 @@ impl Machine {
             arity,
             Dispatch::Index(functions.len()),
         );
-        functions.push(instructions);
+        functions.push(module);
     }
 
     fn is_finished(&self) -> bool {
@@ -529,6 +523,7 @@ impl Machine {
         &mut self,
         instruction: &Instruction,
         function_dispatches: &HashMap<DispatchKey, Dispatch>,
+        functions: &[Module],
     ) -> bool {
         struct R<'a>(&'a mut [FrameRegister], usize);
         impl Index<&RegisterIndex> for R<'_> {
@@ -594,7 +589,7 @@ impl Machine {
                     match register {
                         // a safe optimization for now because any `Vacant` indicate every higher register is not used
                         // if `Move` operation is added, make sure to distinguish `Vacant` and `Moved`
-                        FrameRegister::Vacant if i != *x => break,
+                        FrameRegister::Vacant if i as RegisterIndex != *x => break,
                         register => register.clear(),
                     }
                 }
@@ -611,18 +606,27 @@ impl Machine {
                 }
                 self.arguments
                     .extend(argument_xs.iter().map(|x| r[x].copy(&mut self.arena)));
-                let return_register = r.1 + *i;
+                #[allow(clippy::unnecessary_cast)]
+                let return_register = r.1 + *i as usize;
                 match function_dispatches.get(&(
                     context.into(),
                     (&**name).into(),
                     argument_xs.len(),
                 )) {
                     None => panic!("No dispatch for (..).{name}/{}", argument_xs.len()),
-                    Some(Dispatch::Index(index)) => self.push_frame(*index, return_register),
+                    Some(Dispatch::Index(index)) => self.push_frame(
+                        *index,
+                        return_register,
+                        {
+                            let frame = self.frames.last().unwrap();
+                            frame.offset + frame.len
+                        },
+                        functions[*index].register_level,
+                    ),
                     Some(Dispatch::Native(function)) => {
                         self.return_register = return_register;
                         function(self);
-                        assert_eq!(self.return_register, RegisterIndex::MAX);
+                        assert_eq!(self.return_register, usize::MAX);
                     }
                 }
                 true
@@ -846,109 +850,100 @@ impl Machine {
         symbol
     }
 
-    fn make_native_dispatch<const N: usize, const M: usize>(
-        &self,
-        dispatches: &mut HashMap<DispatchKey, Dispatch>,
-        context_type: [Box<str>; N],
-        name: Box<str>,
-        // rust cannot do [FrameRegister; N + M] for now
-        function: impl Fn(&mut Machine, [FrameRegister; N], [FrameRegister; M]) -> FrameRegister
-            + Send
-            + Sync
-            + 'static,
-    ) {
-        self.make_dispatch(
-            dispatches,
-            context_type,
-            name,
-            M,
-            Dispatch::Native(Arc::new(move |machine| {
-                assert_eq!(machine.arguments.len(), N + M);
-                let arguments = machine
-                    .arguments
-                    .drain(N..)
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap();
-                let context_arguments = machine
-                    .arguments
-                    .drain(..)
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap();
-                let r = function(machine, context_arguments, arguments);
-                machine.native_return(r);
-            })),
-        )
-    }
-
     fn native_return(&mut self, x: FrameRegister) {
         // ensure native function return once and only once
-        assert_ne!(self.return_register, RegisterIndex::MAX);
+        assert_ne!(self.return_register, usize::MAX);
         self.registers[self.return_register] = x;
-        self.return_register = RegisterIndex::MAX;
+        self.return_register = usize::MAX;
     }
 
     fn native_dispatch(&self) -> HashMap<DispatchKey, Dispatch> {
         let s = <Box<str>>::from;
+        fn n(f: impl Fn(&mut Machine) + Send + Sync + 'static) -> Dispatch {
+            Dispatch::Native(Arc::new(f))
+        }
         let mut function_dispatches = Default::default();
-        self.make_native_dispatch(
+        self.make_dispatch(
             &mut function_dispatches,
             [],
             s("Array.new"),
-            |machine, [], [len]| {
-                let len = len.view().to_integer().unwrap() as _;
+            1,
+            n(|machine| {
+                let mut args = machine.arguments.drain(..);
+                let len = args.next().unwrap().view().to_integer().unwrap() as _;
+                drop(args);
                 let a = machine.arena.allocate();
                 unsafe { a.write(Object::new_array(vec![machine.local.none; len].into())) }
-                FrameRegister::Address(a)
-            },
+                machine.native_return(FrameRegister::Address(a));
+            }),
         );
-        self.make_native_dispatch(
+        self.make_dispatch(
             &mut function_dispatches,
             [s("Array")],
             s("length"),
-            |machine, [a], []| {
+            0,
+            n(|machine| {
+                let mut args = machine.arguments.drain(..);
+                let a = args.next().unwrap();
                 let a = unsafe { a.view().array() }.unwrap();
-                machine.local.make(&Literal::Integer(a.len() as _))
-            },
+                drop(args);
+                let len = machine.local.make(&Literal::Integer(a.len() as _));
+                machine.arguments.drain(..);
+                machine.native_return(len);
+            }),
         );
-        self.make_native_dispatch(
+        self.make_dispatch(
             &mut function_dispatches,
             [s("Array")],
             s("clone"),
-            |machine, [a], [offset, length]| {
+            2,
+            n(|machine| {
+                let mut args = machine.arguments.drain(..);
+                let a = args.next().unwrap();
                 let a = unsafe { a.view().array() }.unwrap();
-                let offset = offset.view().to_integer().unwrap() as usize;
-                let length = length.view().to_integer().unwrap() as usize;
+                let offset = args.next().unwrap().view().to_integer().unwrap() as usize;
+                let length = args.next().unwrap().view().to_integer().unwrap() as usize;
+                drop(args);
                 let cloned = machine.arena.allocate();
                 unsafe {
                     cloned.write(Object::new_array(
                         a[offset..offset + length].to_vec().into(),
                     ))
                 }
-                FrameRegister::Address(cloned)
-            },
+                machine.native_return(FrameRegister::Address(cloned));
+            }),
         );
-        self.make_native_dispatch(
+        self.make_dispatch(
             &mut function_dispatches,
             [s("Array")],
             s("at"),
-            |_, [a], [position]| {
+            1,
+            n(|machine| {
+                let mut args = machine.arguments.drain(..);
+                let a = args.next().unwrap();
                 let a = unsafe { a.view().array() }.unwrap();
-                let position = position.view().to_integer().unwrap() as usize;
-                FrameRegister::Address(a[position])
-            },
+                let position = args.next().unwrap().view().to_integer().unwrap() as usize;
+                drop(args);
+                machine.native_return(FrameRegister::Address(a[position]));
+                machine.arguments.drain(..);
+            }),
         );
-        self.make_native_dispatch(
+        self.make_dispatch(
             &mut function_dispatches,
             [s("Array")],
             s("at"),
-            |machine, [a], [position, mut element]| {
+            2,
+            n(|machine| {
+                let mut args = machine.arguments.drain(..);
+                let a = args.next().unwrap();
                 let a = unsafe { a.view().array() }.unwrap();
-                let position = position.view().to_integer().unwrap() as usize;
-                a[position] = element.escape(&mut machine.arena);
-                machine.local.make(&Literal::Nil)
-            },
+                let position = args.next().unwrap().view().to_integer().unwrap() as usize;
+                let element = args.next().unwrap().escape(&mut machine.arena);
+                drop(args);
+                a[position] = element;
+                let none = machine.local.make(&Literal::Nil);
+                machine.native_return(none);
+            }),
         );
         function_dispatches
     }
@@ -965,9 +960,8 @@ impl Machine {
             context.process(address)
         }
         assert!(self.arguments.is_empty());
-        for register in
-            &mut self.registers[..self.frames.last().unwrap().offset + Frame::REGISTER_COUNT]
-        {
+        let frame = self.frames.last().unwrap();
+        for register in &mut self.registers[..frame.offset + frame.len] {
             match register {
                 FrameRegister::Vacant => {}
                 FrameRegister::Inline(object) => context.visit(object),

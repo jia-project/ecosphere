@@ -1,10 +1,16 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Module {
+    pub instructions: Box<[Instruction]>,
+    pub register_level: usize,
+}
+
 pub type RegisterIndex = usize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
     MakeType(Box<str>, TypeOperator, Box<[Box<str>]>),
     // context type names, name, argument number, instructions
-    MakeFunction(Box<[Box<str>]>, Box<str>, usize, Box<[Instruction]>),
+    MakeFunction(Box<[Box<str>]>, Box<str>, usize, Module),
 
     Jump(RegisterIndex, usize, usize),
     Return(RegisterIndex),
