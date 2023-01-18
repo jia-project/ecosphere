@@ -427,6 +427,7 @@ impl Machine {
         mut function_dispatches: HashMap<DispatchKey, Dispatch>,
         mut functions: Vec<Box<[Instruction]>>,
     ) {
+        let mut shall_allocate = true;
         'control: while !self.is_finished() {
             let depth = self.frames.len();
             let mut counter = self.frames.last_mut().unwrap().program_counter;
@@ -450,8 +451,10 @@ impl Machine {
                     continue 'control;
                 }
 
-                unsafe { self.arena.preallocate(16) }
-                self.execute(instruction, &function_dispatches);
+                if shall_allocate {
+                    unsafe { self.arena.preallocate(16) }
+                }
+                shall_allocate = self.execute(instruction, &function_dispatches);
                 if self.frames.len() != depth
                     || self.frames.last().unwrap().program_counter != counter
                 {
@@ -506,7 +509,7 @@ impl Machine {
         &mut self,
         instruction: &Instruction,
         function_dispatches: &HashMap<DispatchKey, Dispatch>,
-    ) {
+    ) -> bool {
         struct R<'a>(&'a mut [FrameRegister], usize);
         impl Index<&RegisterIndex> for R<'_> {
             type Output = FrameRegister;
@@ -527,7 +530,10 @@ impl Machine {
         // println!("{instruction:?}");
         match instruction {
             ParsingPlaceholder(_) | MakeFunction(..) => unreachable!(),
-            MakeLiteralObject(i, literal) => r[i] = self.local.make(literal),
+            MakeLiteralObject(i, literal) => {
+                r[i] = self.local.make(literal);
+                false
+            }
             MakeTypedObject(i, name, items) => {
                 let type_index = self.symbol.type_names[name];
                 match &self.symbol[type_index] {
@@ -549,6 +555,7 @@ impl Machine {
                     }
                     SymbolType::SumVariant { .. } | SymbolType::Native { .. } => panic!(),
                 }
+                true
             }
 
             Jump(x, positive, negative) => {
@@ -558,6 +565,7 @@ impl Machine {
                     [negative, positive][(r[x].view().1 - ArenaServer::TYPED_SECTION) as usize]
                 };
                 self.frames.last_mut().unwrap().program_counter = target;
+                false
             }
             Return(x) => {
                 let returned = take(&mut r[x]);
@@ -573,6 +581,7 @@ impl Machine {
                 if !self.is_finished() {
                     self.registers[frame.return_register] = returned;
                 }
+                false
             }
             Call(i, context_xs, name, argument_xs) => {
                 let mut context = Vec::new(); //
@@ -596,13 +605,18 @@ impl Machine {
                         assert_eq!(self.return_register, RegisterIndex::MAX);
                     }
                 }
+                true
             }
 
-            Load(i, name) => r[i] = FrameRegister::Address(self.symbol.object_names[name]),
+            Load(i, name) => {
+                r[i] = FrameRegister::Address(self.symbol.object_names[name]);
+                false
+            }
             Store(x, name) => {
                 self.symbol
                     .object_names
                     .insert(name.clone(), r[x].escape(&mut self.arena));
+                true
             }
             Inspect(x, source) => {
                 let object = r[x].view();
@@ -628,16 +642,19 @@ impl Machine {
                     Instant::now() - self.arena.start_instant(),
                     r[x]
                 );
+                false
             }
             Assert(x, source) => {
                 assert_eq!(r[x].view().1, Self::TRUE, "{source}");
+                false
             }
             Get(i, x, name) => {
                 let x = r[x].view();
                 let SymbolType::Product{components,..} = &self.symbol[x.1] else {
                         panic!()
                     };
-                r[i] = FrameRegister::Address(x.typed_data()[components[name]])
+                r[i] = FrameRegister::Address(x.typed_data()[components[name]]);
+                false
             }
             Put(x, name, y) => {
                 let y = r[y].escape(&mut self.arena);
@@ -646,19 +663,22 @@ impl Machine {
                         panic!()
                     };
                 x.typed_data_mut()[components[name]] = y;
+                true
             }
             Is(i, x, name) => {
                 let SymbolType::SumVariant{name: n, ..} = &self.symbol[r[x].view().1] else {
                         panic!()
                     };
                 r[i] = self.local.make(&Literal::Bool(n == name));
+                false
             }
             As(i, x, name) => {
                 let x = r[x].view();
                 assert!(
                     matches!(&self.symbol[x.1], SymbolType::SumVariant {name: n, ..} if n == name)
                 );
-                r[i] = FrameRegister::Address(x.typed_data()[0]) // more check?
+                r[i] = FrameRegister::Address(x.typed_data()[0]); // more check?
+                false
             }
             Operator1(i, op, x) => {
                 use {crate::instruction::Operator1::*, Literal::*};
@@ -668,7 +688,8 @@ impl Machine {
                     (Not, Self::TRUE) => self.local.make(&Bool(false)),
                     (Neg, Self::INTEGER) => self.local.make(&Integer(-r[x].view().to_integer())),
                     _ => panic!(),
-                }
+                };
+                false
             }
             Operator2(i, op, x, y) => {
                 use {crate::instruction::Operator2::*, Literal::*};
@@ -702,6 +723,7 @@ impl Machine {
                     }
                     _ => panic!(),
                 };
+                false
             }
 
             MakeType(name, op, items) => {
@@ -739,6 +761,7 @@ impl Machine {
                         );
                     }
                 }
+                false
             }
         }
     }
