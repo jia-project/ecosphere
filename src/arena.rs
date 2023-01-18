@@ -10,7 +10,7 @@ use std::{
     time::Instant,
 };
 
-use crate::{Object, TypeIndex};
+use crate::{shared::object::Object0, Object, TypeIndex};
 
 struct Arena {
     virtuals: Mutex<Box<[ArenaVirtual]>>,
@@ -27,8 +27,8 @@ pub struct ArenaVirtual {
 }
 
 impl ArenaVirtual {
-    fn default_visit(_: &Object, _: &mut CollectContext<'_>) {
-        unreachable!()
+    fn default_visit(object: &Object, _: &mut CollectContext<'_>) {
+        unreachable!("kind = {}", object.1)
     }
 
     fn default_drop(object: Object) {
@@ -61,7 +61,7 @@ impl Default for ArenaServer {
 impl ArenaServer {
     pub fn new() -> Self {
         let objects = repeat_with(Default::default)
-            .take(64 << 10)
+            .take(1 << 21)
             .collect::<Box<_>>();
         let mut server = Self(Arc::new(Arena {
             virtuals: Mutex::new(
@@ -71,27 +71,21 @@ impl ArenaServer {
             ),
             space: Mutex::new(Space {
                 objects,
-                slab_len: 1 << 10,
+                slab_len: 1 << 16,
             }),
             roots: Mutex::new(Default::default()),
             rendezvous: AtomicI8::new(0),
             start: Instant::now(),
         }));
-        server.register_virtual(
-            Object::VACANT,
-            ArenaVirtual {
-                visit: ArenaVirtual::default_visit,
-                drop: Object::drop_nop,
-            },
-        );
-        server.register_virtual(Arena::FORWARDED, Default::default());
-        server.register_virtual(
-            Arena::USED_SLAB,
-            ArenaVirtual {
-                visit: ArenaVirtual::default_visit,
-                drop: Object::drop_nop,
-            },
-        );
+        for index in [Object::VACANT, Arena::FORWARDED, Arena::USED_SLAB] {
+            server.register_virtual(
+                index,
+                ArenaVirtual {
+                    visit: ArenaVirtual::default_visit,
+                    drop: Object::drop_nop,
+                },
+            );
+        }
         server
     }
 
@@ -238,6 +232,7 @@ impl Arena {
                 unsafe { (*slab).1 = Arena::USED_SLAB };
                 return Some((slab, space.slab_len));
             }
+            slab = unsafe { slab.add(space.slab_len) }
         }
         None
     }
@@ -248,6 +243,7 @@ impl Arena {
             .compare_exchange_weak(0, -1, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {}
+        let start = Instant::now();
 
         let mut space = self.space.lock().unwrap();
         let virtuals = self.virtuals.lock().unwrap();
@@ -277,6 +273,13 @@ impl Arena {
         );
         self.drop_space(space, &*virtuals);
 
+        let now = Instant::now();
+        println!(
+            "[{:>9.3?}] collected Stop {:?} Copy {}",
+            now - self.start,
+            now - start,
+            context.process_len
+        );
         let value = self.rendezvous.swap(0, Ordering::SeqCst);
         assert_eq!(value, -1);
     }
@@ -299,19 +302,23 @@ impl CollectContext<'_> {
     }
 
     fn copy(&mut self, address: *mut Object) -> *mut Object {
+        if unsafe { (*address).1 } == Arena::FORWARDED {
+            return unsafe { (*address).0.p1 };
+        }
         assert!(self.len < self.to_space.len());
-        let cloned = &mut self.to_space[self.len];
+        let cloned = &mut self.to_space[self.len] as *mut _;
         self.len += 1;
         unsafe {
             copy_nonoverlapping(address, cloned, 1);
-            (*address).1 = Arena::FORWARDED;
+            address.write(Object(Object0 { p1: cloned }, Arena::FORWARDED, 0));
         }
-        let visit = self.virtuals[cloned.1 as usize].visit;
-        let cloned = cloned as *mut _;
-        visit(unsafe { &*cloned }, self);
+        unsafe { self.visit(cloned) }
         cloned
     }
 
+    // visit an alive object who is already on its to-address
+    // either get copied before, or directly referenced by root
+    // not moving itself, but copy visited address reported by it
     pub unsafe fn visit(&mut self, object: *mut Object) {
         let object = unsafe { &mut *object };
         if (object.1 as usize) < Arena::VIRTUALS_LEN {

@@ -89,17 +89,18 @@ impl Object {
         assert_eq!(self.1, Machine::ARRAY);
         drop(unsafe {
             Box::from_raw(slice::from_raw_parts_mut(
-                self.0.p as *mut Object,
+                self.0.p as *mut *mut Object,
                 self.2 as _,
             ))
         })
     }
 
     pub fn drop_typed(self) {
+        assert!(self.1 >= ArenaServer::TYPED_SECTION);
         if self.2 > 1 {
             drop(unsafe {
                 Box::from_raw(slice::from_raw_parts_mut(
-                    self.0.p as *mut Object,
+                    self.0.p as *mut *mut Object,
                     self.2 as _,
                 ))
             })
@@ -317,10 +318,22 @@ impl FrameRegister {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => Self::Address(*address),
-            Self::Inline(object) if object.1 >= ArenaServer::TYPED_SECTION && object.2 == 1 => {
-                Self::Address(self.escape(arena))
+            Self::Inline(object) if object.1 == Machine::INTEGER => {
+                Self::Inline(Object(object.0, object.1, object.2))
             }
-            Self::Inline(object) => Self::Inline(Object(object.0, object.1, object.2)),
+            Self::Inline(_) => Self::Address(self.escape(arena)),
+        }
+    }
+
+    fn clear(&mut self) {
+        let register = take(self);
+        if let Self::Inline(object) = register {
+            match object.1 {
+                Machine::STRING => object.drop_string(),
+                Machine::ARRAY => object.drop_array(),
+                type_index if type_index >= ArenaServer::TYPED_SECTION => object.drop_typed(),
+                _ => {}
+            }
         }
     }
 }
@@ -554,10 +567,7 @@ impl Machine {
                         // a safe optimization for now because any `Vacant` indicate every higher register is not used
                         // if `Move` operation is added, make sure to distinguish `Vacant` and `Moved`
                         FrameRegister::Vacant if i != *x => break,
-                        FrameRegister::Address(_) => {
-                            take(register);
-                        }
-                        _ => {}
+                        register => register.clear(),
                     }
                 }
                 if !self.is_finished() {
