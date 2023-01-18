@@ -1,79 +1,191 @@
 use std::{
     borrow::Cow,
     fmt::Debug,
-    mem::{take, Discriminant, MaybeUninit},
+    mem::{take, Discriminant},
     ops::{Index, IndexMut},
-    ptr::NonNull,
+    slice,
     sync::Arc,
     time::Instant,
 };
 
 use crate::{
-    arena::{Arena, ArenaClient},
+    arena::{ArenaClient, ArenaServer, ArenaVirtual, CollectContext},
     instruction::Literal,
     instruction::TypeOperator,
-    CastData, Instruction, Object, ObjectAny, ObjectData, RegisterIndex, TypeIndex,
+    shared::object::Object0,
+    Instruction, Object, RegisterIndex, TypeIndex,
 };
 type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
-#[derive(Clone)]
-struct Symbol {
-    type_names: HashMap<Box<str>, usize>,
-    types: Vec<SymbolType>,
-    object_names: HashMap<Box<str>, NonNull<Object>>,
+impl Machine {
+    const NATIVE_SECTION: TypeIndex = 0x00000010;
+    const INTEGER: TypeIndex = Self::NATIVE_SECTION + 0;
+    const STRING: TypeIndex = Self::NATIVE_SECTION + 1;
+    const ARRAY: TypeIndex = Self::NATIVE_SECTION + 2;
+
+    const FALSE: TypeIndex = ArenaServer::TYPED_SECTION + 0;
+    const TRUE: TypeIndex = ArenaServer::TYPED_SECTION + 1;
+    const NONE: TypeIndex = ArenaServer::TYPED_SECTION + 2;
 }
 
-type DispatchKey = (Cow<'static, [TypeIndex]>, Cow<'static, str>, usize);
-#[derive(Clone)]
-enum Dispatch {
-    Index(usize),
-    Native(Arc<dyn Fn(&mut Machine) + Send + Sync>),
-}
+impl Object {
+    fn new_integer(value: i64) -> Self {
+        Self(Object0 { i: value }, Machine::INTEGER, 0)
+    }
 
-impl Default for Symbol {
-    fn default() -> Self {
-        let mut type_names = HashMap::default();
-        let mut types = Vec::new();
-        let s = <Box<str>>::from;
-
-        // intrinsic types should be scoped with namespace
-        type_names.insert(s("Integer"), Machine::TYPE_INTEGER as usize);
-        type_names.insert(s("String"), Machine::TYPE_STRING as usize);
-        type_names.insert(s("Array"), Machine::TYPE_ARRAY as usize);
-
-        let mut variant_names = HashMap::default();
-        variant_names.insert(s("False"), types.len() as u32);
-        types.push(SymbolType::SumVariant {
-            type_name: s("Bool"),
-            name: s("False"),
-        });
-        variant_names.insert(s("True"), types.len() as _);
-        types.push(SymbolType::SumVariant {
-            type_name: s("Bool"),
-            name: s("True"),
-        });
-        type_names.insert(s("Bool"), types.len());
-        types.push(SymbolType::Sum { variant_names });
-
-        let mut variant_names = HashMap::default();
-        variant_names.insert(s("None"), types.len() as u32);
-        types.push(SymbolType::SumVariant {
-            type_name: s("Option"),
-            name: s("None"),
-        });
-        variant_names.insert(s("Some"), types.len() as _);
-        types.push(SymbolType::SumVariant {
-            type_name: s("Option"),
-            name: s("Some"),
-        });
-        type_names.insert(s("Option"), types.len());
-        types.push(SymbolType::Sum { variant_names });
-
-        Self {
-            type_names,
-            types,
-            object_names: Default::default(),
+    fn new_string(value: Box<str>) -> Self {
+        let value = Box::leak(value);
+        let (p, len) = (value.as_mut_ptr(), value.len());
+        if len > u32::MAX as _ {
+            todo!()
         }
+        Self(Object0 { p: p as _ }, Machine::STRING, len as _)
+    }
+
+    fn new_array(value: Box<[*mut Object]>) -> Self {
+        let value = Box::leak(value);
+        let (p, len) = (value.as_mut_ptr(), value.len());
+        if len > u32::MAX as _ {
+            todo!()
+        }
+        Self(Object0 { p: p as _ }, Machine::ARRAY, len as _)
+    }
+
+    fn new_typed(index: TypeIndex, data: Box<[*mut Object]>) -> Self {
+        assert!(data.len() <= u32::MAX as _);
+        match data.len() {
+            0 => Self(Object0 { p: 0 }, index, 0),
+            1 => Self(Object0 { p: data[0] as _ }, index, 1),
+            _ => {
+                let data = Box::leak(data);
+                let (p, len) = (data.as_mut_ptr(), data.len());
+                Self(Object0 { p: p as _ }, index, len as _)
+            }
+        }
+    }
+
+    fn visit_array(&self, context: &mut CollectContext<'_>) {
+        for address in self.array() {
+            context.process(address)
+        }
+    }
+
+    pub fn visit_typed(&mut self, context: &mut CollectContext<'_>) {
+        for address in self.typed_data_mut() {
+            context.process(address)
+        }
+    }
+
+    fn drop_string(self) {
+        assert_eq!(self.1, Machine::STRING);
+        drop(unsafe {
+            Box::from_raw(std::str::from_utf8_unchecked_mut(
+                slice::from_raw_parts_mut(self.0.p as _, self.2 as _),
+            ))
+        })
+    }
+
+    fn drop_array(self) {
+        assert_eq!(self.1, Machine::ARRAY);
+        drop(unsafe {
+            Box::from_raw(slice::from_raw_parts_mut(
+                self.0.p as *mut Object,
+                self.2 as _,
+            ))
+        })
+    }
+
+    pub fn drop_typed(self) {
+        if self.2 > 1 {
+            drop(unsafe {
+                Box::from_raw(slice::from_raw_parts_mut(
+                    self.0.p as *mut Object,
+                    self.2 as _,
+                ))
+            })
+        }
+    }
+
+    fn to_integer(&self) -> i64 {
+        assert_eq!(self.1, Machine::INTEGER);
+        unsafe { self.0.i }
+    }
+
+    fn string(&self) -> &mut str {
+        assert_eq!(self.1, Machine::STRING);
+        unsafe {
+            std::str::from_utf8_unchecked_mut(slice::from_raw_parts_mut(self.0.p as _, self.2 as _))
+        }
+    }
+
+    fn array(&self) -> &mut [*mut Object] {
+        assert_eq!(self.1, Machine::ARRAY);
+        unsafe { slice::from_raw_parts_mut(self.0.p as _, self.2 as _) }
+    }
+
+    fn typed_data(&self) -> &[*mut Object] {
+        match self.2 {
+            0 => &[],
+            1 => slice::from_ref(unsafe { &self.0.p1 }),
+            _ => unsafe { slice::from_raw_parts(self.0.p as _, self.2 as _) },
+        }
+    }
+
+    fn typed_data_mut(&mut self) -> &mut [*mut Object] {
+        match self.2 {
+            0 => &mut [],
+            1 => slice::from_mut(unsafe { &mut self.0.p1 }),
+            _ => unsafe { slice::from_raw_parts_mut(self.0.p as _, self.2 as _) },
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct Symbol {
+    type_names: HashMap<Box<str>, TypeIndex>,
+    types: Vec<SymbolType>,
+    native_types: Vec<SymbolType>,
+    object_names: HashMap<Box<str>, *mut Object>,
+}
+
+impl Index<TypeIndex> for Symbol {
+    type Output = SymbolType;
+
+    fn index(&self, index: TypeIndex) -> &Self::Output {
+        if index < ArenaServer::TYPED_SECTION {
+            &self.native_types[(index - Machine::NATIVE_SECTION) as usize]
+        } else {
+            &self.types[(index - ArenaServer::TYPED_SECTION) as usize]
+        }
+    }
+}
+
+// not used for now
+impl IndexMut<TypeIndex> for Symbol {
+    fn index_mut(&mut self, index: TypeIndex) -> &mut Self::Output {
+        if index < ArenaServer::TYPED_SECTION {
+            &mut self.native_types[(index - Machine::NATIVE_SECTION) as usize]
+        } else {
+            &mut self.types[(index - ArenaServer::TYPED_SECTION) as usize]
+        }
+    }
+}
+
+impl Symbol {
+    fn add_type(&mut self, name: Option<Box<str>>, symbol_type: SymbolType) -> TypeIndex {
+        let index;
+        if matches!(symbol_type, SymbolType::Native { .. }) {
+            index = (self.native_types.len() as u32) + Machine::NATIVE_SECTION;
+            self.native_types.push(symbol_type);
+        } else {
+            index = (self.types.len() as u32) + ArenaServer::TYPED_SECTION;
+            self.types.push(symbol_type);
+        }
+        if let Some(name) = name {
+            let value = self.type_names.insert(name, index);
+            assert!(value.is_none());
+        }
+        index
     }
 }
 
@@ -91,11 +203,22 @@ enum SymbolType {
         type_name: Box<str>,
         name: Box<str>,
     },
+    Native {
+        name: Box<str>,
+    },
+}
+
+type DispatchKey = (Cow<'static, [TypeIndex]>, Cow<'static, str>, usize);
+
+#[derive(Clone)]
+enum Dispatch {
+    Index(usize),
+    Native(Arc<dyn Fn(&mut Machine) + Send + Sync>),
 }
 
 pub struct Machine {
     symbol: Symbol,
-    arena: MachineArena,
+    arena: ArenaClient,
     frames: Vec<Frame>,
     registers: Vec<FrameRegister>,
     local: MachineStatic,
@@ -104,49 +227,24 @@ pub struct Machine {
     stats: HashMap<Discriminant<Instruction>, u32>,
 }
 
-struct MachineArena {
-    inner: ArenaClient,
-    objects: Vec<NonNull<Object>>,
-}
-
-impl MachineArena {
-    fn fill(&mut self) {
-        // make it adjustable or to a reasonable preset
-        while self.objects.len() < 16 {
-            let object = self.inner.allocate(ObjectData::Preallocate);
-            self.objects.push(object);
-        }
-    }
-
-    fn allocate(&mut self, data: ObjectData) -> NonNull<Object> {
-        let mut object = self.objects.pop().unwrap();
-        unsafe { object.as_mut() }.data = data;
-        object
-    }
-}
-
 struct MachineStatic {
-    nil: NonNull<Object>,
-    bool_true: NonNull<Object>,
-    bool_false: NonNull<Object>,
+    none: *mut Object,
+    bool_true: *mut Object,
+    bool_false: *mut Object,
     // integers: [NonNull<Object>; 256],
 }
 
 impl MachineStatic {
     fn make(&self, literal: &Literal) -> FrameRegister {
         match literal {
-            Literal::Nil => FrameRegister::Address(self.nil),
+            Literal::Nil => FrameRegister::Address(self.none),
             Literal::Bool(true) => FrameRegister::Address(self.bool_true),
             Literal::Bool(false) => FrameRegister::Address(self.bool_false),
             // InstructionLiteral::Integer(value) if (0..256).contains(value) => {
             //     FrameRegister::Address(self.integers[*value as usize])
             // }
-            Literal::Integer(value) => FrameRegister::Inline(Object {
-                data: ObjectData::Integer(*value),
-            }),
-            Literal::String(value) => FrameRegister::Inline(Object {
-                data: ObjectData::String(value.clone()),
-            }),
+            Literal::Integer(value) => FrameRegister::Inline(Object::new_integer(*value)),
+            Literal::String(value) => FrameRegister::Inline(Object::new_string(value.clone())),
         }
     }
 }
@@ -166,7 +264,7 @@ impl Frame {
 enum FrameRegister {
     #[default]
     Vacant,
-    Address(NonNull<Object>),
+    Address(*mut Object),
     Inline(Object),
 }
 
@@ -174,41 +272,32 @@ impl Debug for FrameRegister {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Vacant => f.pad("Vacant"),
-            Self::Address(address) => f.pad(&format!(
-                "Address({address:?}, {})",
-                unsafe { address.as_ref() }.type_name()
-            )),
-            Self::Inline(object) => f.pad(&format!("Inline({})", object.type_name())),
+            Self::Address(address) => f.pad(&format!("Address({address:?}, {:#x})", unsafe {
+                (**address).1
+            })),
+            Self::Inline(object) => f.pad(&format!("Inline({:#x})", object.1)),
         }
     }
 }
 
 impl FrameRegister {
-    fn view(&self) -> &ObjectData {
-        &self.view2().data
-    }
-
-    fn view_mut(&mut self) -> &mut ObjectData {
-        &mut self.view2_mut().data
-    }
-
-    fn view2(&self) -> &Object {
+    fn view(&self) -> &Object {
         match self {
             Self::Vacant => panic!(),
-            Self::Address(address) => unsafe { address.as_ref() },
+            Self::Address(address) => unsafe { &**address },
             Self::Inline(object) => object,
         }
     }
 
-    fn view2_mut(&mut self) -> &mut Object {
+    fn view_mut(&mut self) -> &mut Object {
         match self {
             Self::Vacant => panic!(),
-            Self::Address(address) => unsafe { address.as_mut() },
+            Self::Address(address) => unsafe { &mut **address },
             Self::Inline(object) => object,
         }
     }
 
-    fn escape(&mut self, arena: &mut MachineArena) -> NonNull<Object> {
+    fn escape(&mut self, arena: &mut ArenaClient) -> *mut Object {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => *address,
@@ -216,62 +305,76 @@ impl FrameRegister {
                 let Self::Inline(object) = take(self) else {
                     unreachable!()
                 };
-                let address = arena.allocate(object.data);
+                let address = arena.allocate();
+                unsafe { address.write(object) }
                 *self = Self::Address(address);
                 address
             }
         }
     }
 
-    fn copy(&mut self, arena: &mut MachineArena) -> FrameRegister {
+    fn copy(&mut self, arena: &mut ArenaClient) -> FrameRegister {
         match self {
             Self::Vacant => panic!(),
             Self::Address(address) => Self::Address(*address),
-            Self::Inline(object) => match &object.data {
-                ObjectData::Vacant | ObjectData::Forwarded(_) => unreachable!(),
-                ObjectData::Integer(value) => Self::Inline(Object {
-                    data: ObjectData::Integer(*value),
-                }),
-                _ => Self::Address(self.escape(arena)),
-            },
+            Self::Inline(object) if object.1 >= ArenaServer::TYPED_SECTION && object.2 == 1 => {
+                Self::Address(self.escape(arena))
+            }
+            Self::Inline(object) => Self::Inline(Object(object.0, object.1, object.2)),
         }
     }
 }
 
 impl Machine {
     pub fn run_initial(instructions: Box<[Instruction]>) {
-        let arena = Arena::default();
-        let mut machine = Box::new(MaybeUninit::<Self>::uninit());
-        let mut arena = unsafe { arena.add_user(machine.as_mut_ptr()) };
+        let mut arena_server = ArenaServer::new();
+        arena_server.register_virtual(
+            Self::INTEGER,
+            ArenaVirtual {
+                visit: Object::visit_nop,
+                drop: Object::drop_nop,
+            },
+        );
+        arena_server.register_virtual(
+            Self::STRING,
+            ArenaVirtual {
+                visit: Object::visit_nop,
+                drop: Object::drop_string,
+            },
+        );
+        arena_server.register_virtual(
+            Self::ARRAY,
+            ArenaVirtual {
+                visit: Object::visit_array,
+                drop: Object::drop_array,
+            },
+        );
 
-        arena.mutate_enter();
-        let nil = arena.allocate(ObjectData::Typed(2, Box::new([])));
+        let mut arena = arena_server.add_client();
+        unsafe { arena.preallocate(64) }
+        let none = arena.allocate();
+        unsafe { none.write(Object::new_typed(Self::NONE, Box::new([]))) }
+        let bool_true = arena.allocate();
+        unsafe { bool_true.write(Object::new_typed(Self::TRUE, Box::new([]))) }
+        let bool_false = arena.allocate();
+        unsafe { bool_false.write(Object::new_typed(Self::FALSE, Box::new([]))) }
         let local = MachineStatic {
-            nil,
-            bool_false: arena.allocate(ObjectData::Typed(0, Box::new([nil]))),
-            bool_true: arena.allocate(ObjectData::Typed(1, Box::new([nil]))),
-            // integers: (0..256)
-            //     .map(|i| arena.allocate(ObjectData::Integer(i)))
-            //     .collect::<Vec<_>>()
-            //     .try_into()
-            //     .unwrap(),
+            none,
+            bool_true,
+            bool_false,
         };
-        arena.mutate_exit();
-        machine.write(Machine {
-            symbol: Default::default(),
+
+        let mut machine = Self {
+            symbol: Self::symbol(),
             frames: Default::default(),
             registers: Default::default(),
             local,
-            arena: MachineArena {
-                inner: arena,
-                objects: Default::default(),
-            },
+            arena,
             arguments: Default::default(),
             return_register: RegisterIndex::MAX,
             stats: Default::default(),
-        });
-        // port unstable `assume_init`
-        let mut machine = unsafe { Box::from_raw(Box::into_raw(machine) as *mut Self) };
+        };
+        unsafe { arena_server.add_root(&mut machine, Self::visit) }
 
         machine.push_frame(0, RegisterIndex::MAX);
         machine.run(machine.native_dispatch(), vec![instructions]);
@@ -311,7 +414,6 @@ impl Machine {
         mut function_dispatches: HashMap<DispatchKey, Dispatch>,
         mut functions: Vec<Box<[Instruction]>>,
     ) {
-        self.arena.inner.mutate_enter();
         'control: while !self.is_finished() {
             let depth = self.frames.len();
             let mut counter = self.frames.last_mut().unwrap().program_counter;
@@ -335,7 +437,7 @@ impl Machine {
                     continue 'control;
                 }
 
-                self.arena.fill();
+                unsafe { self.arena.preallocate(16) }
                 self.execute(instruction, &function_dispatches);
                 if self.frames.len() != depth
                     || self.frames.last().unwrap().program_counter != counter
@@ -345,12 +447,7 @@ impl Machine {
             }
             unreachable!("function instructions not ending with Return")
         }
-        self.arena.inner.mutate_exit();
     }
-
-    const TYPE_INTEGER: TypeIndex = TypeIndex::MAX - 1;
-    const TYPE_STRING: TypeIndex = TypeIndex::MAX - 2;
-    const TYPE_ARRAY: TypeIndex = TypeIndex::MAX - 3;
 
     fn make_dispatch(
         &self,
@@ -416,33 +513,28 @@ impl Machine {
         use Instruction::*;
         // println!("{instruction:?}");
         match instruction {
-            ParsingPlaceholder(_) => unreachable!(),
-
+            ParsingPlaceholder(_) | MakeFunction(..) => unreachable!(),
             MakeLiteralObject(i, literal) => r[i] = self.local.make(literal),
             MakeTypedObject(i, name, items) => {
                 let type_index = self.symbol.type_names[name];
-                match &self.symbol.types[type_index] {
+                match &self.symbol[type_index] {
                     SymbolType::Product { components, .. } => {
-                        let mut data = <Box<[_]>>::from(vec![self.local.nil; components.len()]);
+                        let mut data = <Box<[_]>>::from(vec![self.local.none; components.len()]);
                         for (name, x) in &**items {
                             data[components[name]] = r[x].escape(&mut self.arena);
                         }
-                        r[i] = FrameRegister::Address(
-                            self.arena
-                                .allocate(ObjectData::Typed(type_index as _, data)),
-                        );
+                        r[i] = FrameRegister::Inline(Object::new_typed(type_index as _, data));
                     }
                     SymbolType::Sum { variant_names, .. } => {
                         let [(name, x)] = &**items else {
-                            panic!()
-                        };
-                        let data = Box::new([r[x].escape(&mut self.arena)]); //
-                        r[i] = FrameRegister::Address(
-                            self.arena
-                                .allocate(ObjectData::Typed(variant_names[name], data)),
-                        );
+                                        panic!()
+                                    };
+                        r[i] = FrameRegister::Inline(Object::new_typed(
+                            variant_names[name],
+                            Box::new([r[x].escape(&mut self.arena)]),
+                        ));
                     }
-                    SymbolType::SumVariant { .. } => panic!(),
+                    SymbolType::SumVariant { .. } | SymbolType::Native { .. } => panic!(),
                 }
             }
 
@@ -450,14 +542,7 @@ impl Machine {
                 let target = *if positive == negative {
                     positive
                 } else {
-                    let ObjectData::Typed(type_index, _) = r[x].view() else {
-                        panic!()
-                    };
-                    match *type_index {
-                        0 => negative,
-                        1 => positive,
-                        _ => panic!(),
-                    }
+                    [negative, positive][(r[x].view().1 - ArenaServer::TYPED_SECTION) as usize]
                 };
                 self.frames.last_mut().unwrap().program_counter = target;
             }
@@ -482,16 +567,7 @@ impl Machine {
             Call(i, context_xs, name, argument_xs) => {
                 let mut context = Vec::new(); //
                 for x in &**context_xs {
-                    context.push(match r[x].view() {
-                        ObjectData::Vacant | ObjectData::Forwarded(_) | ObjectData::Preallocate => {
-                            unreachable!()
-                        }
-                        ObjectData::Typed(type_index, _) => *type_index,
-                        ObjectData::Integer(_) => Self::TYPE_INTEGER,
-                        ObjectData::String(_) => Self::TYPE_STRING,
-                        ObjectData::Array(_) => Self::TYPE_ARRAY,
-                        ObjectData::Any(_) => todo!(),
-                    });
+                    context.push(r[x].view().1);
                     self.arguments.push(r[x].copy(&mut self.arena));
                 }
                 self.arguments
@@ -519,146 +595,201 @@ impl Machine {
                     .insert(name.clone(), r[x].escape(&mut self.arena));
             }
             Inspect(x, source) => {
-                let repr = match r[x].view() {
-                    ObjectData::Vacant | ObjectData::Forwarded(_) | ObjectData::Preallocate => {
-                        unreachable!()
-                    }
-
-                    ObjectData::Integer(value) => format!("Integer {value}"),
-                    ObjectData::String(value) => format!("String {value}"),
-                    ObjectData::Array(value) => {
-                        format!("Array[{:?}; {}]", value.as_ptr(), value.len())
-                    }
-                    ObjectData::Typed(type_index, _) => {
-                        match &self.symbol.types[*type_index as usize] {
-                            SymbolType::Product { name, .. } => format!("{name}[...]"),
-                            SymbolType::SumVariant {
-                                type_name, name, ..
-                            } => format!("{type_name}.{name}"),
-                            SymbolType::Sum { .. } => unreachable!(),
-                        }
-                    }
-                    ObjectData::Any(value) => format!("(any) {}", value.type_name()),
+                let object = r[x].view();
+                let repr = match object.1 {
+                    Self::INTEGER => format!("Integer {}", object.to_integer()),
+                    Self::STRING => format!("String {}", object.string()),
+                    Self::ARRAY => format!(
+                        "Array[{:#x?}; {}]",
+                        object.array().as_ptr(),
+                        object.array().len()
+                    ),
+                    type_index => match &self.symbol[type_index] {
+                        SymbolType::Product { name, .. } => format!("{name}[...]"),
+                        SymbolType::SumVariant {
+                            type_name, name, ..
+                        } => format!("{type_name}.{name}"),
+                        SymbolType::Sum { .. } => unreachable!(),
+                        SymbolType::Native { name } => format!("{name}[(native)]"),
+                    },
                 };
                 println!(
                     "[{:>9.3?}] {source}  => {:x?} {repr}",
-                    Instant::now() - self.arena.inner.instant_zero(),
+                    Instant::now() - self.arena.start_instant(),
                     r[x]
                 );
             }
             Assert(x, source) => {
-                let ObjectData::Typed(type_index, _) = r[x].view() else {
-                    panic!()
-                };
-                assert_eq!(*type_index, 1, "{source}");
+                assert_eq!(r[x].view().1, Self::TRUE, "{source}");
             }
             Get(i, x, name) => {
-                let ObjectData::Typed(type_index, data) = r[x].view() else {
-                    panic!()
-                };
-                let SymbolType::Product{components,..} = &self.symbol.types[*type_index as usize] else {
-                    panic!()
-                };
-                r[i] = FrameRegister::Address(data[components[name]])
+                let x = r[x].view();
+                let SymbolType::Product{components,..} = &self.symbol[x.1] else {
+                        panic!()
+                    };
+                r[i] = FrameRegister::Address(x.typed_data()[components[name]])
             }
             Put(x, name, y) => {
                 let y = r[y].escape(&mut self.arena);
-                let ObjectData::Typed(type_index,  data) = r[x].view_mut() else {
-                    panic!()
-                };
-                let SymbolType::Product{components,..} = &self.symbol.types[*type_index as usize] else {
-                    panic!()
-                };
-                data[components[name]] = y
+                let x = r[x].view_mut();
+                let SymbolType::Product{components,..} = &self.symbol[x.1] else {
+                        panic!()
+                    };
+                x.typed_data_mut()[components[name]] = y;
             }
             Is(i, x, name) => {
-                let ObjectData::Typed(type_index, _) = r[x].view() else {
-                    panic!()
-                };
-                let SymbolType::SumVariant{name: n, ..} = &self.symbol.types[*type_index as usize] else {
-                    panic!()
-                };
+                let SymbolType::SumVariant{name: n, ..} = &self.symbol[r[x].view().1] else {
+                        panic!()
+                    };
                 r[i] = self.local.make(&Literal::Bool(n == name));
             }
             As(i, x, name) => {
-                let ObjectData::Typed(type_index, data) = r[x].view() else {
-                    panic!()
-                };
+                let x = r[x].view();
                 assert!(
-                    matches!(&self.symbol.types[*type_index as usize], SymbolType::SumVariant {name: n, ..} if n == name)
+                    matches!(&self.symbol[x.1], SymbolType::SumVariant {name: n, ..} if n == name)
                 );
-                r[i] = FrameRegister::Address(data[0]) // more check?
+                r[i] = FrameRegister::Address(x.typed_data()[0]) // more check?
             }
             Operator1(i, op, x) => {
-                use {crate::instruction::Operator1::*, Literal as L, ObjectData::*};
-                r[i] = match (op, r[x].view()) {
+                use {crate::instruction::Operator1::*, Literal::*};
+                r[i] = match (op, r[x].view().1) {
                     (Copy, _) => r[x].copy(&mut self.arena),
-                    (Not, Typed(0, _)) => self.local.make(&L::Bool(true)),
-                    (Not, Typed(1, _)) => self.local.make(&L::Bool(false)),
-                    (Neg, Integer(x)) => self.local.make(&L::Integer(-*x)),
+                    (Not, Self::FALSE) => self.local.make(&Bool(true)),
+                    (Not, Self::TRUE) => self.local.make(&Bool(false)),
+                    (Neg, Self::INTEGER) => self.local.make(&Integer(-r[x].view().to_integer())),
                     _ => panic!(),
                 }
             }
             Operator2(i, op, x, y) => {
-                use {crate::instruction::Operator2::*, Literal as L, ObjectData::*};
-                r[i] = self.local.make(&match (op, r[x].view(), r[y].view()) {
-                    (Add, Integer(x), Integer(y)) => L::Integer(*x + *y),
-                    (Sub, Integer(x), Integer(y)) => L::Integer(*x - *y),
-                    (Mul, Integer(x), Integer(y)) => L::Integer(*x * *y),
-                    (Div, Integer(x), Integer(y)) => L::Integer(*x / *y),
-                    (Rem, Integer(x), Integer(y)) => L::Integer(*x % *y),
-                    (Lt, Integer(x), Integer(y)) => L::Bool(x < y),
-                    (Gt, Integer(x), Integer(y)) => L::Bool(x > y),
-                    (Eq, Integer(x), Integer(y)) => L::Bool(x == y),
-                    (Ne, Integer(x), Integer(y)) => L::Bool(x != y),
-                    (Le, Integer(x), Integer(y)) => L::Bool(x <= y),
-                    (Ge, Integer(x), Integer(y)) => L::Bool(x >= y),
-                    (BitAnd, Integer(x), Integer(y)) => L::Integer(*x & *y),
-                    (BitOr, Integer(x), Integer(y)) => L::Integer(*x | *y),
-                    (BitXor, Integer(x), Integer(y)) => L::Integer(*x ^ *y),
-                    (Shl, Integer(x), Integer(y)) => L::Integer(*x << *y),
-                    (Shr, Integer(x), Integer(y)) => L::Integer(*x >> *y),
-                    (Add, String(x), String(y)) => L::String([&**x, &**y].concat().into()),
-                    _ => panic!("{instruction:?} x = {:?} y = {:?}", r[x], r[y]),
-                })
+                use {crate::instruction::Operator2::*, Literal::*};
+                let (x, y) = (r[x].view(), r[y].view());
+                r[i] = match (x.1, y.1) {
+                    (Self::INTEGER, Self::INTEGER) => {
+                        let (x, y) = (x.to_integer(), y.to_integer());
+                        self.local.make(&match op {
+                            Add => Integer(x + y),
+                            Sub => Integer(x - y),
+                            Mul => Integer(x * y),
+                            Div => Integer(x / y),
+                            Rem => Integer(x % y),
+                            BitAnd => Integer(x & y),
+                            BitOr => Integer(x | y),
+                            BitXor => Integer(x ^ y),
+                            Shl => Integer(x << y),
+                            Shr => Integer(x >> y),
+                            Lt => Bool(x < y),
+                            Gt => Bool(x > y),
+                            Eq => Bool(x == y),
+                            Ne => Bool(x != y),
+                            Le => Bool(x <= y),
+                            Ge => Bool(x >= y),
+                            // _ => panic!()
+                        })
+                    }
+                    (Self::STRING, Self::STRING) => {
+                        let (x, y) = (x.string(), y.string());
+                        FrameRegister::Inline(Object::new_string([x, y].concat().into()))
+                    }
+                    _ => panic!(),
+                };
             }
 
             MakeType(name, op, items) => {
                 match op {
                     TypeOperator::Product => {
-                        let type_index = self.symbol.types.len();
-                        let present = self.symbol.type_names.insert(name.clone(), type_index);
-                        assert!(present.is_none());
-                        self.symbol.types.push(SymbolType::Product {
-                            name: name.clone(),
-                            components: items
-                                .iter()
-                                .enumerate()
-                                .map(|(i, component)| (component.clone(), i))
-                                .collect(),
-                        })
+                        self.symbol.add_type(
+                            Some(name.clone()),
+                            SymbolType::Product {
+                                name: name.clone(),
+                                components: items
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, component)| (component.clone(), i))
+                                    .collect(),
+                            },
+                        );
                     }
                     TypeOperator::Sum => {
-                        let mut variant_names = HashMap::default();
-                        for (i, variant) in items.iter().enumerate() {
-                            variant_names.insert(variant.clone(), i as _);
-                            self.symbol.types.push(SymbolType::SumVariant {
-                                type_name: name.clone(),
-                                name: variant.clone(),
-                            });
+                        let variant_names = HashMap::default();
+                        for variant in &**items {
+                            self.symbol.add_type(
+                                None,
+                                SymbolType::SumVariant {
+                                    type_name: name.clone(),
+                                    name: variant.clone(),
+                                },
+                            );
                         }
-                        let type_index = self.symbol.types.len();
-                        let present = self.symbol.type_names.insert(name.clone(), type_index);
-                        assert!(present.is_none());
-                        self.symbol.types.push(SymbolType::Sum {
-                            // name: name.clone(),
-                            variant_names,
-                        });
+                        self.symbol.add_type(
+                            Some(name.clone()),
+                            SymbolType::Sum {
+                                // name: name.clone(),
+                                variant_names,
+                            },
+                        );
                     }
                 }
             }
-            MakeFunction(..) => unreachable!(),
         }
+    }
+
+    fn symbol() -> Symbol {
+        let mut symbol = Symbol::default();
+        let s = <Box<str>>::from;
+        let index = symbol.add_type(
+            None,
+            SymbolType::SumVariant {
+                type_name: s("Bool"),
+                name: s("False"),
+            },
+        );
+        assert_eq!(index, Self::FALSE);
+        let index = symbol.add_type(
+            None,
+            SymbolType::SumVariant {
+                type_name: s("Bool"),
+                name: s("True"),
+            },
+        );
+        assert_eq!(index, Self::TRUE);
+        let index = symbol.add_type(
+            Some(s("Integer")),
+            SymbolType::Native { name: s("Integer") },
+        );
+        assert_eq!(index, Self::INTEGER);
+        let index = symbol.add_type(Some(s("String")), SymbolType::Native { name: s("String") });
+        assert_eq!(index, Self::STRING);
+        let index = symbol.add_type(Some(s("Array")), SymbolType::Native { name: s("Array") });
+        assert_eq!(index, Self::ARRAY);
+        let mut variant_names = HashMap::default();
+        let index = symbol.add_type(
+            None,
+            SymbolType::SumVariant {
+                type_name: s("Option"),
+                name: s("None"),
+            },
+        );
+        assert_eq!(index, Self::NONE);
+        variant_names.insert(s("None"), Self::NONE);
+        let index = symbol.add_type(
+            None,
+            SymbolType::SumVariant {
+                type_name: s("Option"),
+                name: s("Some"),
+            },
+        );
+        variant_names.insert(s("Some"), index);
+        symbol.add_type(Some(s("Option")), SymbolType::Sum { variant_names });
+        symbol.add_type(
+            Some(s("Bool")),
+            SymbolType::Sum {
+                variant_names: [(s("False"), Self::FALSE), (s("True"), Self::TRUE)]
+                    .into_iter()
+                    .collect(),
+            },
+        );
+
+        symbol
     }
 
     fn make_native_dispatch<const N: usize, const M: usize>(
@@ -712,12 +843,10 @@ impl Machine {
             [],
             s("Array.new"),
             |machine, [], [len]| {
-                let len = *len.view2().cast_ref::<i64>().unwrap() as usize;
-                FrameRegister::Address(
-                    machine
-                        .arena
-                        .allocate(ObjectData::Array(vec![machine.local.nil; len].into())),
-                )
+                let len = len.view().to_integer() as _;
+                let a = machine.arena.allocate();
+                unsafe { a.write(Object::new_array(vec![machine.local.none; len].into())) }
+                FrameRegister::Address(a)
             },
         );
         self.make_native_dispatch(
@@ -725,7 +854,7 @@ impl Machine {
             [s("Array")],
             s("length"),
             |machine, [a], []| {
-                let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
+                let a = a.view().array();
                 machine.local.make(&Literal::Integer(a.len() as _))
             },
         );
@@ -734,12 +863,16 @@ impl Machine {
             [s("Array")],
             s("clone"),
             |machine, [a], [offset, length]| {
-                let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
-                let offset = *offset.view2().cast_ref::<i64>().unwrap() as usize;
-                let length = *length.view2().cast_ref::<i64>().unwrap() as usize;
-                FrameRegister::Address(machine.arena.allocate(ObjectData::Array(
-                    a[offset..offset + length].to_vec().into(),
-                )))
+                let a = a.view().array();
+                let offset = offset.view().to_integer() as usize;
+                let length = length.view().to_integer() as usize;
+                let cloned = machine.arena.allocate();
+                unsafe {
+                    cloned.write(Object::new_array(
+                        a[offset..offset + length].to_vec().into(),
+                    ))
+                }
+                FrameRegister::Address(cloned)
             },
         );
         self.make_native_dispatch(
@@ -747,8 +880,8 @@ impl Machine {
             [s("Array")],
             s("at"),
             |_, [a], [position]| {
-                let a = a.view2().cast_ref::<Box<[NonNull<Object>]>>().unwrap();
-                let position = *position.view2().cast_ref::<i64>().unwrap() as usize;
+                let a = a.view().array();
+                let position = position.view().to_integer() as usize;
                 FrameRegister::Address(a[position])
             },
         );
@@ -756,82 +889,36 @@ impl Machine {
             &mut function_dispatches,
             [s("Array")],
             s("at"),
-            |machine, [mut a], [position, mut element]| {
-                let a = a.view2_mut().cast_mut::<Box<[NonNull<Object>]>>().unwrap();
-                let position = *position.view2().cast_ref::<i64>().unwrap() as usize;
+            |machine, [a], [position, mut element]| {
+                let a = a.view().array();
+                let position = position.view().to_integer() as usize;
                 a[position] = element.escape(&mut machine.arena);
                 machine.local.make(&Literal::Nil)
             },
         );
         function_dispatches
     }
-}
 
-unsafe impl ObjectAny for Machine {
-    fn on_scan(&mut self, scanner: &mut crate::arena::ObjectScanner<'_>) {
-        scanner.process_pointer(&mut self.local.nil);
-        scanner.process_pointer(&mut self.local.bool_true);
-        scanner.process_pointer(&mut self.local.bool_false);
-        // for address in &mut self.preallocate.integers {
-        //     scanner.process_pointer(address);
-        // }
+    fn visit(&mut self, context: &mut CollectContext<'_>) {
+        for address in [
+            &mut self.local.none,
+            &mut self.local.bool_true,
+            &mut self.local.bool_false,
+        ] {
+            context.process(address)
+        }
         for address in self.symbol.object_names.values_mut() {
-            scanner.process_pointer(address);
+            context.process(address)
         }
-        for address in &mut self.arena.objects {
-            scanner.process_pointer(address);
-        }
-        for register in &mut self.arguments {
-            match register {
-                FrameRegister::Vacant => unreachable!(),
-                FrameRegister::Address(address) => scanner.process_pointer(address),
-                FrameRegister::Inline(object) => scanner.process(object),
-            }
-        }
+        assert!(self.arguments.is_empty());
         for register in
             &mut self.registers[..self.frames.last().unwrap().offset + Frame::REGISTER_COUNT]
         {
             match register {
                 FrameRegister::Vacant => {}
-                FrameRegister::Address(address) => scanner.process_pointer(address),
-                FrameRegister::Inline(object) => scanner.process(object),
+                FrameRegister::Inline(object) => unsafe { context.visit(object) },
+                FrameRegister::Address(address) => context.process(address),
             }
-        }
-    }
-}
-
-impl CastData for i64 {
-    fn cast_ref(data: &ObjectData) -> Option<&Self> {
-        if let ObjectData::Integer(value) = data {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    fn cast_mut(data: &mut ObjectData) -> Option<&mut Self> {
-        if let ObjectData::Integer(value) = data {
-            Some(value)
-        } else {
-            None
-        }
-    }
-}
-
-impl CastData for Box<[NonNull<Object>]> {
-    fn cast_ref(data: &ObjectData) -> Option<&Self> {
-        if let ObjectData::Array(value) = data {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    fn cast_mut(data: &mut ObjectData) -> Option<&mut Self> {
-        if let ObjectData::Array(value) = data {
-            Some(value)
-        } else {
-            None
         }
     }
 }

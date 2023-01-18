@@ -1,8 +1,6 @@
 use std::{env::args, fs};
 
-use shattuck::{
-    // eval::Machine, 
-    grammar::parse};
+use shattuck::{eval::Machine, grammar::parse};
 
 fn main() {
     let instructions = parse(&fs::read_to_string(args().nth(1).unwrap()).unwrap());
@@ -19,5 +17,5 @@ fn main() {
     //     }
     // }
 
-    // Machine::run_initial(instructions);
+    Machine::run_initial(instructions);
 }

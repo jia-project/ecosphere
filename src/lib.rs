@@ -1,5 +1,5 @@
 pub mod arena;
-// pub mod eval;
+pub mod eval;
 pub mod grammar;
 mod shared {
     pub mod instruction;
