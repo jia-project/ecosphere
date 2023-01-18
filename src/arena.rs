@@ -1,8 +1,10 @@
 use std::{
+    alloc::{alloc_zeroed, Layout},
     collections::HashMap,
     iter::repeat_with,
-    mem::replace,
+    mem::{replace, size_of},
     ptr::{copy_nonoverlapping, null_mut},
+    slice,
     sync::{
         atomic::{AtomicI8, Ordering},
         Arc, Mutex,
@@ -50,6 +52,30 @@ struct Space {
     slab_len: usize,
 }
 
+impl Space {
+    // slab length in terms of number of objects
+    // 2^17 objects * 16 bytes/object = 2MB which matches some huge page spec
+    const SLAB_LEN: usize = 1 << 17;
+    fn new(slab_count: usize) -> Self {
+        let slab_size = Self::SLAB_LEN * size_of::<Object>();
+        let objects = unsafe {
+            alloc_zeroed(Layout::from_size_align(slab_count * slab_size, slab_size).unwrap())
+        }
+        .cast();
+        Self {
+            objects: unsafe {
+                Box::from_raw(slice::from_raw_parts_mut(
+                    objects,
+                    slab_count * Self::SLAB_LEN,
+                ))
+            },
+            slab_len: Self::SLAB_LEN,
+        }
+    }
+
+    // implement a `contains` if can find a way to do it efficiently
+}
+
 pub struct ArenaServer(Arc<Arena>);
 
 impl Default for ArenaServer {
@@ -60,19 +86,13 @@ impl Default for ArenaServer {
 
 impl ArenaServer {
     pub fn new() -> Self {
-        let objects = repeat_with(Default::default)
-            .take(1 << 21)
-            .collect::<Box<_>>();
         let mut server = Self(Arc::new(Arena {
             virtuals: Mutex::new(
                 repeat_with(Default::default)
                     .take(Arena::VIRTUALS_LEN)
                     .collect(),
             ),
-            space: Mutex::new(Space {
-                objects,
-                slab_len: 1 << 16,
-            }),
+            space: Mutex::new(Space::new(16)),
             roots: Mutex::new(Default::default()),
             rendezvous: AtomicI8::new(0),
             start: Instant::now(),
@@ -105,6 +125,7 @@ pub struct ArenaClient {
 impl Arena {
     const VIRTUALS_LEN: usize = 1 << 16;
     const TYPE_SECTION: TypeIndex = 0x1;
+    #[allow(clippy::identity_op)]
     const USED_SLAB: TypeIndex = Self::TYPE_SECTION + 0x0;
     const FORWARDED: TypeIndex = Self::TYPE_SECTION + 0x1;
 
@@ -133,6 +154,9 @@ impl ArenaServer {
         self.0.clone().add_client()
     }
 
+    /// # Safety
+    /// `root` must outlive between `add_root` and `remove_root`.
+    /// No concurrent access during `collect` triggered by `preallocate` calling *by everyone*.
     pub unsafe fn add_root<T>(
         &self,
         root: *mut T,
@@ -143,6 +167,9 @@ impl ArenaServer {
 }
 
 impl ArenaClient {
+    /// # Safety
+    /// Caller must make sure that by the time of calling this method, every `*mut Object`
+    /// it may access later is reachable by visiting one of the roots
     pub unsafe fn preallocate(&mut self, len: usize) {
         if len + self.len <= self.slab_len {
             return;
@@ -248,30 +275,21 @@ impl Arena {
         let mut space = self.space.lock().unwrap();
         let virtuals = self.virtuals.lock().unwrap();
         let mut context = CollectContext {
-            to_space: repeat_with(Default::default)
-                .take(space.objects.len())
-                .collect::<Box<_>>(),
+            to_space: Space::new(space.objects.len() / Space::SLAB_LEN),
             len: 0,
             process_len: 0,
-            virtuals: &*virtuals,
+            virtuals: &virtuals,
         };
         for visit in self.roots.lock().unwrap().values() {
             visit(&mut context)
         }
         while context.process_len < context.len {
-            let object = &mut context.to_space[context.process_len] as *mut Object;
+            let object = &mut context.to_space.objects[context.process_len] as *mut Object;
             context.process_len += 1;
-            unsafe { context.visit(object) }
+            context.visit(unsafe { &mut *object })
         }
-        let slab_len = space.slab_len;
-        let space = replace(
-            &mut *space,
-            Space {
-                objects: context.to_space,
-                slab_len,
-            },
-        );
-        self.drop_space(space, &*virtuals);
+        let space = replace(&mut *space, context.to_space);
+        self.drop_space(space, &virtuals);
 
         let now = Instant::now();
         println!(
@@ -286,7 +304,7 @@ impl Arena {
 }
 
 pub struct CollectContext<'a> {
-    to_space: Box<[Object]>,
+    to_space: Space,
     len: usize,
     process_len: usize,
     virtuals: &'a [ArenaVirtual],
@@ -294,8 +312,8 @@ pub struct CollectContext<'a> {
 
 impl CollectContext<'_> {
     pub fn process(&mut self, address: &mut *mut Object) {
-        let to_space = (*self.to_space).as_mut_ptr();
-        if (to_space..unsafe { to_space.add(self.to_space.len()) }).contains(address) {
+        let to_space = (*self.to_space.objects).as_mut_ptr();
+        if (to_space..unsafe { to_space.add(self.to_space.objects.len()) }).contains(address) {
             return;
         }
         *address = self.copy(*address);
@@ -305,22 +323,21 @@ impl CollectContext<'_> {
         if unsafe { (*address).1 } == Arena::FORWARDED {
             return unsafe { (*address).0.p1 };
         }
-        assert!(self.len < self.to_space.len());
-        let cloned = &mut self.to_space[self.len] as *mut _;
+        assert!(self.len < self.to_space.objects.len());
+        let cloned = &mut self.to_space.objects[self.len] as *mut _;
         self.len += 1;
         unsafe {
             copy_nonoverlapping(address, cloned, 1);
             address.write(Object(Object0 { p1: cloned }, Arena::FORWARDED, 0));
         }
-        unsafe { self.visit(cloned) }
+        self.visit(unsafe { &mut *cloned });
         cloned
     }
 
     // visit an alive object who is already on its to-address
     // either get copied before, or directly referenced by root
     // not moving itself, but copy visited address reported by it
-    pub unsafe fn visit(&mut self, object: *mut Object) {
-        let object = unsafe { &mut *object };
+    pub fn visit(&mut self, object: &mut Object) {
         if (object.1 as usize) < Arena::VIRTUALS_LEN {
             let visit = self.virtuals[object.1 as usize].visit;
             visit(object, self);
@@ -340,6 +357,6 @@ impl Drop for Arena {
             }),
         );
         let virtuals = self.virtuals.try_lock().unwrap();
-        self.drop_space(space.into_inner().unwrap(), &*virtuals);
+        self.drop_space(space.into_inner().unwrap(), &virtuals);
     }
 }

@@ -19,10 +19,12 @@ type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
 impl Machine {
     const NATIVE_SECTION: TypeIndex = 0x00000010;
+    #[allow(clippy::identity_op)]
     const INTEGER: TypeIndex = Self::NATIVE_SECTION + 0;
     const STRING: TypeIndex = Self::NATIVE_SECTION + 1;
     const ARRAY: TypeIndex = Self::NATIVE_SECTION + 2;
 
+    #[allow(clippy::identity_op)]
     const FALSE: TypeIndex = ArenaServer::TYPED_SECTION + 0;
     const TRUE: TypeIndex = ArenaServer::TYPED_SECTION + 1;
     const NONE: TypeIndex = ArenaServer::TYPED_SECTION + 2;
@@ -65,13 +67,13 @@ impl Object {
     }
 
     fn visit_array(&self, context: &mut CollectContext<'_>) {
-        for address in self.array() {
+        for address in unsafe { self.array() }.unwrap() {
             context.process(address)
         }
     }
 
     pub fn visit_typed(&mut self, context: &mut CollectContext<'_>) {
-        for address in self.typed_data_mut() {
+        for address in unsafe { self.typed_data_mut() }.unwrap() {
             context.process(address)
         }
     }
@@ -107,37 +109,55 @@ impl Object {
         }
     }
 
-    fn to_integer(&self) -> i64 {
-        assert_eq!(self.1, Machine::INTEGER);
-        unsafe { self.0.i }
-    }
-
-    fn string(&self) -> &mut str {
-        assert_eq!(self.1, Machine::STRING);
-        unsafe {
-            std::str::from_utf8_unchecked_mut(slice::from_raw_parts_mut(self.0.p as _, self.2 as _))
+    fn to_integer(&self) -> Option<i64> {
+        if self.1 == Machine::INTEGER {
+            Some(unsafe { self.0.i })
+        } else {
+            None
         }
     }
 
-    fn array(&self) -> &mut [*mut Object] {
-        assert_eq!(self.1, Machine::ARRAY);
-        unsafe { slice::from_raw_parts_mut(self.0.p as _, self.2 as _) }
+    unsafe fn string(&self) -> Option<&mut str> {
+        if self.1 == Machine::STRING {
+            Some(unsafe {
+                std::str::from_utf8_unchecked_mut(slice::from_raw_parts_mut(
+                    self.0.p as _,
+                    self.2 as _,
+                ))
+            })
+        } else {
+            None
+        }
     }
 
-    fn typed_data(&self) -> &[*mut Object] {
-        match self.2 {
+    unsafe fn array(&self) -> Option<&mut [*mut Object]> {
+        if self.1 == Machine::ARRAY {
+            Some(unsafe { slice::from_raw_parts_mut(self.0.p as _, self.2 as _) })
+        } else {
+            None
+        }
+    }
+
+    unsafe fn typed_data(&self) -> Option<&[*mut Object]> {
+        if self.1 < ArenaServer::TYPED_SECTION {
+            return None;
+        }
+        Some(match self.2 {
             0 => &[],
             1 => slice::from_ref(unsafe { &self.0.p1 }),
             _ => unsafe { slice::from_raw_parts(self.0.p as _, self.2 as _) },
-        }
+        })
     }
 
-    fn typed_data_mut(&mut self) -> &mut [*mut Object] {
-        match self.2 {
+    unsafe fn typed_data_mut(&mut self) -> Option<&mut [*mut Object]> {
+        if self.1 < ArenaServer::TYPED_SECTION {
+            return None;
+        }
+        Some(match self.2 {
             0 => &mut [],
             1 => slice::from_mut(unsafe { &mut self.0.p1 }),
             _ => unsafe { slice::from_raw_parts_mut(self.0.p as _, self.2 as _) },
-        }
+        })
     }
 }
 
@@ -621,13 +641,12 @@ impl Machine {
             Inspect(x, source) => {
                 let object = r[x].view();
                 let repr = match object.1 {
-                    Self::INTEGER => format!("Integer {}", object.to_integer()),
-                    Self::STRING => format!("String {}", object.string()),
-                    Self::ARRAY => format!(
-                        "Array[{:#x?}; {}]",
-                        object.array().as_ptr(),
-                        object.array().len()
-                    ),
+                    Self::INTEGER => format!("Integer {}", object.to_integer().unwrap()),
+                    Self::STRING => format!("String {}", unsafe { object.string() }.unwrap()),
+                    Self::ARRAY => {
+                        let array = unsafe { object.array() }.unwrap();
+                        format!("Array[{:#x?}; {}]", array.as_ptr(), array.len())
+                    }
                     type_index => match &self.symbol[type_index] {
                         SymbolType::Product { name, .. } => format!("{name}[...]"),
                         SymbolType::SumVariant {
@@ -653,7 +672,7 @@ impl Machine {
                 let SymbolType::Product{components,..} = &self.symbol[x.1] else {
                         panic!()
                     };
-                r[i] = FrameRegister::Address(x.typed_data()[components[name]]);
+                r[i] = FrameRegister::Address(unsafe { x.typed_data() }.unwrap()[components[name]]);
                 false
             }
             Put(x, name, y) => {
@@ -662,7 +681,7 @@ impl Machine {
                 let SymbolType::Product{components,..} = &self.symbol[x.1] else {
                         panic!()
                     };
-                x.typed_data_mut()[components[name]] = y;
+                unsafe { x.typed_data_mut() }.unwrap()[components[name]] = y;
                 true
             }
             Is(i, x, name) => {
@@ -677,7 +696,7 @@ impl Machine {
                 assert!(
                     matches!(&self.symbol[x.1], SymbolType::SumVariant {name: n, ..} if n == name)
                 );
-                r[i] = FrameRegister::Address(x.typed_data()[0]); // more check?
+                r[i] = FrameRegister::Address(unsafe { x.typed_data() }.unwrap()[0]); // more check?
                 false
             }
             Operator1(i, op, x) => {
@@ -686,7 +705,9 @@ impl Machine {
                     (Copy, _) => r[x].copy(&mut self.arena),
                     (Not, Self::FALSE) => self.local.make(&Bool(true)),
                     (Not, Self::TRUE) => self.local.make(&Bool(false)),
-                    (Neg, Self::INTEGER) => self.local.make(&Integer(-r[x].view().to_integer())),
+                    (Neg, Self::INTEGER) => self
+                        .local
+                        .make(&Integer(-r[x].view().to_integer().unwrap())),
                     _ => panic!(),
                 };
                 false
@@ -696,7 +717,7 @@ impl Machine {
                 let (x, y) = (r[x].view(), r[y].view());
                 r[i] = match (x.1, y.1) {
                     (Self::INTEGER, Self::INTEGER) => {
-                        let (x, y) = (x.to_integer(), y.to_integer());
+                        let (x, y) = (x.to_integer().unwrap(), y.to_integer().unwrap());
                         self.local.make(&match op {
                             Add => Integer(x + y),
                             Sub => Integer(x - y),
@@ -718,7 +739,7 @@ impl Machine {
                         })
                     }
                     (Self::STRING, Self::STRING) => {
-                        let (x, y) = (x.string(), y.string());
+                        let (x, y) = unsafe { (x.string().unwrap(), y.string().unwrap()) };
                         FrameRegister::Inline(Object::new_string([x, y].concat().into()))
                     }
                     _ => panic!(),
@@ -876,7 +897,7 @@ impl Machine {
             [],
             s("Array.new"),
             |machine, [], [len]| {
-                let len = len.view().to_integer() as _;
+                let len = len.view().to_integer().unwrap() as _;
                 let a = machine.arena.allocate();
                 unsafe { a.write(Object::new_array(vec![machine.local.none; len].into())) }
                 FrameRegister::Address(a)
@@ -887,7 +908,7 @@ impl Machine {
             [s("Array")],
             s("length"),
             |machine, [a], []| {
-                let a = a.view().array();
+                let a = unsafe { a.view().array() }.unwrap();
                 machine.local.make(&Literal::Integer(a.len() as _))
             },
         );
@@ -896,9 +917,9 @@ impl Machine {
             [s("Array")],
             s("clone"),
             |machine, [a], [offset, length]| {
-                let a = a.view().array();
-                let offset = offset.view().to_integer() as usize;
-                let length = length.view().to_integer() as usize;
+                let a = unsafe { a.view().array() }.unwrap();
+                let offset = offset.view().to_integer().unwrap() as usize;
+                let length = length.view().to_integer().unwrap() as usize;
                 let cloned = machine.arena.allocate();
                 unsafe {
                     cloned.write(Object::new_array(
@@ -913,8 +934,8 @@ impl Machine {
             [s("Array")],
             s("at"),
             |_, [a], [position]| {
-                let a = a.view().array();
-                let position = position.view().to_integer() as usize;
+                let a = unsafe { a.view().array() }.unwrap();
+                let position = position.view().to_integer().unwrap() as usize;
                 FrameRegister::Address(a[position])
             },
         );
@@ -923,8 +944,8 @@ impl Machine {
             [s("Array")],
             s("at"),
             |machine, [a], [position, mut element]| {
-                let a = a.view().array();
-                let position = position.view().to_integer() as usize;
+                let a = unsafe { a.view().array() }.unwrap();
+                let position = position.view().to_integer().unwrap() as usize;
                 a[position] = element.escape(&mut machine.arena);
                 machine.local.make(&Literal::Nil)
             },
@@ -949,7 +970,7 @@ impl Machine {
         {
             match register {
                 FrameRegister::Vacant => {}
-                FrameRegister::Inline(object) => unsafe { context.visit(object) },
+                FrameRegister::Inline(object) => context.visit(object),
                 FrameRegister::Address(address) => context.process(address),
             }
         }
