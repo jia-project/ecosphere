@@ -15,7 +15,8 @@ use crate::{
     shared::object::Object0,
     Instruction, Module, Object, RegisterIndex, TypeIndex,
 };
-type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
+type Map<K, V> = rustc_hash::FxHashMap<K, V>;
+// type Map<K, V> = std::collections::BTreeMap<K, V>;
 
 impl Machine {
     const NATIVE_SECTION: TypeIndex = 0x00000010;
@@ -163,10 +164,10 @@ impl Object {
 
 #[derive(Clone, Default)]
 struct Symbol {
-    type_names: HashMap<Box<str>, TypeIndex>,
+    type_names: Map<Box<str>, TypeIndex>,
     types: Vec<SymbolType>,
     native_types: Vec<SymbolType>,
-    object_names: HashMap<Box<str>, *mut Object>,
+    object_names: Map<Box<str>, *mut Object>,
 }
 
 impl Index<TypeIndex> for Symbol {
@@ -214,11 +215,11 @@ impl Symbol {
 enum SymbolType {
     Product {
         name: Box<str>,
-        components: HashMap<Box<str>, usize>,
+        components: Map<Box<str>, usize>,
     },
     Sum {
         // name: Box<str>,
-        variant_names: HashMap<Box<str>, u32>,
+        variant_names: Map<Box<str>, u32>,
     },
     SumVariant {
         type_name: Box<str>,
@@ -245,7 +246,7 @@ pub struct Machine {
     local: MachineStatic,
     arguments: Vec<FrameRegister>,
     return_register: usize, // for native functions
-    stats: HashMap<Discriminant<Instruction>, u32>,
+    stats: Map<Discriminant<Instruction>, u32>,
 }
 
 struct MachineStatic {
@@ -411,6 +412,7 @@ impl Machine {
         if !machine.stats.is_empty() {
             println!("{:?}", machine.stats);
         }
+        arena_server.remove_root(&mut machine);
     }
 
     fn push_frame(&mut self, index: usize, return_register: usize, offset: usize, len: usize) {
@@ -436,7 +438,7 @@ impl Machine {
 
     fn run(
         &mut self,
-        mut function_dispatches: HashMap<DispatchKey, Dispatch>,
+        mut function_dispatches: Map<DispatchKey, Dispatch>,
         mut functions: Vec<Module>,
     ) {
         let mut shall_allocate = true;
@@ -481,7 +483,7 @@ impl Machine {
 
     fn make_dispatch(
         &self,
-        function_dispatches: &mut HashMap<DispatchKey, Dispatch>,
+        function_dispatches: &mut Map<DispatchKey, Dispatch>,
         context_types: impl IntoIterator<Item = Box<str>>,
         name: impl Into<String>,
         arity: usize,
@@ -499,7 +501,7 @@ impl Machine {
     fn make_function(
         &mut self,
         instruction: Instruction,
-        function_dispatches: &mut HashMap<DispatchKey, Dispatch>,
+        function_dispatches: &mut Map<DispatchKey, Dispatch>,
         functions: &mut Vec<Module>,
     ) {
         let Instruction::MakeFunction(context_types, name, arity, module) = instruction else {
@@ -522,7 +524,7 @@ impl Machine {
     fn execute(
         &mut self,
         instruction: &Instruction,
-        function_dispatches: &HashMap<DispatchKey, Dispatch>,
+        function_dispatches: &Map<DispatchKey, Dispatch>,
         functions: &[Module],
     ) -> bool {
         struct R<'a>(&'a mut [FrameRegister], usize);
@@ -767,7 +769,7 @@ impl Machine {
                         );
                     }
                     TypeOperator::Sum => {
-                        let variant_names = HashMap::default();
+                        let variant_names = Map::default();
                         for variant in &**items {
                             self.symbol.add_type(
                                 None,
@@ -819,7 +821,7 @@ impl Machine {
         assert_eq!(index, Self::STRING);
         let index = symbol.add_type(Some(s("Array")), SymbolType::Native { name: s("Array") });
         assert_eq!(index, Self::ARRAY);
-        let mut variant_names = HashMap::default();
+        let mut variant_names = Map::default();
         let index = symbol.add_type(
             None,
             SymbolType::SumVariant {
@@ -857,7 +859,7 @@ impl Machine {
         self.return_register = usize::MAX;
     }
 
-    fn native_dispatch(&self) -> HashMap<DispatchKey, Dispatch> {
+    fn native_dispatch(&self) -> Map<DispatchKey, Dispatch> {
         let s = <Box<str>>::from;
         fn n(f: impl Fn(&mut Machine) + Send + Sync + 'static) -> Dispatch {
             Dispatch::Native(Arc::new(f))

@@ -1,7 +1,6 @@
 use std::{
     alloc::{alloc_zeroed, Layout},
     collections::HashMap,
-    iter::repeat_with,
     mem::{replace, size_of},
     ptr::{copy_nonoverlapping, null_mut},
     slice,
@@ -15,12 +14,13 @@ use std::{
 use crate::{shared::object::Object0, Object, TypeIndex};
 
 struct Arena {
-    virtuals: Mutex<Box<[ArenaVirtual]>>,
+    virtuals: Mutex<Vec<ArenaVirtual>>,
     space: Mutex<Space>,
-    roots: Mutex<HashMap<usize, Box<dyn Fn(&mut CollectContext<'_>) + Send + Sync>>>,
+    roots: Mutex<HashMap<usize, RootVisit>>,
     rendezvous: AtomicI8,
     start: Instant,
 }
+type RootVisit = Box<dyn Fn(&mut CollectContext<'_>) + Send + Sync>;
 
 #[derive(Clone, Copy)]
 pub struct ArenaVirtual {
@@ -87,11 +87,7 @@ impl Default for ArenaServer {
 impl ArenaServer {
     pub fn new() -> Self {
         let mut server = Self(Arc::new(Arena {
-            virtuals: Mutex::new(
-                repeat_with(Default::default)
-                    .take(Arena::VIRTUALS_LEN)
-                    .collect(),
-            ),
+            virtuals: Default::default(),
             space: Mutex::new(Space::new(16)),
             roots: Mutex::new(Default::default()),
             rendezvous: AtomicI8::new(0),
@@ -111,6 +107,9 @@ impl ArenaServer {
 
     pub fn register_virtual(&mut self, index: TypeIndex, virt: ArenaVirtual) {
         let mut virtuals = self.0.virtuals.lock().unwrap();
+        if virtuals.len() <= index as _ {
+            virtuals.resize_with(index as usize + 1, Default::default);
+        }
         virtuals[index as usize] = virt;
     }
 }
@@ -163,6 +162,10 @@ impl ArenaServer {
         visit: impl Fn(&mut T, &mut CollectContext<'_>) + Send + Sync + 'static,
     ) {
         self.0.add_root(root, visit)
+    }
+
+    pub fn remove_root<T>(&self, root: *mut T) {
+        self.0.remove_root(root);
     }
 }
 
@@ -220,6 +223,10 @@ impl Arena {
             root,
             Box::new(move |context| visit(unsafe { &mut *(root as *mut T) }, context)),
         );
+    }
+
+    fn remove_root<T>(&self, root: *mut T) {
+        self.roots.lock().unwrap().remove(&(root as _));
     }
 
     fn client_enter(&self) {
