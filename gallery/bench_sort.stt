@@ -52,6 +52,7 @@ make Array.merge_sort(v) {
     assert runs_len == 1;
     assert runs.at(0).start == 0;
     assert runs.at(0).len == len;
+    Option[None]
 }
 
 make ArrayView [
@@ -81,6 +82,7 @@ make (ArrayView a) at(p) {
 
 make (ArrayView a) at(p, element) {
     (a.data).at(p + a.offset, element);
+    Option[None]
 }
 
 make (ArrayView a) view(offset, length) {
@@ -92,6 +94,7 @@ make Array.swap(a, i, j) {
     var x = a.at(i);
     a.at(i, a.at(j));
     a.at(j, x);
+    Option[None]
 }
 
 make Array.reverse(a) {
@@ -102,12 +105,13 @@ make Array.reverse(a) {
         low = low + 1;
         high = high - 1;
     }
+    Option[None]
 }
 
 make Array.insert_head(a) {
     var len = a.length();
     if not (len >= 2 and a.at(1) < a.at(0)) {
-        return;
+        return Option[None];
     }
     var x = a.at(0);
     a.at(0, a.at(1));
@@ -122,6 +126,7 @@ make Array.insert_head(a) {
         i = i + 1;
     }
     a.at(d, x);
+    Option[None]
 }
 
 make collapse(runs) {
@@ -195,6 +200,7 @@ make merge(a, mid) {
             a.at(i, buf.at(right_i));
         }
     }
+    Option[None]
 }
 
 make XorShiftRng [

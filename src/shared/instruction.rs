@@ -47,7 +47,7 @@ pub enum Instruction {
 // must be embedded in bytecode directly because parser emitts these
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
-    Nil,
+    Unit,
     Bool(bool),
     Integer(i64),
     // float

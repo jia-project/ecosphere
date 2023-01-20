@@ -55,10 +55,10 @@ PrimaryExpr = _{
     | String
 }
 
-BlockExpr = { "{" ~ BlockStmts ~ Expr? ~ "}" }
 // make sure if IfExpr ends a BlockExpr, it is considered as tailing `Expr`
 // a little bit hacky, hope we will not extend this "feature"
-BlockStmts = { (IfExpr? ~ Stmt)* }
+BlockExpr = { "{" ~ (Stmt | IfStmt | IfExpr)* ~ Expr? ~ "}" }
+IfStmt = { IfExpr ~ ";" }
 
 IfExpr = { "if" ~ Expr ~ BlockExpr ~ ("else" ~ BlockExpr)? }
 
@@ -126,7 +126,7 @@ BreakStmt = { "break" ~ ";" }
 
 ContinueStmt = { "continue" ~ ";" }
 
-ReturnStmt = { "return" ~ Expr? ~ ";" }
+ReturnStmt = { "return" ~ Expr ~ ";" }
 
 
 Ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }

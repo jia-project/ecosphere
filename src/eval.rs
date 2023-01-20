@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     fmt::Debug,
     mem::{take, Discriminant},
     ops::{Index, IndexMut},
@@ -17,6 +16,8 @@ use crate::{
 };
 type Map<K, V> = rustc_hash::FxHashMap<K, V>;
 // type Map<K, V> = std::collections::BTreeMap<K, V>;
+type Cow<'a, T> = std::borrow::Cow<'a, T>;
+// type Cow<'a, T> = beef::lean::Cow<'a, T>;
 
 impl Machine {
     const NATIVE_SECTION: TypeIndex = 0x00000010;
@@ -259,7 +260,7 @@ struct MachineStatic {
 impl MachineStatic {
     fn make(&self, literal: &Literal) -> FrameRegister {
         match literal {
-            Literal::Nil => FrameRegister::Address(self.none),
+            Literal::Unit => FrameRegister::Unit,
             Literal::Bool(true) => FrameRegister::Address(self.bool_true),
             Literal::Bool(false) => FrameRegister::Address(self.bool_false),
             // InstructionLiteral::Integer(value) if (0..256).contains(value) => {
@@ -283,6 +284,7 @@ struct Frame {
 enum FrameRegister {
     #[default]
     Vacant,
+    Unit,
     Address(*mut Object),
     Inline(Object),
 }
@@ -291,6 +293,7 @@ impl Debug for FrameRegister {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Vacant => f.pad("Vacant"),
+            Self::Unit => f.pad("Unit"),
             Self::Address(address) => f.pad(&format!("Address({address:?}, {:#x})", unsafe {
                 (**address).1
             })),
@@ -302,7 +305,7 @@ impl Debug for FrameRegister {
 impl FrameRegister {
     fn view(&self) -> &Object {
         match self {
-            Self::Vacant => panic!(),
+            Self::Vacant | Self::Unit => panic!(),
             Self::Address(address) => unsafe { &**address },
             Self::Inline(object) => object,
         }
@@ -310,7 +313,7 @@ impl FrameRegister {
 
     fn view_mut(&mut self) -> &mut Object {
         match self {
-            Self::Vacant => panic!(),
+            Self::Vacant | Self::Unit => panic!(),
             Self::Address(address) => unsafe { &mut **address },
             Self::Inline(object) => object,
         }
@@ -318,7 +321,7 @@ impl FrameRegister {
 
     fn escape(&mut self, arena: &mut ArenaClient) -> *mut Object {
         match self {
-            Self::Vacant => panic!(),
+            Self::Vacant | Self::Unit => panic!(),
             Self::Address(address) => *address,
             Self::Inline(_) => {
                 let Self::Inline(object) = take(self) else {
@@ -335,6 +338,7 @@ impl FrameRegister {
     fn copy(&mut self, arena: &mut ArenaClient) -> FrameRegister {
         match self {
             Self::Vacant => panic!(),
+            Self::Unit => Self::Unit,
             Self::Address(address) => Self::Address(*address),
             Self::Inline(object) if object.1 == Machine::INTEGER => {
                 Self::Inline(Object(object.0, object.1, object.2))
@@ -492,7 +496,8 @@ impl Machine {
         let context_types = context_types
             .into_iter()
             .map(|name| self.symbol.type_names[&name] as _)
-            .collect();
+            .collect::<Vec<_>>()
+            .into();
         let present =
             function_dispatches.insert((context_types, name.into().into(), arity), dispatch);
         assert!(present.is_none());
@@ -555,6 +560,7 @@ impl Machine {
                 let type_index = self.symbol.type_names[name];
                 match &self.symbol[type_index] {
                     SymbolType::Product { components, .. } => {
+                        // TODO allow costom fallback value, and do not fill by default
                         let mut data = <Box<[_]>>::from(vec![self.local.none; components.len()]);
                         for (name, x) in &**items {
                             data[components[name]] = r[x].escape(&mut self.arena);
@@ -567,7 +573,11 @@ impl Machine {
                                     };
                         r[i] = FrameRegister::Inline(Object::new_typed(
                             variant_names[name],
-                            Box::new([r[x].escape(&mut self.arena)]),
+                            if matches!(r[x], FrameRegister::Unit) {
+                                Box::new([])
+                            } else {
+                                Box::new([r[x].escape(&mut self.arena)])
+                            },
                         ));
                     }
                     SymbolType::SumVariant { .. } | SymbolType::Native { .. } => panic!(),
@@ -596,6 +606,7 @@ impl Machine {
                     }
                 }
                 if !self.is_finished() {
+                    assert!(!matches!(returned, FrameRegister::Unit));
                     self.registers[frame.return_register] = returned;
                 }
                 false
@@ -707,8 +718,11 @@ impl Machine {
             }
             Operator1(i, op, x) => {
                 use {crate::instruction::Operator1::*, Literal::*};
+                if matches!(op, Copy) {
+                    r[i] = r[x].copy(&mut self.arena);
+                    return true;
+                }
                 r[i] = match (op, r[x].view().1) {
-                    (Copy, _) => r[x].copy(&mut self.arena),
                     (Not, Self::FALSE) => self.local.make(&Bool(true)),
                     (Not, Self::TRUE) => self.local.make(&Bool(false)),
                     (Neg, Self::INTEGER) => self
@@ -943,7 +957,7 @@ impl Machine {
                 let element = args.next().unwrap().escape(&mut machine.arena);
                 drop(args);
                 a[position] = element;
-                let none = machine.local.make(&Literal::Nil);
+                let none = machine.local.make(&Literal::Unit);
                 machine.native_return(none);
             }),
         );
@@ -965,7 +979,7 @@ impl Machine {
         let frame = self.frames.last().unwrap();
         for register in &mut self.registers[..frame.offset + frame.len] {
             match register {
-                FrameRegister::Vacant => {}
+                FrameRegister::Vacant | FrameRegister::Unit => {}
                 FrameRegister::Inline(object) => context.visit(object),
                 FrameRegister::Address(address) => context.process(address),
             }

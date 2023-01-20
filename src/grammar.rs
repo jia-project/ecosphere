@@ -8,7 +8,7 @@ use pest::{
 use pest_derive::Parser;
 
 use crate::{
-    instruction::{self, Literal::Nil, Operator1::Copy},
+    instruction::{self, Literal::Unit, Operator1::Copy},
     Instruction, Module, RegisterIndex,
 };
 
@@ -26,7 +26,7 @@ pub fn parse(input: &str) -> Module {
     visitor
         .0
         .instructions
-        .push(Instruction::MakeLiteralObject(0, Nil));
+        .push(Instruction::MakeLiteralObject(0, Unit));
     visitor.0.instructions.push(Instruction::Return(0));
     Module {
         instructions: visitor.0.instructions.into(),
@@ -503,9 +503,7 @@ impl FunctionVisitor {
     fn visit_data_items(&mut self, name: Box<str>, items: Pair<'_, Rule>) -> RegisterIndex {
         // fieldless sum type variant
         if items.as_rule() == Rule::Ident {
-            let r = self.allocate();
-            self.instructions
-                .push(Instruction::MakeLiteralObject(r, Nil));
+            let r = self.make_unit();
             self.instructions.push(Instruction::MakeTypedObject(
                 r,
                 name,
@@ -537,20 +535,38 @@ impl FunctionVisitor {
     }
 
     fn visit_block_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
-        let ([stmts], expr) = split_option(expr);
+        let mut stmts = expr.into_inner();
         self.enter();
-        for stmt in stmts.into_inner() {
-            self.visit_stmt(stmt);
+        let mut stmt = stmts.next();
+        while stmts.peek().is_some() {
+            self.visit_stmt(stmt.unwrap());
+            stmt = stmts.next();
         }
-        let r = if let Some(expr) = expr {
-            self.visit_expr(expr)
+        let r = if let Some(stmt) = stmt {
+            match stmt.as_rule() {
+                Rule::Expr => self.visit_expr(stmt),
+                Rule::IfExpr => self.visit_if_expr(stmt),
+                Rule::IfStmt => {
+                    let [stmt] = split(stmt);
+                    self.visit_stmt(stmt);
+                    self.make_unit()
+                }
+                _ => {
+                    self.visit_stmt(stmt);
+                    self.make_unit()
+                }
+            }
         } else {
-            let r = self.allocate();
-            self.instructions
-                .push(Instruction::MakeLiteralObject(r, Nil));
-            r
+            self.make_unit()
         };
         self.exit();
+        r
+    }
+
+    fn make_unit(&mut self) -> RegisterIndex {
+        let r = self.allocate();
+        self.instructions
+            .push(Instruction::MakeLiteralObject(r, Unit));
         r
     }
 
@@ -605,7 +621,7 @@ impl FunctionVisitor {
                 .push(Instruction::Operator1(r, Copy, negative_r))
         } else {
             self.instructions
-                .push(Instruction::MakeLiteralObject(r, Nil))
+                .push(Instruction::MakeLiteralObject(r, Unit))
         }
 
         self.exit(); // `is` expression scope
@@ -647,14 +663,8 @@ impl FunctionVisitor {
             Rule::BreakStmt => self.push_control(Placeholder::JumpBreak),
             Rule::ContinueStmt => self.push_control(Placeholder::JumpContinue),
             Rule::ReturnStmt => {
-                let r = if let Some(expr) = split_option::<0>(stmt).1 {
-                    self.visit_expr(expr)
-                } else {
-                    let r = self.allocate();
-                    self.instructions
-                        .push(Instruction::MakeLiteralObject(r, Nil));
-                    r
-                };
+                let [expr] = split::<1>(stmt);
+                let r = self.visit_expr(expr);
                 self.instructions.push(Instruction::Return(r));
             }
             Rule::Expr => {
@@ -676,9 +686,7 @@ impl FunctionVisitor {
             self.instructions
                 .push(Instruction::Operator1(r, Copy, expr_r))
         } else {
-            r = self.allocate();
-            self.instructions
-                .push(Instruction::MakeLiteralObject(r, Nil))
+            r = self.make_unit();
         };
         self.bind(name.as_str().to_owned(), r)
     }
