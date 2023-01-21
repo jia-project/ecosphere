@@ -7,7 +7,7 @@ fn main() {
     for instruction in &mut *module.instructions {
         if let shattuck::Instruction::MakeFunction(context_names, name, arity, module) = instruction
         {
-            if &**name == "collapse" {
+            if &**name == "hex" {
                 println!("{context_names:?}.{name}/{arity}:");
                 *module = optimize(module.clone());
             }

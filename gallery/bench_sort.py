@@ -180,7 +180,7 @@ def collapse(runs):
 def main():
     zero_instant = time()
     rng = XorShiftRng(1, 2, 3, 4)
-    xs = [(1 << 60) + rng.next() for _ in range(1 << 4)]
+    xs = [(1 << 60) + rng.next() for _ in range(1 << 20)]
     print(f"[{time() - zero_instant:.6f}s] Generated")
     c = checksum(xs)
     print(f"[{time() - zero_instant:.6f}s] Sort start Checksum {c:x}")

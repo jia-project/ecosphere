@@ -261,7 +261,7 @@ make hex(x) {
     s
 }
 
-var len = 1 << 20;
+var len = 1 << 4;
 var offset = 1 << 60;
 var a = Array.new(len);
 var rng = XorShiftRng [x = 1, y = 2, z = 3, w = 4];
