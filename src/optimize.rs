@@ -16,7 +16,6 @@ pub fn optimize(module: Module) -> Module {
 
 #[derive(Debug, Clone)]
 struct Block {
-    predecessors: Vec<usize>,
     phi: HashMap<RegisterIndex, Vec<RegisterIndex>>,
     instructions: Vec<Instruction>,
     exit: BlockExit,
@@ -50,7 +49,6 @@ impl From<Module> for Graph {
             .enumerate()
             .map(|(i, offset)| (offset, i))
             .collect::<BTreeMap<_, _>>();
-        let mut block_predecessors = vec![BTreeSet::new(); leaders.len()];
         let mut blocks = Vec::new();
         for (leader, i) in &leaders {
             assert_eq!(*i, blocks.len());
@@ -61,25 +59,18 @@ impl From<Module> for Graph {
                 })
                 .unwrap()
                 + leader;
-            let exit;
-            match &module.instructions[block_end] {
+            let exit = match &module.instructions[block_end] {
                 Instruction::Jump(x, positive, negative) => {
-                    exit = BlockExit::Jump(*x, leaders[positive], leaders[negative]);
-                    block_predecessors[leaders[positive]].insert(*i);
-                    block_predecessors[leaders[negative]].insert(*i);
+                    BlockExit::Jump(*x, leaders[positive], leaders[negative])
                 }
-                Instruction::Return(x) => exit = BlockExit::Return(*x),
+                Instruction::Return(x) => BlockExit::Return(*x),
                 _ => unreachable!(),
-            }
+            };
             blocks.push(Block {
-                predecessors: Default::default(),
                 phi: Default::default(),
                 instructions: module.instructions[*leader..block_end].to_vec(),
                 exit,
             });
-        }
-        for (block, predecessors) in blocks.iter_mut().zip(block_predecessors) {
-            block.predecessors = predecessors.into_iter().collect();
         }
         Self {
             source: 0,
@@ -92,11 +83,11 @@ impl From<Module> for Graph {
 impl Display for Graph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, block) in &self.blocks {
-            if block.predecessors.is_empty() {
+            let predecessors = self.predecessors(*i);
+            if predecessors.is_empty() {
                 writeln!(f, "'{i}:")?;
             } else {
-                let entries = block
-                    .predecessors
+                let entries = predecessors
                     .iter()
                     .map(|i| format!("'{i}"))
                     .collect::<Vec<_>>()
@@ -151,12 +142,18 @@ impl From<Graph> for Module {
 
 impl Graph {
     fn dead_code_elimination(&mut self) {
-        self.blocks
-            .retain(|i, block| *i == self.source || !block.predecessors.is_empty());
-        let alive_blocks = self.blocks.keys().copied().collect::<HashSet<_>>();
-        for block in self.blocks.values_mut() {
-            block.predecessors.retain(|i| alive_blocks.contains(i));
+        let mut alive_blocks = BTreeMap::new();
+        let mut worklist =
+            BTreeMap::from([(self.source, self.blocks.remove(&self.source).unwrap())]);
+        while let Some((i, block)) = worklist.pop_first() {
+            for successor in block.successors() {
+                if let Some(succ_block) = self.blocks.remove(&successor) {
+                    worklist.insert(successor, succ_block);
+                }
+            }
+            alive_blocks.insert(i, block);
         }
+        self.blocks = alive_blocks;
     }
 }
 
@@ -228,7 +225,7 @@ impl Block {
         registers
     }
 
-    fn successors(&self) -> HashSet<RegisterIndex> {
+    fn successors(&self) -> HashSet<usize> {
         match self.exit {
             BlockExit::Jump(_, positive, negative) => [positive, negative].into(),
             BlockExit::Return(_) => HashSet::new(),
@@ -237,6 +234,19 @@ impl Block {
 }
 
 impl Graph {
+    fn predecessors(&self, i: usize) -> HashSet<usize> {
+        self.blocks
+            .iter()
+            .filter_map(|(p, block)| {
+                if block.successors().contains(&i) {
+                    Some(*p)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     fn immediate_dominators(&self) -> HashMap<usize, usize> {
         let mut dom = self
             .blocks
@@ -245,8 +255,8 @@ impl Graph {
             .collect::<HashMap<_, _>>();
         let mut worklist = BTreeSet::from([0]);
         while let Some(y) = worklist.pop_first() {
-            let mut new_dom = self.blocks[&y]
-                .predecessors
+            let mut new_dom = self
+                .predecessors(y)
                 .iter()
                 .map(|x| dom[x].clone())
                 .reduce(|d1, d2| &d1 & &d2)
@@ -286,7 +296,7 @@ impl Graph {
 
         let mut frontiers = HashMap::<_, HashSet<_>>::new();
         for (&b, block) in &self.blocks {
-            for &a in &block.predecessors {
+            for a in self.predecessors(b) {
                 let mut x = a;
                 while !strict_dominate(&idom, x, b) {
                     frontiers.entry(x).or_default().insert(b);
