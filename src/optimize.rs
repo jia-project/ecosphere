@@ -12,7 +12,7 @@ pub fn optimize(module: Module) -> Module {
 }
 
 struct Block {
-    entries: Vec<usize>,
+    predecessors: Vec<usize>,
     phi: HashMap<RegisterIndex, Vec<RegisterIndex>>,
     instructions: Vec<Instruction>,
     exit: BlockExit,
@@ -30,47 +30,49 @@ struct Graph {
 
 impl From<Module> for Graph {
     fn from(module: Module) -> Self {
-        let mut block_offsets = [0].into_iter().collect::<BTreeSet<_>>();
+        let mut leaders = [0].into_iter().collect::<BTreeSet<_>>();
         for instruction in &*module.instructions {
+            // simplified a little bit by not treating immediate-follower of control instruction as leader
+            // cause some redundant instructions cross blocks but makes blocks larger
             if let Instruction::Jump(_, positive, negative) = instruction {
-                block_offsets.extend([positive, negative])
+                leaders.extend([positive, negative])
             }
         }
-        let block_offsets = block_offsets
+        let leaders = leaders
             .into_iter()
             .enumerate()
             .map(|(i, offset)| (offset, i))
             .collect::<BTreeMap<_, _>>();
-        let mut block_entries = vec![BTreeSet::new(); block_offsets.len()];
+        let mut block_predecessors = vec![BTreeSet::new(); leaders.len()];
         let mut blocks = Vec::new();
-        for (block_offset, i) in &block_offsets {
+        for (leader, i) in &leaders {
             assert_eq!(*i, blocks.len());
-            let block_end = module.instructions[*block_offset..]
+            let block_end = module.instructions[*leader..]
                 .iter()
                 .position(|instruction| {
                     matches!(instruction, Instruction::Jump(..) | Instruction::Return(_))
                 })
                 .unwrap()
-                + block_offset;
+                + leader;
             let exit;
             match &module.instructions[block_end] {
                 Instruction::Jump(x, positive, negative) => {
-                    exit = BlockExit::Jump(*x, block_offsets[positive], block_offsets[negative]);
-                    block_entries[block_offsets[positive]].insert(*i);
-                    block_entries[block_offsets[negative]].insert(*i);
+                    exit = BlockExit::Jump(*x, leaders[positive], leaders[negative]);
+                    block_predecessors[leaders[positive]].insert(*i);
+                    block_predecessors[leaders[negative]].insert(*i);
                 }
                 Instruction::Return(x) => exit = BlockExit::Return(*x),
                 _ => unreachable!(),
             }
             blocks.push(Block {
-                entries: Default::default(),
+                predecessors: Default::default(),
                 phi: Default::default(),
-                instructions: module.instructions[*block_offset..block_end].to_vec(),
+                instructions: module.instructions[*leader..block_end].to_vec(),
                 exit,
             });
         }
-        for (block, block_entry) in blocks.iter_mut().zip(block_entries) {
-            block.entries = block_entry.into_iter().collect();
+        for (block, predecessors) in blocks.iter_mut().zip(block_predecessors) {
+            block.predecessors = predecessors.into_iter().collect();
         }
         Self {
             blocks,
@@ -82,11 +84,11 @@ impl From<Module> for Graph {
 impl Display for Graph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, block) in self.blocks.iter().enumerate() {
-            if block.entries.is_empty() {
+            if block.predecessors.is_empty() {
                 writeln!(f, "'{i}:")?;
             } else {
                 let entries = block
-                    .entries
+                    .predecessors
                     .iter()
                     .map(|i| format!("'{i}"))
                     .collect::<Vec<_>>()

@@ -282,6 +282,7 @@ struct Frame {
 
 #[derive(Default)]
 enum FrameRegister {
+    // is it ok (and benefitial) if merge `Vacant` and `Unit`?
     #[default]
     Vacant,
     Unit,
@@ -606,7 +607,9 @@ impl Machine {
                     }
                 }
                 if !self.is_finished() {
-                    assert!(!matches!(returned, FrameRegister::Unit));
+                    // essentially i want to forbid `s = f(t)` if `f` does not returns a value, through some way
+                    // currently a runtime error only throw if `s` get `view`ed later, could be too far away from the mistake
+                    // assert!(!matches!(returned, FrameRegister::Unit));
                     self.registers[frame.return_register] = returned;
                 }
                 false
