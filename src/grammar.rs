@@ -416,34 +416,26 @@ impl FunctionVisitor {
         expr1: Expr<'_>,
         expr2: Expr<'_>,
         placeholder: impl Fn(RegisterIndex) -> Placeholder,
-        after_all: bool,
     ) -> RegisterIndex {
         let r = self.allocate();
-        self.instructions.push(Instruction::MakeLiteralObject(
-            r,
-            instruction::Literal::Bool(!after_all),
-        ));
         self.enter_control(ControlScope::Shortcut);
         let r1 = self.visit_expr_internal(expr1);
-        self.push_control(placeholder(r1));
+        self.instructions.push(Instruction::Operator1(r, Copy, r1));
+        self.push_control(placeholder(r));
         let r2 = self.visit_expr_internal(expr2);
-        self.push_control(placeholder(r2));
-        self.instructions.push(Instruction::MakeLiteralObject(
-            r,
-            instruction::Literal::Bool(after_all),
-        ));
+        self.instructions.push(Instruction::Operator1(r, Copy, r2));
         // control exit in caller
         r
     }
 
     fn visit_and_expr(&mut self, expr1: Expr<'_>, expr2: Expr<'_>) -> RegisterIndex {
-        let r = self.visit_shortcut(expr1, expr2, Placeholder::JumpUnless, true);
+        let r = self.visit_shortcut(expr1, expr2, Placeholder::JumpUnless);
         self.exit_control(usize::MAX, self.instructions.len());
         r
     }
 
     fn visit_or_expr(&mut self, expr1: Expr<'_>, expr2: Expr<'_>) -> RegisterIndex {
-        let r = self.visit_shortcut(expr1, expr2, Placeholder::JumpIf, false);
+        let r = self.visit_shortcut(expr1, expr2, Placeholder::JumpIf);
         self.exit_control(self.instructions.len(), usize::MAX);
         r
     }
@@ -682,6 +674,9 @@ impl FunctionVisitor {
         let r;
         if let Some(expr) = expr {
             let expr_r = self.visit_expr(expr);
+            // the copy is must. consider
+            // var x = 1; var y = x; x = x + 1;
+            // assert y == 1 at this time so y must be copied out
             r = self.allocate();
             self.instructions
                 .push(Instruction::Operator1(r, Copy, expr_r))
