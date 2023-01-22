@@ -274,7 +274,7 @@ impl MachineStatic {
 
 struct Frame {
     offset: usize,
-    len: usize,
+    len: RegisterIndex,
     return_register: usize,
     function_index: usize,
     program_counter: usize,
@@ -420,7 +420,13 @@ impl Machine {
         arena_server.remove_root(&mut machine);
     }
 
-    fn push_frame(&mut self, index: usize, return_register: usize, offset: usize, len: usize) {
+    fn push_frame(
+        &mut self,
+        index: usize,
+        return_register: usize,
+        offset: usize,
+        len: RegisterIndex,
+    ) {
         let frame = Frame {
             offset,
             len,
@@ -429,8 +435,9 @@ impl Machine {
             program_counter: 0,
         };
         // TODO allocate less registers if we know it's ok
-        if self.registers.len() < offset + len {
-            self.registers.resize_with(offset + len, Default::default);
+        if self.registers.len() < offset + len as usize {
+            self.registers
+                .resize_with(offset + len as usize, Default::default);
         }
         for (r, argument) in self.registers[offset..offset + self.arguments.len()]
             .iter_mut()
@@ -635,7 +642,7 @@ impl Machine {
                         return_register,
                         {
                             let frame = self.frames.last().unwrap();
-                            frame.offset + frame.len
+                            frame.offset + frame.len as usize
                         },
                         functions[*index].register_level,
                     ),
@@ -980,7 +987,7 @@ impl Machine {
         }
         assert!(self.arguments.is_empty());
         let frame = self.frames.last().unwrap();
-        for register in &mut self.registers[..frame.offset + frame.len] {
+        for register in &mut self.registers[..frame.offset + frame.len as usize] {
             match register {
                 FrameRegister::Vacant | FrameRegister::Unit => {}
                 FrameRegister::Inline(object) => context.visit(object),

@@ -232,27 +232,30 @@ make checksum(xs) {
     (sum1 << 16) | sum2
 }
 
+var digits = Array.new(16);
+digits.at(0, "0");
+digits.at(1, "1");
+digits.at(2, "2");
+digits.at(3, "3");
+digits.at(4, "4");
+digits.at(5, "5");
+digits.at(6, "6");
+digits.at(7, "7");
+digits.at(8, "8");
+digits.at(9, "9");
+digits.at(10, "a");
+digits.at(11, "b");
+digits.at(12, "c");
+digits.at(13, "d");
+digits.at(14, "e");
+digits.at(15, "f");
+make digits = digits;
+
 make hex(x) {
     if x == 0 {
         return "0";
     }
-    var digits = Array.new(16);
-    digits.at(0, "0");
-    digits.at(1, "1");
-    digits.at(2, "2");
-    digits.at(3, "3");
-    digits.at(4, "4");
-    digits.at(5, "5");
-    digits.at(6, "6");
-    digits.at(7, "7");
-    digits.at(8, "8");
-    digits.at(9, "9");
-    digits.at(10, "a");
-    digits.at(11, "b");
-    digits.at(12, "c");
-    digits.at(13, "d");
-    digits.at(14, "e");
-    digits.at(15, "f");
+    var digits = digits;
     var s = "";
     while x != 0 {
         s = digits.at(x & 15) + s;

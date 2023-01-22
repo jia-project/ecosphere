@@ -8,15 +8,14 @@ use crate::{Instruction, Module, RegisterIndex};
 pub fn optimize(module: Module) -> Module {
     let mut graph = Graph::from(module.clone());
     graph.dead_code_elimination();
+    // graph.construction();
     println!("{graph}");
-    println!("{:?}", graph.immediate_dominators());
-    println!("{:?}", graph.dominance_frontiers());
     module
 }
 
 #[derive(Debug, Clone)]
 struct Block {
-    phi: HashMap<RegisterIndex, Vec<RegisterIndex>>,
+    phi: BTreeMap<RegisterIndex, Vec<RegisterIndex>>,
     instructions: Vec<Instruction>,
     exit: BlockExit,
 }
@@ -31,7 +30,7 @@ enum BlockExit {
 struct Graph {
     source: usize,
     blocks: BTreeMap<usize, Block>,
-    register_level: usize,
+    register_level: RegisterIndex,
 }
 
 impl From<Module> for Graph {
@@ -92,9 +91,11 @@ impl Display for Graph {
                     .map(|i| format!("'{i}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                writeln!(f, "'{i} (from {entries}):",)?;
+                writeln!(f, "'{i} from [{entries}]:",)?;
             }
-            // phi
+            for (r, merged) in &block.phi {
+                writeln!(f, "  {r} = Phi{merged:?}")?;
+            }
             for instruction in &block.instructions {
                 writeln!(f, "  {instruction:?}")?;
             }
@@ -208,23 +209,6 @@ impl BlockExit {
 }
 
 impl Block {
-    fn define(&self) -> HashSet<RegisterIndex> {
-        self.instructions
-            .iter()
-            .flat_map(Instruction::define)
-            .collect()
-    }
-
-    fn use_registers(&self) -> HashSet<RegisterIndex> {
-        let mut registers = self
-            .instructions
-            .iter()
-            .flat_map(Instruction::use_registers)
-            .collect::<HashSet<_>>();
-        registers.insert(self.exit.use_register());
-        registers
-    }
-
     fn successors(&self) -> HashSet<usize> {
         match self.exit {
             BlockExit::Jump(_, positive, negative) => [positive, negative].into(),
@@ -245,65 +229,5 @@ impl Graph {
                 }
             })
             .collect()
-    }
-
-    fn immediate_dominators(&self) -> HashMap<usize, usize> {
-        let mut dom = self
-            .blocks
-            .keys()
-            .map(|i| (*i, self.blocks.keys().copied().collect::<HashSet<_>>()))
-            .collect::<HashMap<_, _>>();
-        let mut worklist = BTreeSet::from([0]);
-        while let Some(y) = worklist.pop_first() {
-            let mut new_dom = self
-                .predecessors(y)
-                .iter()
-                .map(|x| dom[x].clone())
-                .reduce(|d1, d2| &d1 & &d2)
-                .unwrap_or_default();
-            new_dom.insert(y);
-            if new_dom != dom[&y] {
-                dom.insert(y, new_dom);
-                worklist.extend(self.blocks[&y].successors())
-            }
-        }
-        dom.iter()
-            .map(|(&i, dom_blocks)| {
-                if i == self.source {
-                    return (i, usize::MAX);
-                }
-                let [&d] = <[&usize; 1]>::try_from(
-                    dom_blocks
-                        .iter()
-                        .filter(|d| dom_blocks - &dom[d] == [i].into())
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap();
-                (i, d)
-            })
-            .collect()
-    }
-
-    fn dominance_frontiers(&self) -> HashMap<usize, HashSet<usize>> {
-        let idom = self.immediate_dominators();
-        fn strict_dominate(idom: &HashMap<usize, usize>, a: usize, b: usize) -> bool {
-            if b == usize::MAX {
-                false
-            } else {
-                idom[&b] == a || strict_dominate(idom, a, idom[&b])
-            }
-        }
-
-        let mut frontiers = HashMap::<_, HashSet<_>>::new();
-        for (&b, block) in &self.blocks {
-            for a in self.predecessors(b) {
-                let mut x = a;
-                while !strict_dominate(&idom, x, b) {
-                    frontiers.entry(x).or_default().insert(b);
-                    x = idom[&x];
-                }
-            }
-        }
-        frontiers
     }
 }

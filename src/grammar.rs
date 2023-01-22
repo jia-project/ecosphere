@@ -172,7 +172,8 @@ impl ProgramVisitor {
 
 impl FunctionVisitor {
     fn allocate(&mut self) -> RegisterIndex {
-        let r = self.register_level;
+        let r = self.register_level as RegisterIndex;
+        assert!(r < RegisterIndex::MAX); // maximum is reserved, maybe
         self.register_level += 1;
         r
     }

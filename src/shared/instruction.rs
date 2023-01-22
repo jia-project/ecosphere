@@ -1,10 +1,10 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub instructions: Box<[Instruction]>,
-    pub register_level: usize,
+    pub register_level: RegisterIndex,
 }
 
-pub type RegisterIndex = usize;
+pub type RegisterIndex = u32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
