@@ -1,16 +1,17 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     fmt::Display,
+    mem::replace,
 };
 
 use crate::{Instruction, Module, RegisterIndex};
 
-pub fn optimize(module: Module) -> Module {
-    let mut graph = Graph::from(module.clone());
+pub fn optimize(module: &Module, arity: usize) -> Module {
+    let mut graph = Graph::new(&module, arity);
     graph.dead_code_elimination();
-    // graph.construction();
+    Construction::new(&mut graph).run();
     println!("{graph}");
-    module
+    module.clone()
 }
 
 #[derive(Debug, Clone)]
@@ -31,10 +32,11 @@ struct Graph {
     source: usize,
     blocks: BTreeMap<usize, Block>,
     register_level: RegisterIndex,
+    arity: usize,
 }
 
-impl From<Module> for Graph {
-    fn from(module: Module) -> Self {
+impl Graph {
+    fn new(module: &Module, arity: usize) -> Self {
         let mut leaders = BTreeSet::from([0]);
         for instruction in &*module.instructions {
             // simplified a little bit by not treating immediate-follower of control instruction as leader
@@ -75,6 +77,7 @@ impl From<Module> for Graph {
             source: 0,
             blocks: blocks.into_iter().enumerate().collect(),
             register_level: module.register_level,
+            arity,
         }
     }
 }
@@ -160,44 +163,104 @@ impl Graph {
 
 impl Instruction {
     fn define(&self) -> Option<RegisterIndex> {
-        use Instruction::*;
-        match self {
-            ParsingPlaceholder(..) => unreachable!(),
-            Call(i, ..)
-            | MakeLiteralObject(i, ..)
-            | MakeTypedObject(i, ..)
-            | Load(i, ..)
-            | Get(i, ..)
-            | Is(i, ..)
-            | As(i, ..)
-            | Operator1(i, ..)
-            | Operator2(i, ..) => Some(*i),
-            _ => None,
-        }
+        let mut define = None;
+        self.clone().rewrite(|r, place| {
+            if matches!(place, Place::Define) {
+                assert!(define.is_none());
+                define = Some(r);
+            }
+            RegisterIndex::MAX
+        });
+        define
     }
 
     fn use_registers(&self) -> HashSet<RegisterIndex> {
+        let mut use_registers = HashSet::new();
+        self.clone().rewrite(|r, place| {
+            if matches!(place, Place::Use) {
+                use_registers.insert(r);
+            }
+            RegisterIndex::MAX
+        });
+        use_registers
+    }
+
+    fn rewrite(self, mut map_register: impl FnMut(RegisterIndex, Place) -> RegisterIndex) -> Self {
         use Instruction::*;
         match self {
-            ParsingPlaceholder(..) => unreachable!(),
-            Jump(x, ..)
-            | Return(x)
-            | Get(_, x, ..)
-            | Is(_, x, ..)
-            | As(_, x, ..)
-            | Operator1(_, _, x)
-            | Inspect(x, _)
-            | Assert(x, _)
-            | Store(x, _) => [*x].into(),
-            Put(x, _, y) | Operator2(_, _, x, y) => [*x, *y].into(),
-            Call(_, context_arguments, _, arguments) => [&**context_arguments, arguments]
-                .concat()
-                .into_iter()
-                .collect(),
-            MakeTypedObject(_, _, items) => items.iter().map(|(_, x)| *x).collect(),
-            _ => HashSet::new(),
+            Call(i, context_arguments, name, arguments) => {
+                let context_arguments = context_arguments
+                    .into_vec()
+                    .into_iter()
+                    .map(|x| map_register(x, Place::Use))
+                    .collect();
+                let arguments = arguments
+                    .into_vec()
+                    .into_iter()
+                    .map(|x| map_register(x, Place::Use))
+                    .collect();
+                Call(
+                    map_register(i, Place::Define),
+                    context_arguments,
+                    name,
+                    arguments,
+                )
+            }
+            MakeLiteralObject(i, literal) => {
+                MakeLiteralObject(map_register(i, Place::Define), literal)
+            }
+            MakeTypedObject(i, name, items) => {
+                let items = items
+                    .into_vec()
+                    .into_iter()
+                    .map(|(name, x)| (name, map_register(x, Place::Use)))
+                    .collect();
+                MakeTypedObject(map_register(i, Place::Define), name, items)
+            }
+            Load(i, name) => Load(map_register(i, Place::Define), name),
+            Store(x, name) => Store(map_register(x, Place::Use), name),
+            Get(i, x, name) => Get(
+                map_register(i, Place::Define),
+                map_register(x, Place::Use),
+                name,
+            ),
+            Put(x, name, y) => Put(
+                map_register(x, Place::Use),
+                name,
+                map_register(y, Place::Use),
+            ),
+            Is(i, x, name) => Is(
+                map_register(i, Place::Define),
+                map_register(x, Place::Use),
+                name,
+            ),
+            As(i, x, name) => As(
+                map_register(i, Place::Define),
+                map_register(x, Place::Use),
+                name,
+            ),
+            Operator1(i, op, x) => Operator1(
+                map_register(i, Place::Define),
+                op,
+                map_register(x, Place::Use),
+            ),
+            Operator2(i, op, x, y) => Operator2(
+                map_register(i, Place::Define),
+                op,
+                map_register(x, Place::Use),
+                map_register(y, Place::Use),
+            ),
+            Inspect(x, source) => Inspect(map_register(x, Place::Use), source),
+            Assert(x, source) => Assert(map_register(x, Place::Use), source),
+            Jump(..) | Return(..) | ParsingPlaceholder(..) => unreachable!(),
+            _ => self,
         }
     }
+}
+
+enum Place {
+    Define,
+    Use,
 }
 
 impl BlockExit {
@@ -229,5 +292,249 @@ impl Graph {
                 }
             })
             .collect()
+    }
+
+    fn rewrite(
+        &mut self,
+        block: usize,
+        i: usize,
+        mut map_register: impl FnMut(RegisterIndex, Place) -> RegisterIndex,
+    ) {
+        let block = self.blocks.get_mut(&block).unwrap();
+        if i != usize::MAX {
+            block.instructions[i] =
+                replace(&mut block.instructions[i], Instruction::OptimizePlaceholder)
+                    .rewrite(map_register);
+        } else {
+            match &mut block.exit {
+                BlockExit::Return(x) | BlockExit::Jump(x, ..) => *x = map_register(*x, Place::Use),
+            }
+        }
+    }
+}
+
+struct GraphMeta {
+    predecessors: HashMap<usize, HashSet<usize>>,
+    successors: HashMap<usize, HashSet<usize>>,
+    definitions: HashMap<RegisterIndex, (usize, usize)>,
+    uses: HashMap<RegisterIndex, HashSet<(usize, usize)>>,
+}
+
+impl GraphMeta {
+    fn new(graph: &Graph) -> Self {
+        let mut definitions = (0..graph.arity as _)
+            .map(|i| (i, (graph.source, usize::MAX)))
+            .collect::<HashMap<_, _>>();
+        let mut uses = HashMap::<_, HashSet<_>>::new();
+        for (b, block) in &graph.blocks {
+            for (i, instruction) in block.instructions.iter().enumerate() {
+                if let Some(r) = instruction.define() {
+                    definitions.insert(r, (*b, i));
+                }
+                for use_register in instruction.use_registers() {
+                    uses.entry(use_register).or_default().insert((*b, i));
+                }
+            }
+            uses.entry(block.exit.use_register())
+                .or_default()
+                .insert((*b, usize::MAX));
+        }
+        Self {
+            predecessors: graph
+                .blocks
+                .keys()
+                .map(|&i| (i, graph.predecessors(i)))
+                .collect(),
+            successors: graph
+                .blocks
+                .iter()
+                .map(|(&i, block)| (i, block.successors()))
+                .collect(),
+            definitions,
+            uses,
+        }
+    }
+}
+
+struct Construction<'a> {
+    graph: &'a mut Graph,
+    meta: GraphMeta,
+    // var -> block -> val
+    definitions: HashMap<RegisterIndex, HashMap<usize, RegisterIndex>>,
+    sealed: HashSet<usize>,
+    // block -> var -> val
+    imcomplete_phi: HashMap<usize, HashMap<RegisterIndex, RegisterIndex>>,
+    register_level: RegisterIndex,
+}
+
+impl<'a> Construction<'a> {
+    fn new(graph: &'a mut Graph) -> Self {
+        Self {
+            // 0..arity registers are fixed for parameters
+            definitions: (0..graph.arity as _)
+                .map(|i| (i, HashMap::from([(graph.source, i)])))
+                .collect(),
+            imcomplete_phi: graph
+                .blocks
+                .keys()
+                .map(|i| (*i, Default::default()))
+                .collect(),
+            sealed: Default::default(),
+            meta: GraphMeta::new(graph),
+            register_level: graph.arity as _,
+            graph,
+        }
+    }
+
+    fn allocate(&mut self) -> RegisterIndex {
+        let v = self.register_level;
+        self.register_level += 1;
+        v
+    }
+
+    fn allocate_write(&mut self, var: RegisterIndex, block: usize) -> RegisterIndex {
+        let v = self.allocate();
+        self.write_variable(var, block, v);
+        v
+    }
+
+    fn run(&mut self) {
+        let mut pending_seal = HashMap::new();
+        let mut filled = HashSet::<usize>::new();
+        let mut worklist = VecDeque::from([self.graph.source]);
+        while let Some(b) = worklist.pop_front() {
+            let not_filled = self.meta.predecessors[&b]
+                .iter()
+                .filter(|p| !filled.contains(p))
+                .copied()
+                .collect::<HashSet<_>>();
+            if not_filled.is_empty() {
+                self.seal_block(b);
+            } else {
+                pending_seal.insert(b, not_filled);
+            }
+
+            let instructions = self.graph.blocks[&b]
+                .instructions
+                .clone()
+                .into_iter()
+                .map(|instruction| {
+                    instruction.rewrite(|r, place| match place {
+                        Place::Define => self.allocate_write(r, b),
+                        Place::Use => self.read_variable(r, b),
+                    })
+                })
+                .collect();
+            self.graph.blocks.get_mut(&b).unwrap().instructions = instructions;
+            let exit = match self.graph.blocks[&b].exit.clone() {
+                BlockExit::Jump(x, positive, negative) => {
+                    BlockExit::Jump(self.read_variable(x, b), positive, negative)
+                }
+                BlockExit::Return(x) => BlockExit::Return(self.read_variable(x, b)),
+            };
+            self.graph.blocks.get_mut(&b).unwrap().exit = exit;
+
+            filled.insert(b);
+            for block in pending_seal.keys().copied().collect::<Vec<_>>() {
+                let not_filled = pending_seal.get_mut(&block).unwrap();
+                not_filled.remove(&b);
+                if not_filled.is_empty() {
+                    pending_seal.remove(&block);
+                    self.seal_block(block);
+                }
+            }
+
+            for s in &self.meta.successors[&b] {
+                if !filled.contains(s) && !worklist.contains(s) {
+                    worklist.push_back(*s);
+                }
+            }
+        }
+
+        self.meta = GraphMeta::new(&self.graph);
+        for b in self.graph.blocks.keys().copied().collect::<Vec<_>>() {
+            //
+        }
+    }
+
+    fn write_variable(&mut self, var: RegisterIndex, block: usize, value: RegisterIndex) {
+        self.definitions
+            .entry(var)
+            .or_default()
+            .insert(block, value);
+    }
+
+    fn read_variable(&mut self, var: RegisterIndex, block: usize) -> RegisterIndex {
+        if let Some(value) = self.definitions.entry(var).or_default().get(&block) {
+            *value
+        } else {
+            self.read_variable_recursive(var, block)
+        }
+    }
+
+    fn read_variable_recursive(&mut self, var: RegisterIndex, block: usize) -> RegisterIndex {
+        let value;
+        if !self.sealed.contains(&block) {
+            value = self.allocate();
+            self.imcomplete_phi
+                .get_mut(&block)
+                .unwrap()
+                .insert(var, value);
+        } else if let Ok([p]) = <[usize; 1]>::try_from(
+            self.meta.predecessors[&block]
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+        ) {
+            value = self.read_variable(var, p);
+        } else {
+            value = self.allocate_write(var, block);
+            self.add_phi(var, block, value);
+        }
+        value
+    }
+
+    fn add_phi(&mut self, var: RegisterIndex, block: usize, value: RegisterIndex) {
+        let operands = self.meta.predecessors[&block]
+            .clone()
+            .into_iter()
+            .map(|p| self.read_variable(var, p))
+            .collect();
+        self.graph
+            .blocks
+            .get_mut(&block)
+            .unwrap()
+            .phi
+            .insert(value, operands);
+    }
+
+    fn prune_phi(&mut self, value: RegisterIndex, block: usize) {
+        const UNREACHABLE: RegisterIndex = RegisterIndex::MAX;
+        let mut same = None;
+        for &operand in &self.graph.blocks[&block].phi[&value] {
+            if Some(operand) == same || operand == value || operand == UNREACHABLE {
+                continue;
+            }
+            if same.is_some() {
+                return;
+            }
+            same = Some(operand);
+        }
+        let same = same.unwrap_or(UNREACHABLE);
+        self.graph
+            .blocks
+            .get_mut(&block)
+            .unwrap()
+            .phi
+            .remove(&value);
+        //
+    }
+
+    fn seal_block(&mut self, block: usize) {
+        // assert all predecessors filled
+        self.sealed.insert(block);
+        for (var, value) in self.imcomplete_phi.remove(&block).unwrap() {
+            self.add_phi(var, block, value);
+        }
     }
 }

@@ -42,6 +42,7 @@ pub enum Instruction {
     // AsOrJump(i, x, variant, target) ~>
     //   Is(t, x, variant); JumpUnless(t, target); As(i, x, variant)
     ParsingPlaceholder(crate::grammar::Placeholder),
+    OptimizePlaceholder,
 }
 
 // must be embedded in bytecode directly because parser emitts these

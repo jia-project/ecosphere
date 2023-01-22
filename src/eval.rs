@@ -559,7 +559,7 @@ impl Machine {
         use Instruction::*;
         // println!("{instruction:?}");
         match instruction {
-            ParsingPlaceholder(_) | MakeFunction(..) => unreachable!(),
+            ParsingPlaceholder(_) | OptimizePlaceholder | MakeFunction(..) => unreachable!(),
             MakeLiteralObject(i, literal) => {
                 r[i] = self.local.make(literal);
                 false

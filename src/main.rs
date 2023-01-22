@@ -9,7 +9,7 @@ fn main() {
         {
             if &**name == "hex" {
                 println!("{context_names:?}.{name}/{arity}:");
-                *module = optimize(module.clone());
+                *module = optimize(module, *arity);
             }
         }
     }
