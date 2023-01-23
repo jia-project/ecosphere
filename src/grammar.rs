@@ -206,7 +206,7 @@ impl FunctionVisitor {
     fn push_control(&mut self, placeholder: Placeholder) {
         let index = self.instructions.len();
         self.instructions
-            .push(Instruction::ParsingPlaceholder(placeholder));
+            .push(Instruction::ParsePlaceholder(placeholder));
         let mut scope = self.control_scopes.last_mut().unwrap();
         'find: {
             if matches!(
@@ -228,28 +228,29 @@ impl FunctionVisitor {
     fn exit_control(&mut self, positive: usize, negative: usize) {
         let (control_type, indexes) = self.control_scopes.pop().unwrap();
         for index in indexes {
-            use Instruction::Jump as J;
-            use Instruction::ParsingPlaceholder as P;
+            use Instruction::ParsePlaceholder as P;
             use Placeholder::*;
+            let jump = |r, positive, negative| {
+                Instruction::Jump(r, (positive, usize::MAX), (negative, usize::MAX))
+            };
             let check = |target: usize| {
                 assert_ne!(target, usize::MAX);
                 target
             };
             let instruction = match self.instructions[index].clone() {
-                // P(Jump(r)) => J(r, check(positive), check(negative)),
-                P(JumpIf(r)) => J(r, check(positive), index + 1),
-                P(JumpUnless(r)) => J(r, index + 1, check(negative)),
+                P(JumpIf(r)) => jump(r, check(positive), index + 1),
+                P(JumpUnless(r)) => jump(r, index + 1, check(negative)),
                 P(JumpContinue) => {
                     assert!(matches!(control_type, ControlScope::While));
-                    J(RegisterIndex::MAX, check(positive), positive)
+                    jump(RegisterIndex::MAX, check(positive), positive)
                 }
                 P(JumpBreak) => {
                     assert!(matches!(control_type, ControlScope::While));
-                    J(RegisterIndex::MAX, check(negative), negative)
+                    jump(RegisterIndex::MAX, check(negative), negative)
                 }
                 P(JumpEndIf) => {
                     assert!(matches!(control_type, ControlScope::If));
-                    J(RegisterIndex::MAX, check(positive), positive)
+                    jump(RegisterIndex::MAX, check(positive), positive)
                 }
                 _ => unreachable!(),
             };
@@ -397,8 +398,11 @@ impl FunctionVisitor {
                             // if expr is positive, fallthrough to next instruction in bind the name
                             // otherwise, skip the next instruction
                             let index = self.instructions.len();
-                            self.instructions
-                                .push(Instruction::Jump(r, index + 1, index + 2));
+                            self.instructions.push(Instruction::Jump(
+                                r,
+                                (index + 1, usize::MAX),
+                                (index + 2, usize::MAX),
+                            ));
                             let as_r = self.allocate();
                             self.instructions.push(Instruction::As(as_r, r1, variant));
                             self.bind(name, as_r);

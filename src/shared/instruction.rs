@@ -12,7 +12,9 @@ pub enum Instruction {
     // context type names, name, argument number, instructions
     MakeFunction(Box<[Box<str>]>, Box<str>, usize, Module),
 
-    Jump(RegisterIndex, usize, usize),
+    // test, (positive insturction offset, positive index for phi), (negative ...)
+    Jump(RegisterIndex, (usize, usize), (usize, usize)),
+    Phi(RegisterIndex, Box<[RegisterIndex]>),
     Return(RegisterIndex),
     Call(
         RegisterIndex,
@@ -41,7 +43,7 @@ pub enum Instruction {
     // optimized instructions
     // AsOrJump(i, x, variant, target) ~>
     //   Is(t, x, variant); JumpUnless(t, target); As(i, x, variant)
-    ParsingPlaceholder(crate::grammar::Placeholder),
+    ParsePlaceholder(crate::grammar::Placeholder),
     OptimizePlaceholder,
 }
 

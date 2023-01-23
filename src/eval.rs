@@ -278,6 +278,7 @@ struct Frame {
     return_register: usize,
     function_index: usize,
     program_counter: usize,
+    phi_selector: usize,
 }
 
 #[derive(Default)]
@@ -433,6 +434,7 @@ impl Machine {
             return_register,
             function_index: index,
             program_counter: 0,
+            phi_selector: usize::MAX,
         };
         // TODO allocate less registers if we know it's ok
         if self.registers.len() < offset + len as usize {
@@ -559,7 +561,7 @@ impl Machine {
         use Instruction::*;
         // println!("{instruction:?}");
         match instruction {
-            ParsingPlaceholder(_) | OptimizePlaceholder | MakeFunction(..) => unreachable!(),
+            ParsePlaceholder(_) | OptimizePlaceholder | MakeFunction(..) => unreachable!(),
             MakeLiteralObject(i, literal) => {
                 r[i] = self.local.make(literal);
                 false
@@ -599,8 +601,15 @@ impl Machine {
                 } else {
                     [negative, positive][(r[x].view().1 - ArenaServer::TYPED_SECTION) as usize]
                 };
-                self.frames.last_mut().unwrap().program_counter = target;
+                let frame = self.frames.last_mut().unwrap();
+                (frame.program_counter, frame.phi_selector) = target;
                 false
+            }
+            Phi(i, sources) => {
+                let x = &sources[self.frames.last().unwrap().phi_selector];
+                let mut r = R(&mut self.registers, self.frames.last().unwrap().offset);
+                r[i] = r[x].copy(&mut self.arena);
+                true
             }
             Return(x) => {
                 let returned = take(&mut r[x]);
