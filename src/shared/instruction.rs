@@ -15,7 +15,7 @@ pub enum Instruction<D = RegisterIndex, U = RegisterIndex> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Value<U> {
+pub enum Value<U = RegisterIndex> {
     // "Operator0"
     MakeLiteralObject(Literal),
     Load(Box<str>),

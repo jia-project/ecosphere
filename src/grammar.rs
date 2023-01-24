@@ -124,13 +124,14 @@ impl ProgramVisitor {
                 visitor.bind(name.as_str().to_owned(), r);
             })
             .count();
-        let r = visitor.visit_block_expr(expr);
+        let value = visitor.visit_block_expr(expr);
         visitor.exit();
         // patch a `return;` if function is not ending with one
         if !matches!(
             visitor.instructions.last(),
             Some(Instruction::Effect(Effect::Return(_)))
         ) {
+            let r = visitor.use_value(value);
             visitor
                 .instructions
                 .push(Instruction::Effect(Effect::Return(r)));
@@ -276,7 +277,17 @@ impl FunctionVisitor {
         }
     }
 
-    fn visit_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+    fn use_value(&mut self, value: Value) -> RegisterIndex {
+        if let Value::Operator1(Copy, r) = value {
+            r
+        } else {
+            let r = self.allocate();
+            self.instructions.push(Instruction::Define(r, value));
+            r
+        }
+    }
+
+    fn visit_expr(&mut self, expr: Pair<'_, Rule>) -> Value {
         let expr = PrattParser::new()
             .op(Op::prefix(Rule::Inspect))
             .op(Op::infix(Rule::Or, Assoc::Left))
@@ -307,7 +318,7 @@ impl FunctionVisitor {
         self.visit_expr_internal(expr)
     }
 
-    fn visit_expr_internal(&mut self, expr: Expr<'_>) -> RegisterIndex {
+    fn visit_expr_internal(&mut self, expr: Expr<'_>) -> Value {
         match expr {
             Expr::Primary(expr) => self.visit_primary_expr(expr),
             Expr::Operator2(op, expr1, expr2) => {
@@ -317,35 +328,38 @@ impl FunctionVisitor {
                     _ => {}
                 }
 
-                let r1 = self.visit_expr_internal(*expr1);
-                let r2 = self.visit_expr_internal(*expr2);
+                let v1 = self.visit_expr_internal(*expr1);
+                let r1 = self.use_value(v1);
+                let v2 = self.visit_expr_internal(*expr2);
+                let r2 = self.use_value(v2);
                 use instruction::Operator2::*;
-                let op = match op.as_rule() {
-                    Rule::Add => Add,
-                    Rule::Sub => Sub,
-                    Rule::Mul => Mul,
-                    Rule::Div => Div,
-                    Rule::Rem => Rem,
-                    Rule::Lt => Lt,
-                    Rule::Gt => Gt,
-                    Rule::Eq => Eq,
-                    Rule::Ne => Ne,
-                    Rule::Le => Le,
-                    Rule::Ge => Ge,
-                    Rule::BitAnd => BitAnd,
-                    Rule::BitOr => BitOr,
-                    Rule::BitXor => BitXor,
-                    Rule::Shl => Shl,
-                    Rule::Shr => Shr,
-                    _ => unreachable!(),
-                };
-                let r = self.allocate();
-                self.instructions
-                    .push(Instruction::Define(r, Value::Operator2(op, r1, r2)));
-                r
+                Value::Operator2(
+                    match op.as_rule() {
+                        Rule::Add => Add,
+                        Rule::Sub => Sub,
+                        Rule::Mul => Mul,
+                        Rule::Div => Div,
+                        Rule::Rem => Rem,
+                        Rule::Lt => Lt,
+                        Rule::Gt => Gt,
+                        Rule::Eq => Eq,
+                        Rule::Ne => Ne,
+                        Rule::Le => Le,
+                        Rule::Ge => Ge,
+                        Rule::BitAnd => BitAnd,
+                        Rule::BitOr => BitOr,
+                        Rule::BitXor => BitXor,
+                        Rule::Shl => Shl,
+                        Rule::Shr => Shr,
+                        _ => unreachable!(),
+                    },
+                    r1,
+                    r2,
+                )
             }
             Expr::Operator1(op, expr) => {
-                let r1 = self.visit_expr_internal(*expr);
+                let v1 = self.visit_expr_internal(*expr);
+                let r1 = self.use_value(v1.clone());
                 match op.as_rule() {
                     Rule::Inspect => {
                         self.instructions.push(Instruction::Effect(Effect::Inspect(
@@ -357,52 +371,38 @@ impl FunctionVisitor {
                                 .trim_start()
                                 .into(),
                         )));
-                        return r1;
+                        return v1;
                     }
                     Rule::Call1 => {
                         let [name, arguments] = split(op);
                         let arguments = arguments
                             .into_inner()
-                            .map(|argument| self.visit_expr(argument))
+                            .map(|argument| {
+                                let value = self.visit_expr(argument);
+                                self.use_value(value)
+                            })
                             .collect();
-                        let r = self.allocate();
-                        self.instructions.push(Instruction::Define(
-                            r,
-                            Value::Call(Box::new([r1]), name.as_str().into(), arguments),
-                        ));
-                        return r;
+                        return Value::Call(Box::new([r1]), name.as_str().into(), arguments);
                     }
                     _ => {}
                 }
 
                 use instruction::Operator1::*;
-                let r = self.allocate();
                 match op.as_rule() {
-                    Rule::Not => {
-                        self.instructions
-                            .push(Instruction::Define(r, Value::Operator1(Not, r1)));
-                        r
-                    }
-                    Rule::Neg => {
-                        self.instructions
-                            .push(Instruction::Define(r, Value::Operator1(Neg, r1)));
-                        r
-                    }
+                    Rule::Not => Value::Operator1(Not, r1),
+                    Rule::Neg => Value::Operator1(Neg, r1),
                     Rule::Dot => {
                         let component = split::<1>(op)[0].as_str().into();
-                        self.instructions
-                            .push(Instruction::Define(r, Value::Operator1(Get(component), r1)));
-                        r
+                        Value::Operator1(Get(component), r1)
                     }
                     Rule::As => {
                         let variant = split::<1>(op)[0].as_str().into();
-                        self.instructions
-                            .push(Instruction::Define(r, Value::Operator1(As(variant), r1)));
-                        r
+                        Value::Operator1(As(variant), r1)
                     }
                     Rule::Is => {
                         let ([variant], name) = split_option(op);
                         let variant = <Box<str>>::from(variant.as_str());
+                        let r = self.allocate();
                         self.instructions.push(Instruction::Define(
                             r,
                             Value::Operator1(Is(variant.clone()), r1),
@@ -423,7 +423,7 @@ impl FunctionVisitor {
                                 .push(Instruction::Define(as_r, Value::Operator1(As(variant), r1)));
                             self.bind(name, as_r);
                         }
-                        r
+                        Value::Operator1(Copy, r)
                     }
                     Rule::Match => todo!(),
                     _ => unreachable!(),
@@ -437,64 +437,48 @@ impl FunctionVisitor {
         expr1: Expr<'_>,
         expr2: Expr<'_>,
         placeholder: impl Fn(RegisterIndex) -> Placeholder,
-    ) -> RegisterIndex {
+    ) -> Value {
+        // can we make this with less copying?
         let r = self.allocate();
         self.enter_control(ControlScope::Shortcut);
-        let r1 = self.visit_expr_internal(expr1);
-        self.instructions
-            .push(Instruction::Define(r, Value::Operator1(Copy, r1)));
+        let v1 = self.visit_expr_internal(expr1);
+        self.instructions.push(Instruction::Define(r, v1));
         self.push_control(placeholder(r));
-        let r2 = self.visit_expr_internal(expr2);
-        self.instructions
-            .push(Instruction::Define(r, Value::Operator1(Copy, r2)));
+        let v2 = self.visit_expr_internal(expr2);
+        self.instructions.push(Instruction::Define(r, v2));
         // control exit in caller
-        r
+        Value::Operator1(Copy, r)
     }
 
-    fn visit_and_expr(&mut self, expr1: Expr<'_>, expr2: Expr<'_>) -> RegisterIndex {
-        let r = self.visit_shortcut(expr1, expr2, Placeholder::JumpUnless);
+    fn visit_and_expr(&mut self, expr1: Expr<'_>, expr2: Expr<'_>) -> Value {
+        let value = self.visit_shortcut(expr1, expr2, Placeholder::JumpUnless);
         self.exit_control(usize::MAX, self.instructions.len());
-        r
+        value
     }
 
-    fn visit_or_expr(&mut self, expr1: Expr<'_>, expr2: Expr<'_>) -> RegisterIndex {
-        let r = self.visit_shortcut(expr1, expr2, Placeholder::JumpIf);
+    fn visit_or_expr(&mut self, expr1: Expr<'_>, expr2: Expr<'_>) -> Value {
+        let value = self.visit_shortcut(expr1, expr2, Placeholder::JumpIf);
         self.exit_control(self.instructions.len(), usize::MAX);
-        r
+        value
     }
 
-    fn visit_primary_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+    fn visit_primary_expr(&mut self, expr: Pair<'_, Rule>) -> Value {
         match expr.as_rule() {
             Rule::Expr => self.visit_expr(expr),
             Rule::Ident => {
                 if let Some(r) = self.find(expr.as_str()) {
-                    r
+                    Value::Operator1(Copy, r)
                 } else {
-                    let r = self.allocate();
-                    self.instructions
-                        .push(Instruction::Define(r, Value::Load(expr.as_str().into())));
-                    r
+                    Value::Load(expr.as_str().into())
                 }
             }
-            Rule::Integer => {
-                let r = self.allocate();
-                self.instructions.push(Instruction::Define(
-                    r,
-                    Value::MakeLiteralObject(instruction::Literal::Integer(
-                        expr.as_str().parse().unwrap(),
-                    )),
-                ));
-                r
-            }
+            Rule::Integer => Value::MakeLiteralObject(instruction::Literal::Integer(
+                expr.as_str().parse().unwrap(),
+            )),
             Rule::String => {
                 // TODO handle escaping properly
                 let value = expr.as_str()[1..expr.as_str().len() - 1].into();
-                let r = self.allocate();
-                self.instructions.push(Instruction::Define(
-                    r,
-                    Value::MakeLiteralObject(instruction::Literal::String(value)),
-                ));
-                r
+                Value::MakeLiteralObject(instruction::Literal::String(value))
             }
             Rule::Float => todo!(),
             Rule::DataExpr => self.visit_data_expr(expr),
@@ -512,45 +496,38 @@ impl FunctionVisitor {
         }
     }
 
-    fn visit_data_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+    fn visit_data_expr(&mut self, expr: Pair<'_, Rule>) -> Value {
         let [name, items] = split(expr);
         self.visit_data_items(name.as_str().into(), items)
     }
 
-    fn visit_data_items(&mut self, name: Box<str>, items: Pair<'_, Rule>) -> RegisterIndex {
+    fn visit_data_items(&mut self, name: Box<str>, items: Pair<'_, Rule>) -> Value {
         // fieldless sum type variant
         if items.as_rule() == Rule::Ident {
-            let r = self.make_unit();
-            self.instructions.push(Instruction::Define(
-                r,
-                Value::MakeTypedObject(name, Box::new([(items.as_str().into(), r)])),
-            ));
-            return r;
+            let r = self.allocate();
+            self.instructions
+                .push(Instruction::Define(r, Value::MakeLiteralObject(Unit)));
+            return Value::MakeTypedObject(name, Box::new([(items.as_str().into(), r)]));
         }
         let data = items
             .into_inner()
             .map(|item| {
                 let [item_name, value] = split(item);
                 let item_name = item_name.as_str();
-                (
-                    item_name.into(),
-                    match value.as_rule() {
-                        Rule::Expr => self.visit_expr(value),
-                        Rule::DataItems => {
-                            self.visit_data_items((String::from(&*name) + item_name).into(), value)
-                        }
-                        _ => unreachable!(),
-                    },
-                )
+                let value = match value.as_rule() {
+                    Rule::Expr => self.visit_expr(value),
+                    Rule::DataItems => {
+                        self.visit_data_items((String::from(&*name) + item_name).into(), value)
+                    }
+                    _ => unreachable!(),
+                };
+                (item_name.into(), self.use_value(value))
             })
             .collect();
-        let r = self.allocate();
-        self.instructions
-            .push(Instruction::Define(r, Value::MakeTypedObject(name, data)));
-        r
+        Value::MakeTypedObject(name, data)
     }
 
-    fn visit_block_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+    fn visit_block_expr(&mut self, expr: Pair<'_, Rule>) -> Value {
         let mut stmts = expr.into_inner();
         self.enter();
         let mut stmt = stmts.next();
@@ -558,7 +535,7 @@ impl FunctionVisitor {
             self.visit_stmt(stmt.unwrap());
             stmt = stmts.next();
         }
-        let r = if let Some(stmt) = stmt {
+        let value = if let Some(stmt) = stmt {
             match stmt.as_rule() {
                 Rule::Expr => self.visit_expr(stmt),
                 Rule::IfExpr => self.visit_if_expr(stmt),
@@ -576,14 +553,11 @@ impl FunctionVisitor {
             self.make_unit()
         };
         self.exit();
-        r
+        value
     }
 
-    fn make_unit(&mut self) -> RegisterIndex {
-        let r = self.allocate();
-        self.instructions
-            .push(Instruction::Define(r, Value::MakeLiteralObject(Unit)));
-        r
+    fn make_unit(&mut self) -> Value {
+        Value::MakeLiteralObject(Unit)
     }
 
     fn visit_call_expr<'a>(
@@ -591,9 +565,12 @@ impl FunctionVisitor {
         context_arguments: impl Iterator<Item = Pair<'a, Rule>>,
         mut name: &'a str,
         arguments: impl Iterator<Item = Pair<'a, Rule>>,
-    ) -> RegisterIndex {
+    ) -> Value {
         let mut context_arguments = context_arguments
-            .map(|expr| self.visit_expr(expr))
+            .map(|expr| {
+                let value = self.visit_expr(expr);
+                self.use_value(value)
+            })
             .collect::<Vec<_>>();
         if let [context, n] = *name.split('.').collect::<Vec<_>>() {
             assert!(context_arguments.is_empty());
@@ -602,37 +579,38 @@ impl FunctionVisitor {
                 name = n;
             }
         }
-        let arguments = arguments.map(|expr| self.visit_expr(expr)).collect();
-        let r = self.allocate();
-        self.instructions.push(Instruction::Define(
-            r,
-            Value::Call(context_arguments.into(), name.into(), arguments),
-        ));
-        r
+        let arguments = arguments
+            .map(|expr| {
+                let value = self.visit_expr(expr);
+                self.use_value(value)
+            })
+            .collect();
+        Value::Call(context_arguments.into(), name.into(), arguments)
     }
 
-    fn visit_if_expr(&mut self, expr: Pair<'_, Rule>) -> RegisterIndex {
+    fn visit_if_expr(&mut self, expr: Pair<'_, Rule>) -> Value {
         let ([test, positive], negative) = split_option(expr);
 
         self.enter(); // scope for `is` expression in `test`
         self.enter_control(ControlScope::If);
 
-        let r = self.visit_expr(test);
+        let value = self.visit_expr(test);
+        let r = self.use_value(value);
         // positive target: after else block, negative target: else block
         self.push_control(Placeholder::JumpUnless(r));
 
         let r = self.allocate();
 
-        let positive_r = self.visit_block_expr(positive);
+        let positive_value = self.visit_block_expr(positive);
         self.instructions
-            .push(Instruction::Define(r, Value::Operator1(Copy, positive_r)));
+            .push(Instruction::Define(r, positive_value));
         self.push_control(Placeholder::JumpEndIf);
 
         let negative_index = self.instructions.len();
         if let Some(negative) = negative {
-            let negative_r = self.visit_block_expr(negative);
+            let negative_value = self.visit_block_expr(negative);
             self.instructions
-                .push(Instruction::Define(r, Value::Operator1(Copy, negative_r)))
+                .push(Instruction::Define(r, negative_value))
         } else {
             self.instructions
                 .push(Instruction::Define(r, Value::MakeLiteralObject(Unit)))
@@ -641,7 +619,7 @@ impl FunctionVisitor {
         self.exit(); // `is` expression scope
         let positive_index = self.instructions.len();
         self.exit_control(positive_index, negative_index);
-        r
+        Value::Operator1(Copy, r)
     }
 
     fn visit_stmt(&mut self, stmt: Pair<'_, Rule>) {
@@ -649,23 +627,23 @@ impl FunctionVisitor {
             Rule::VarStmt => self.visit_var_stmt(stmt),
             Rule::AssignStmt => {
                 let [name, expr] = split(stmt);
-                let expr_r = self.visit_expr(expr);
+                let value = self.visit_expr(expr);
                 let r = self.find(name.as_str()).unwrap();
-                self.instructions
-                    .push(Instruction::Define(r, Value::Operator1(Copy, expr_r)));
+                self.instructions.push(Instruction::Define(r, value));
             }
             Rule::MakeAssignStmt => {
                 let [name, expr] = split(stmt);
-                let expr_r = self.visit_expr(expr);
-                self.instructions.push(Instruction::Effect(Effect::Store(
-                    expr_r,
-                    name.as_str().into(),
-                )));
+                let value = self.visit_expr(expr);
+                let r = self.use_value(value);
+                self.instructions
+                    .push(Instruction::Effect(Effect::Store(r, name.as_str().into())));
             }
             Rule::PutStmt => {
                 let [data, component, expr] = split(stmt);
-                let r = self.visit_expr(data);
-                let expr_r = self.visit_expr(expr);
+                let data_value = self.visit_expr(data);
+                let r = self.use_value(data_value);
+                let value = self.visit_expr(expr);
+                let expr_r = self.use_value(value);
                 self.instructions.push(Instruction::Effect(Effect::Put(
                     r,
                     component.as_str().into(),
@@ -675,7 +653,8 @@ impl FunctionVisitor {
             Rule::AssertStmt => {
                 let [expr] = split(stmt);
                 let source = expr.as_str().into();
-                let r = self.visit_expr(expr);
+                let value = self.visit_expr(expr);
+                let r = self.use_value(value);
                 self.instructions
                     .push(Instruction::Effect(Effect::Assert(r, source)));
             }
@@ -684,15 +663,18 @@ impl FunctionVisitor {
             Rule::ContinueStmt => self.push_control(Placeholder::JumpContinue),
             Rule::ReturnStmt => {
                 let [expr] = split::<1>(stmt);
-                let r = self.visit_expr(expr);
+                let value = self.visit_expr(expr);
+                let r = self.use_value(value);
                 self.instructions
                     .push(Instruction::Effect(Effect::Return(r)));
             }
             Rule::Expr => {
-                self.visit_expr(stmt);
+                let value = self.visit_expr(stmt);
+                self.use_value(value);
             }
             Rule::IfExpr => {
                 self.visit_if_expr(stmt);
+                // safe to skip use
             }
             _ => unreachable!(),
         }
@@ -702,15 +684,13 @@ impl FunctionVisitor {
         let ([name], expr) = split_option(stmt);
         let r;
         if let Some(expr) = expr {
-            let expr_r = self.visit_expr(expr);
-            // the copy is must. consider
-            // var x = 1; var y = x; x = x + 1;
-            // assert y == 1 at this time so y must be copied out
+            let value = self.visit_expr(expr);
+            r = self.allocate();
+            self.instructions.push(Instruction::Define(r, value))
+        } else {
             r = self.allocate();
             self.instructions
-                .push(Instruction::Define(r, Value::Operator1(Copy, expr_r)))
-        } else {
-            r = self.make_unit();
+                .push(Instruction::Define(r, Value::MakeLiteralObject(Unit)))
         };
         self.bind(name.as_str().to_owned(), r)
     }
@@ -724,9 +704,11 @@ impl FunctionVisitor {
         self.enter_control(ControlScope::While);
         let continue_index = self.instructions.len();
 
-        let r = self.visit_expr(test);
+        let value = self.visit_expr(test);
+        let r = self.use_value(value);
         self.push_control(Placeholder::JumpUnless(r));
-        self.visit_block_expr(expr);
+        let value = self.visit_block_expr(expr);
+        self.use_value(value);
         self.push_control(Placeholder::JumpContinue);
 
         self.exit(); // `is` expression scope
