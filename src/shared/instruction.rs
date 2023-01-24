@@ -7,44 +7,45 @@ pub struct Module {
 pub type RegisterIndex = u32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Instruction {
+pub enum Instruction<D = RegisterIndex, U = RegisterIndex> {
+    Define(D, Value<U>),
+    Effect(Effect<U>),
+    ParsePlaceholder(crate::grammar::Placeholder),
+    OptimizePlaceholder,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value<U> {
+    // "Operator0"
+    MakeLiteralObject(Literal),
+    Load(Box<str>),
+
+    Operator1(Operator1, U),
+
+    Operator2(Operator2, U, U),
+
+    // "OperatorN"
+    Phi(Box<[U]>),
+    // context arguments, name, arguments
+    Call(Box<[U]>, Box<str>, Box<[U]>),
+    MakeTypedObject(Box<str>, Box<[(Box<str>, U)]>),
+    // optimized instructions
+    // AsOrJump(i, x, variant, target) ~>
+    //   Is(t, x, variant); Jump(t, <fall through>, target); As(i, x, variant)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+// default `J` = (instruction offset, phi selector)
+pub enum Effect<U, J = (usize, usize)> {
     MakeType(Box<str>, TypeOperator, Box<[Box<str>]>),
     // context type names, name, argument number, instructions
     MakeFunction(Box<[Box<str>]>, Box<str>, usize, Module),
-
-    // test, (positive insturction offset, positive index for phi), (negative ...)
-    Jump(RegisterIndex, (usize, usize), (usize, usize)),
-    Phi(RegisterIndex, Box<[RegisterIndex]>),
-    Return(RegisterIndex),
-    Call(
-        RegisterIndex,
-        Box<[RegisterIndex]>, // context object(s)
-        Box<str>,             // name
-        Box<[RegisterIndex]>, // argument object(s)
-    ),
-
-    // intrinsic operations
-    MakeLiteralObject(RegisterIndex, Literal),
-    MakeTypedObject(RegisterIndex, Box<str>, Box<[(Box<str>, RegisterIndex)]>),
-    Load(RegisterIndex, Box<str>),
-    Get(RegisterIndex, RegisterIndex, Box<str>),
-    Put(RegisterIndex, Box<str>, RegisterIndex),
-    Is(RegisterIndex, RegisterIndex, Box<str>),
-    As(RegisterIndex, RegisterIndex, Box<str>),
-    // overloadable operations
-    Operator1(RegisterIndex, Operator1, RegisterIndex),
-    Operator2(RegisterIndex, Operator2, RegisterIndex, RegisterIndex),
-
-    // side effects
-    Inspect(RegisterIndex, Box<str>),
-    Assert(RegisterIndex, Box<str>),
-    Store(RegisterIndex, Box<str>),
-
-    // optimized instructions
-    // AsOrJump(i, x, variant, target) ~>
-    //   Is(t, x, variant); JumpUnless(t, target); As(i, x, variant)
-    ParsePlaceholder(crate::grammar::Placeholder),
-    OptimizePlaceholder,
+    Jump(U, J, J),
+    Return(U),
+    Put(U, Box<str>, U),
+    Inspect(U, Box<str>),
+    Assert(U, Box<str>),
+    Store(U, Box<str>),
 }
 
 // must be embedded in bytecode directly because parser emitts these
@@ -63,9 +64,12 @@ pub enum TypeOperator {
     Sum,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operator1 {
     Copy,
+    Get(Box<str>),
+    Is(Box<str>),
+    As(Box<str>),
     Not,
     Neg,
 }

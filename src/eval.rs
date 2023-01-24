@@ -10,7 +10,7 @@ use std::{
 use crate::{
     arena::{ArenaClient, ArenaServer, ArenaVirtual, CollectContext},
     instruction::Literal,
-    instruction::TypeOperator,
+    instruction::{self, TypeOperator},
     shared::object::Object0,
     Instruction, Module, Object, RegisterIndex, TypeIndex,
 };
@@ -467,7 +467,10 @@ impl Machine {
 
                 // *self.stats.entry(std::mem::discriminant(instruction)).or_default() += 1;
 
-                if matches!(instruction, Instruction::MakeFunction(..)) {
+                if matches!(
+                    instruction,
+                    Instruction::Effect(instruction::Effect::MakeFunction(..))
+                ) {
                     self.make_function(
                         instruction.clone(),
                         &mut function_dispatches,
@@ -519,7 +522,7 @@ impl Machine {
         function_dispatches: &mut Map<DispatchKey, Dispatch>,
         functions: &mut Vec<Module>,
     ) {
-        let Instruction::MakeFunction(context_types, name, arity, module) = instruction else {
+        let Instruction::Effect(instruction::Effect::MakeFunction(context_types, name, arity, module)) = instruction else {
             unreachable!()
         };
         self.make_dispatch(
@@ -558,15 +561,16 @@ impl Machine {
         }
         let mut r = R(&mut self.registers, self.frames.last().unwrap().offset);
 
+        use instruction::{Effect::*, Value::*};
         use Instruction::*;
         // println!("{instruction:?}");
         match instruction {
-            ParsePlaceholder(_) | OptimizePlaceholder | MakeFunction(..) => unreachable!(),
-            MakeLiteralObject(i, literal) => {
+            ParsePlaceholder(_) | OptimizePlaceholder | Effect(MakeFunction(..)) => unreachable!(),
+            Define(i, MakeLiteralObject(literal)) => {
                 r[i] = self.local.make(literal);
                 false
             }
-            MakeTypedObject(i, name, items) => {
+            Define(i, MakeTypedObject(name, items)) => {
                 let type_index = self.symbol.type_names[name];
                 match &self.symbol[type_index] {
                     SymbolType::Product { components, .. } => {
@@ -595,7 +599,7 @@ impl Machine {
                 true
             }
 
-            Jump(x, positive, negative) => {
+            Effect(Jump(x, positive, negative)) => {
                 let target = *if positive == negative {
                     positive
                 } else {
@@ -605,13 +609,13 @@ impl Machine {
                 (frame.program_counter, frame.phi_selector) = target;
                 false
             }
-            Phi(i, sources) => {
+            Define(i, Phi(sources)) => {
                 let x = &sources[self.frames.last().unwrap().phi_selector];
                 let mut r = R(&mut self.registers, self.frames.last().unwrap().offset);
                 r[i] = r[x].copy(&mut self.arena);
                 true
             }
-            Return(x) => {
+            Effect(Return(x)) => {
                 let returned = take(&mut r[x]);
                 let frame = self.frames.pop().unwrap();
                 for (i, register) in self.registers[frame.offset..].iter_mut().enumerate() {
@@ -630,7 +634,7 @@ impl Machine {
                 }
                 false
             }
-            Call(i, context_xs, name, argument_xs) => {
+            Define(i, Call(context_xs, name, argument_xs)) => {
                 let mut context = Vec::new(); //
                 for x in &**context_xs {
                     context.push(r[x].view().1);
@@ -664,17 +668,17 @@ impl Machine {
                 true
             }
 
-            Load(i, name) => {
+            Define(i, Load(name)) => {
                 r[i] = FrameRegister::Address(self.symbol.object_names[name]);
                 false
             }
-            Store(x, name) => {
+            Effect(Store(x, name)) => {
                 self.symbol
                     .object_names
                     .insert(name.clone(), r[x].escape(&mut self.arena));
                 true
             }
-            Inspect(x, source) => {
+            Effect(Inspect(x, source)) => {
                 let object = r[x].view();
                 let repr = match object.1 {
                     Self::INTEGER => format!("Integer {}", object.to_integer().unwrap()),
@@ -699,19 +703,11 @@ impl Machine {
                 );
                 false
             }
-            Assert(x, source) => {
+            Effect(Assert(x, source)) => {
                 assert_eq!(r[x].view().1, Self::TRUE, "{source}");
                 false
             }
-            Get(i, x, name) => {
-                let x = r[x].view();
-                let SymbolType::Product{components,..} = &self.symbol[x.1] else {
-                        panic!()
-                    };
-                r[i] = FrameRegister::Address(unsafe { x.typed_data() }.unwrap()[components[name]]);
-                false
-            }
-            Put(x, name, y) => {
+            Effect(Put(x, name, y)) => {
                 let y = r[y].escape(&mut self.arena);
                 let x = r[x].view_mut();
                 let SymbolType::Product{components,..} = &self.symbol[x.1] else {
@@ -720,22 +716,7 @@ impl Machine {
                 unsafe { x.typed_data_mut() }.unwrap()[components[name]] = y;
                 true
             }
-            Is(i, x, name) => {
-                let SymbolType::SumVariant{name: n, ..} = &self.symbol[r[x].view().1] else {
-                        panic!()
-                    };
-                r[i] = self.local.make(&Literal::Bool(n == name));
-                false
-            }
-            As(i, x, name) => {
-                let x = r[x].view();
-                assert!(
-                    matches!(&self.symbol[x.1], SymbolType::SumVariant {name: n, ..} if n == name)
-                );
-                r[i] = FrameRegister::Address(unsafe { x.typed_data() }.unwrap()[0]); // more check?
-                false
-            }
-            Operator1(i, op, x) => {
+            Define(i, Operator1(op, x)) => {
                 use {crate::instruction::Operator1::*, Literal::*};
                 if matches!(op, Copy) {
                     r[i] = r[x].copy(&mut self.arena);
@@ -747,11 +728,32 @@ impl Machine {
                     (Neg, Self::INTEGER) => self
                         .local
                         .make(&Integer(-r[x].view().to_integer().unwrap())),
+                    (Get(name), type_index) => {
+                        let SymbolType::Product{components,..} = &self.symbol[type_index] else {
+                            panic!()
+                        };
+                        FrameRegister::Address(
+                            unsafe { r[x].view().typed_data() }.unwrap()[components[name]],
+                        )
+                    }
+                    (Is(name), type_index) => {
+                        let SymbolType::SumVariant{name: n, ..} = &self.symbol[type_index] else {
+                            panic!()
+                        };
+                        self.local.make(&Literal::Bool(n == name))
+                    }
+                    (As(name), type_index) => {
+                        assert!(
+                            matches!(&self.symbol[type_index], SymbolType::SumVariant {name: n, ..} if n == name)
+                        );
+                        // more check?
+                        FrameRegister::Address(unsafe { r[x].view().typed_data() }.unwrap()[0])
+                    }
                     _ => panic!(),
                 };
                 false
             }
-            Operator2(i, op, x, y) => {
+            Define(i, Operator2(op, x, y)) => {
                 use {crate::instruction::Operator2::*, Literal::*};
                 let (x, y) = (r[x].view(), r[y].view());
                 r[i] = match (x.1, y.1) {
@@ -786,7 +788,7 @@ impl Machine {
                 false
             }
 
-            MakeType(name, op, items) => {
+            Effect(MakeType(name, op, items)) => {
                 match op {
                     TypeOperator::Product => {
                         self.symbol.add_type(
