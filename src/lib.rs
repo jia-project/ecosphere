@@ -1,7 +1,7 @@
 pub mod arena;
 pub mod eval;
 pub mod grammar;
-// pub mod optimize;
+pub mod optimize;
 mod shared {
     pub mod instruction;
     pub mod object;

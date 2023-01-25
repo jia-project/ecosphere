@@ -542,22 +542,18 @@ impl FunctionVisitor {
                 Rule::IfStmt => {
                     let [stmt] = split(stmt);
                     self.visit_stmt(stmt);
-                    self.make_unit()
+                    Value::MakeLiteralObject(Unit)
                 }
                 _ => {
                     self.visit_stmt(stmt);
-                    self.make_unit()
+                    Value::MakeLiteralObject(Unit)
                 }
             }
         } else {
-            self.make_unit()
+            Value::MakeLiteralObject(Unit)
         };
         self.exit();
         value
-    }
-
-    fn make_unit(&mut self) -> Value {
-        Value::MakeLiteralObject(Unit)
     }
 
     fn visit_call_expr<'a>(
